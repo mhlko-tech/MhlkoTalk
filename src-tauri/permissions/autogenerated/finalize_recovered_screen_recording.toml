@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-finalize-recovered-screen-recording"
+description = "Enables the finalize_recovered_screen_recording command without any pre-configured scope."
+commands.allow = ["finalize_recovered_screen_recording"]
+
+[[permission]]
+identifier = "deny-finalize-recovered-screen-recording"
+description = "Denies the finalize_recovered_screen_recording command without any pre-configured scope."
+commands.deny = ["finalize_recovered_screen_recording"]

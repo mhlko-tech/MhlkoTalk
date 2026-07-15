@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-native-recording-members-audio"
+description = "Enables the stop_native_recording_members_audio command without any pre-configured scope."
+commands.allow = ["stop_native_recording_members_audio"]
+
+[[permission]]
+identifier = "deny-stop-native-recording-members-audio"
+description = "Denies the stop_native_recording_members_audio command without any pre-configured scope."
+commands.deny = ["stop_native_recording_members_audio"]

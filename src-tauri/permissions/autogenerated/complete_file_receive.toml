@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-complete-file-receive"
+description = "Enables the complete_file_receive command without any pre-configured scope."
+commands.allow = ["complete_file_receive"]
+
+[[permission]]
+identifier = "deny-complete-file-receive"
+description = "Denies the complete_file_receive command without any pre-configured scope."
+commands.deny = ["complete_file_receive"]

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+.wrangler/
+src-tauri/gen/
+src-tauri/binaries/*.exe
+*.log
+.env
+.DS_Store

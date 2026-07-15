@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>MHTalk Voice Engine</title>
+    <style>
+      :root { font-family: Inter, "Segoe UI", system-ui, sans-serif; color: #f8fafc; background: #080c16; }
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body { display: grid; place-items: center; background: radial-gradient(circle at top, #17203a 0%, #080c16 66%); }
+      #permission-panel { width: min(380px, calc(100vw - 32px)); padding: 26px; border: 1px solid rgba(148,163,184,.25); border-radius: 20px; background: rgba(15,23,42,.96); box-shadow: 0 24px 80px rgba(0,0,0,.45); text-align: center; }
+      #permission-panel[hidden] { display: none; }
+      .mark { width: 58px; height: 58px; margin: 0 auto 15px; display: grid; place-items: center; border-radius: 18px; background: linear-gradient(145deg,#6366f1,#8b5cf6); font-size: 29px; }
+      h1 { margin: 0 0 8px; font-size: 20px; }
+      p { margin: 0 0 20px; color: #cbd5e1; font-size: 14px; line-height: 1.55; }
+      .actions { display: flex; gap: 10px; justify-content: center; }
+      button { border: 0; border-radius: 11px; padding: 10px 18px; font: inherit; font-weight: 650; cursor: pointer; }
+      #permission-retry { color: white; background: #6366f1; }
+      #permission-hide { color: #dbeafe; background: #1e293b; }
+      #engine-status { position: fixed; inset: auto 10px 8px; color: #64748b; font-size: 10px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <main id="permission-panel" hidden>
+      <div class="mark">🎙️</div>
+      <h1 id="permission-title">MHTalk Voice Engine</h1>
+      <p id="permission-message">MHTalk needs permission to use the microphone and play call audio.</p>
+      <div class="actions">
+        <button id="permission-retry" type="button">Continue</button>
+        <button id="permission-hide" type="button">Not now</button>
+      </div>
+    </main>
+    <div id="engine-status">MHTalk Voice Engine 0.9.1</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

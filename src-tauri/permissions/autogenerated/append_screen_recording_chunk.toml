@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-append-screen-recording-chunk"
+description = "Enables the append_screen_recording_chunk command without any pre-configured scope."
+commands.allow = ["append_screen_recording_chunk"]
+
+[[permission]]
+identifier = "deny-append-screen-recording-chunk"
+description = "Denies the append_screen_recording_chunk command without any pre-configured scope."
+commands.deny = ["append_screen_recording_chunk"]

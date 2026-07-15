@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-send-voice-companion-command"
+description = "Enables the send_voice_companion_command command without any pre-configured scope."
+commands.allow = ["send_voice_companion_command"]
+
+[[permission]]
+identifier = "deny-send-voice-companion-command"
+description = "Denies the send_voice_companion_command command without any pre-configured scope."
+commands.deny = ["send_voice_companion_command"]

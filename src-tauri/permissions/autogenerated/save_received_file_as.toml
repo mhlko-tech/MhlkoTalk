@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-received-file-as"
+description = "Enables the save_received_file_as command without any pre-configured scope."
+commands.allow = ["save_received_file_as"]
+
+[[permission]]
+identifier = "deny-save-received-file-as"
+description = "Denies the save_received_file_as command without any pre-configured scope."
+commands.deny = ["save_received_file_as"]

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "voice-default",
+  "description": "Minimal capability for the hidden MHTalk voice engine",
+  "windows": ["voice"],
+  "permissions": ["core:default"]
+}

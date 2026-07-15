@@ -1,0 +1,1 @@
+{"voice-default":{"identifier":"voice-default","description":"Minimal capability for the hidden MHTalk voice engine","local":true,"windows":["voice"],"permissions":["core:default"]}}

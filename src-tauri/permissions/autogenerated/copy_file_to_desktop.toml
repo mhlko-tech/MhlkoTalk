@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-copy-file-to-desktop"
+description = "Enables the copy_file_to_desktop command without any pre-configured scope."
+commands.allow = ["copy_file_to_desktop"]
+
+[[permission]]
+identifier = "deny-copy-file-to-desktop"
+description = "Denies the copy_file_to_desktop command without any pre-configured scope."
+commands.deny = ["copy_file_to_desktop"]

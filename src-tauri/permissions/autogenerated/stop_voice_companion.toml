@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-voice-companion"
+description = "Enables the stop_voice_companion command without any pre-configured scope."
+commands.allow = ["stop_voice_companion"]
+
+[[permission]]
+identifier = "deny-stop-voice-companion"
+description = "Denies the stop_voice_companion command without any pre-configured scope."
+commands.deny = ["stop_voice_companion"]
