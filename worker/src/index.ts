@@ -927,7 +927,7 @@ export default {
     const url = new URL(request.url);
     const pathname = url.pathname.replace(/\/+$/, '');
     const match = pathname.match(/^\/room\/([a-zA-Z0-9_-]{1,128})\/(?:ws|profiles)$/);
-    if (!match) return json({ ok: true, service: 'MHTalk signaling', version: '0.9.1' });
+    if (!match) return json({ ok: true, service: 'MHTalk signaling', version: '0.9.2' });
     const id = env.ROOMS.idFromName(match[1]);
     return env.ROOMS.get(id).fetch(request);
   }

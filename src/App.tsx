@@ -66,7 +66,7 @@ import {
 
 const EMOJIS = ['😀', '😂', '😍', '🔥', '❤️', '👍', '👏', '😎', '😢', '😡', '🙏', '🎉', '💯', '✨', '👀', '✅', '❌', '⚡', '🌟', '😴', '🤝', '💪', '🎮', '🫡', '🤣', '🥲', '😅', '🙌', '🌹', '💙'];
 const INSTAGRAM_URL = 'https://www.instagram.com/m.ed1t/';
-const APP_VERSION = '0.9.1';
+const APP_VERSION = '0.9.2';
 
 const LOCALIZED_TEXT: Record<AppLanguage, Record<string, string>> = {
   ar: {
