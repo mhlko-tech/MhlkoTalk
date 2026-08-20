@@ -1,12 +1,11 @@
-name = "mhlkotalk-signaling"
+name = "mhtalk-token-service"
 main = "src/index.ts"
-compatibility_date = "2026-07-04"
+compatibility_date = "2026-08-18"
+compatibility_flags = ["nodejs_compat"]
 
-[durable_objects]
-bindings = [
-  { name = "ROOMS", class_name = "RoomObject" }
-]
+[vars]
+LIVEKIT_URL = "https://mhtalkremake-utuei6i7.livekit.cloud"
 
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["RoomObject"]
+[[kv_namespaces]]
+binding = "PRIVATE_ROOMS"
+id = "3ced063544014961bd3aa2b5af26db09"

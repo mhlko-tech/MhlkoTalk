@@ -1,16 +1,8 @@
 {
-  "name": "mhlkotalk-signaling-worker",
+  "name": "mhtalk-token-service",
   "private": true,
-  "version": "0.9.2",
   "type": "module",
-  "scripts": {
-    "dev": "wrangler dev --local --port 8787",
-    "deploy": "wrangler deploy",
-    "types": "wrangler types"
-  },
-  "devDependencies": {
-    "@cloudflare/workers-types": "5.20260714.1",
-    "typescript": "5.8.3",
-    "wrangler": "4.110.0"
-  }
+  "scripts": { "dev": "wrangler dev --port 8787", "check": "tsc --noEmit" },
+  "dependencies": { "livekit-server-sdk": "^2.13.2" },
+  "devDependencies": { "@cloudflare/workers-types": "5.20260714.1", "typescript": "~5.8.3", "wrangler": "4.110.0" }
 }

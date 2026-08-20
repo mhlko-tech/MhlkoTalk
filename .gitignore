@@ -1,9 +1,11 @@
 node_modules/
 dist/
-target/
-.wrangler/
-src-tauri/gen/
-src-tauri/binaries/*.exe
-*.log
+src-tauri/target/
 .env
-.DS_Store
+worker/.dev.vars
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example

@@ -1,0 +1,85 @@
+.preview-grid.has-source {
+  background: #07080a;
+  overflow: hidden;
+}
+.preview-grid {
+  position: relative;
+  overflow: hidden;
+}
+.preview-grid > .display-preview {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.preview-add {
+  display: grid;
+  justify-items: center;
+  gap: 9px;
+  padding: 18px;
+  border: 0;
+  background: transparent;
+  color: #858a96;
+}
+.preview-add i {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: #2d3038;
+  font-size: 28px;
+  font-style: normal;
+}
+.preview-add:hover {
+  color: #c9ced9;
+}
+.studio-settings {
+  z-index: 20;
+}
+.studio-source-button {
+  position: static;
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px;
+  border: 0;
+  border-radius: 3px;
+  background: #3c4049;
+  color: #fff;
+}
+.studio-dock button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.studio-control.processing {
+  background: #4a4e59;
+}
+.studio-processing {
+  display: grid;
+  gap: 6px;
+  margin-top: 3px;
+}
+.studio-processing > div:first-child {
+  display: flex;
+  justify-content: space-between;
+  color: #d9dce5;
+  font-size: 11px;
+}
+.studio-processing-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #101216;
+  box-shadow: inset 0 0 0 1px #454954;
+}
+.studio-processing-track i {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #7a68ed, #55b9ff);
+  transition: width 180ms linear;
+}
+.studio-processing small {
+  color: #aeb4c2;
+  font-size: 10px;
+}

@@ -1,0 +1,3 @@
+LIVEKIT_API_KEY=replace-me
+LIVEKIT_API_SECRET=replace-me
+INVITE_SIGNING_KEY=replace-with-a-random-long-secret
