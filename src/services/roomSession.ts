@@ -384,7 +384,12 @@ export class RoomSession {
         ),
       });
     };
-    room.on(RoomEvent.ParticipantConnected, syncParticipants);
+    room.on(RoomEvent.ParticipantConnected, () => {
+      syncParticipants();
+      // A newcomer did not receive profile packets sent before they joined.
+      // Re-announce the local profile so names, avatars and bios converge.
+      void this.setProfile(this.profile);
+    });
     room.on(RoomEvent.ParticipantDisconnected, (participant) => {
       this.detachParticipantSource(participant.identity, "camera");
       this.detachParticipantSource(participant.identity, "screen");
@@ -520,7 +525,8 @@ export class RoomSession {
           });
         if (event.type === "typing")
           this.setRemoteTyping(
-            participant.identity.slice(0, 16),
+            this.remoteProfiles.get(participant.identity)?.name ||
+              participant.identity.slice(0, 16),
             Boolean(event.typing),
           );
         if (event.type === "edit" && event.id && event.body)

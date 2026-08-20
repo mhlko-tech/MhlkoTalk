@@ -6,5 +6,9 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 export default defineConfig({
   plugins: [react(), cloudflare()],
   clearScreen: false,
-  server: { port: 1425, strictPort: true },
+  server: {
+    port: 1425,
+    strictPort: true,
+    watch: { ignored: ["**/src-tauri/target/**"] },
+  },
 });

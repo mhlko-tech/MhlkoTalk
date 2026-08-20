@@ -100,6 +100,33 @@ export default {
         return json({ error: "Message is too long" }, 413);
       return json(moderateMainMessage(body.text));
     }
+    if (path === "/moderation/report") {
+      const body = (await request.json().catch(() => null)) as {
+        roomName?: unknown;
+        reporterIdentity?: unknown;
+        targetIdentity?: unknown;
+        messageId?: unknown;
+        content?: unknown;
+      } | null;
+      if (
+        typeof body?.roomName !== "string" ||
+        typeof body.reporterIdentity !== "string" ||
+        typeof body.targetIdentity !== "string" ||
+        body.roomName.length > 100 ||
+        body.reporterIdentity.length > 100 ||
+        body.targetIdentity.length > 100
+      ) return json({ error: "Invalid report" }, 400);
+      const id = `report:${Date.now()}:${crypto.randomUUID()}`;
+      await env.PRIVATE_ROOMS.put(id, JSON.stringify({
+        createdAt: new Date().toISOString(),
+        roomName: body.roomName,
+        reporterIdentity: body.reporterIdentity,
+        targetIdentity: body.targetIdentity,
+        messageId: typeof body.messageId === "string" ? body.messageId.slice(0, 100) : null,
+        content: typeof body.content === "string" ? body.content.slice(0, 2000) : null,
+      }), { expirationTtl: 2592000 });
+      return json({ accepted: true });
+    }
     if (path === "/room-count") {
       const body = (await request.json().catch(() => null)) as {
         roomName?: unknown;
