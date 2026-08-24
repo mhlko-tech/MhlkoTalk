@@ -5,6 +5,8 @@ export type SessionState =
   | "recovering"
   | "failed";
 
+export type MediaQuality = "low" | "medium" | "high";
+
 export interface SessionSnapshot {
   state: SessionState;
   roomName: string | null;
@@ -13,6 +15,8 @@ export interface SessionSnapshot {
   cameraEnabled: boolean;
   screenShareEnabled: boolean;
   screenShareAudioEnabled: boolean;
+  connectionQuality: "excellent" | "good" | "poor" | "lost" | "unknown";
+  estimatedDropPercent: number | null;
   recoveryAttempt: number;
   lastRecoveryMs: number | null;
   participants: Array<{
@@ -21,6 +25,8 @@ export interface SessionSnapshot {
     microphoneEnabled: boolean;
     cameraEnabled: boolean;
     screenShareEnabled: boolean;
+    cameraQuality: MediaQuality;
+    screenShareQuality: MediaQuality;
     name?: string;
     bio?: string;
     avatar?: string;

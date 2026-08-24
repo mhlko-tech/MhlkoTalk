@@ -64,6 +64,7 @@ export function RecorderStudio() {
   const [recording, setRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [bytes, setBytes] = useState(0);
+  const [mixLevels, setMixLevels] = useState({ system: 0, microphone: 0 });
   const [status, setStatus] = useState("Ready");
   const [processing, setProcessing] =
     useState<NativeRecordingProcessingStatus | null>(null);
@@ -128,6 +129,16 @@ export function RecorderStudio() {
         setBytes(value.bytes);
       });
     }, 500);
+    return () => window.clearInterval(id);
+  }, [recording]);
+  useEffect(() => {
+    if (!recording) {
+      setMixLevels({ system: 0, microphone: 0 });
+      return;
+    }
+    const id = window.setInterval(() => {
+      setMixLevels(recorder.current?.getMixLevels() || { system: 0, microphone: 0 });
+    }, 120);
     return () => window.clearInterval(id);
   }, [recording]);
   useEffect(() => {
@@ -542,6 +553,9 @@ export function RecorderStudio() {
             >
               {settings.includeAudio ? "🔊" : "🔇"}
             </button>
+            <div className="mixer-meter" aria-label={`Desktop audio level ${mixLevels.system}%`}>
+              <i style={{ width: `${mixLevels.system}%` }} />
+            </div>
           </label>
           <label>
             <span>
@@ -570,6 +584,9 @@ export function RecorderStudio() {
             >
               {settings.includeMic ? "🎙" : "🔇"}
             </button>
+            <div className="mixer-meter" aria-label={`Microphone level ${mixLevels.microphone}%`}>
+              <i style={{ width: `${mixLevels.microphone}%` }} />
+            </div>
           </label>
         </div>
         <div className="studio-dock controls-dock">

@@ -1,13 +1,23 @@
-import { Room, RoomEvent, TokenSource, Track } from "livekit-client";
+import {
+  ConnectionQuality,
+  RemoteTrackPublication,
+  Room,
+  RoomEvent,
+  ScreenSharePresets,
+  TokenSource,
+  Track,
+} from "livekit-client";
 import type {
   ChatListener,
   ChatMessage,
   ChatSnapshot,
   SessionListener,
   SessionSnapshot,
+  MediaQuality,
   UserProfile,
 } from "../core/types";
 import { moderateMainMessage } from "../core/moderation";
+import { accountSession } from "./accountSession";
 
 const initialSnapshot: SessionSnapshot = {
   state: "idle",
@@ -17,10 +27,27 @@ const initialSnapshot: SessionSnapshot = {
   cameraEnabled: false,
   screenShareEnabled: false,
   screenShareAudioEnabled: false,
+  connectionQuality: "unknown",
+  estimatedDropPercent: null,
   recoveryAttempt: 0,
   lastRecoveryMs: null,
   participants: [],
 };
+
+export type EventSoundKind = "presence" | "media";
+export type EventSoundSettings = Record<EventSoundKind, boolean>;
+
+const qualityRank: Record<MediaQuality, number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+};
+
+const qualityValue = {
+  low: 0,
+  medium: 1,
+  high: 2,
+} as const;
 
 /** Owns the whole media lifecycle; React components only observe this class. */
 export class RoomSession {
@@ -42,7 +69,14 @@ export class RoomSession {
   private attachedMediaElements = new Set<HTMLMediaElement>();
   private remoteVoiceAudio = new Map<string, Set<HTMLAudioElement>>();
   private remoteStreamAudio = new Map<string, Set<HTMLAudioElement>>();
+  private remoteMediaQuality = new Map<
+    string,
+    Partial<Record<"camera" | "screen", MediaQuality>>
+  >();
+  private selectedRemoteQuality = new Map<string, MediaQuality>();
+  private watchedMedia = new Set<string>();
   private outputVolume = 1;
+  private toneContext: AudioContext | null = null;
   private inviteCode: string | undefined;
   private preferredDevices: Partial<Record<MediaDeviceKind, string>> = {
     audioinput: localStorage.getItem("mhtalk.device.audioinput") || "",
@@ -109,6 +143,10 @@ export class RoomSession {
     await this.room?.disconnect();
     this.room = null;
     this.inviteCode = undefined;
+    this.remoteProfiles.clear();
+    this.remoteMediaQuality.clear();
+    this.selectedRemoteQuality.clear();
+    this.watchedMedia.clear();
     this.detachMedia();
     this.clearChat();
     this.update({ ...initialSnapshot });
@@ -145,7 +183,11 @@ export class RoomSession {
     }
   }
 
-  async setScreenShareEnabled(enabled: boolean, includeSystemAudio = false) {
+  async setScreenShareEnabled(
+    enabled: boolean,
+    includeSystemAudio = false,
+    quality: MediaQuality = "medium",
+  ) {
     if (!this.room) return;
     if (!enabled) {
       await this.room.localParticipant.setScreenShareEnabled(false);
@@ -157,21 +199,45 @@ export class RoomSession {
       return;
     }
     try {
-      await this.room.localParticipant.setScreenShareEnabled(true, {
-        video: true,
-        audio: includeSystemAudio
-          ? {
-              restrictOwnAudio: true,
-              echoCancellation: true,
-              noiseSuppression: true,
-            }
-          : false,
-        systemAudio: includeSystemAudio ? "include" : "exclude",
-        selfBrowserSurface: "exclude",
-        suppressLocalAudioPlayback: true,
-        contentHint: "detail",
-      });
+      const preset =
+        quality === "low"
+          ? ScreenSharePresets.h360fps15
+          : quality === "high"
+            ? ScreenSharePresets.h1080fps30
+            : ScreenSharePresets.h720fps15;
+      const layers =
+        quality === "high"
+          ? [ScreenSharePresets.h360fps15, ScreenSharePresets.h720fps15]
+          : quality === "medium"
+            ? [ScreenSharePresets.h360fps15]
+            : [];
+      await this.room.localParticipant.setScreenShareEnabled(
+        true,
+        {
+          video: true,
+          resolution: preset.resolution,
+          audio: includeSystemAudio
+            ? {
+                restrictOwnAudio: true,
+                echoCancellation: true,
+                noiseSuppression: true,
+              }
+            : false,
+          systemAudio: includeSystemAudio ? "include" : "exclude",
+          selfBrowserSurface: "exclude",
+          suppressLocalAudioPlayback: true,
+          contentHint: "detail",
+        },
+        {
+          simulcast: layers.length > 0,
+          screenShareEncoding: preset.encoding,
+          screenShareSimulcastLayers: layers,
+          degradationPreference: "maintain-resolution",
+        },
+      );
       this.attachLocalVideo(Track.Source.ScreenShare, "Screen share");
+      localStorage.setItem("mhtalk.share-quality", quality);
+      await this.publishMediaQuality("screen", quality);
       this.update({
         screenShareEnabled: true,
         screenShareAudioEnabled: includeSystemAudio,
@@ -226,19 +292,111 @@ export class RoomSession {
   }
 
   async setProfile(profile: UserProfile) {
-    this.profile = profile;
-    localStorage.setItem("mhtalk.profile.name", profile.name);
-    localStorage.setItem("mhtalk.profile.bio", profile.bio);
-    localStorage.setItem("mhtalk.profile.avatar", profile.avatar);
-    if (this.room)
-      await this.room.localParticipant.publishData(
-        new TextEncoder().encode(JSON.stringify({ type: "profile", profile })),
-        { reliable: true, topic: "mhtalk.chat" },
-      );
+    this.profile = sanitizeProfile(profile);
+    localStorage.setItem("mhtalk.profile.name", this.profile.name);
+    localStorage.setItem("mhtalk.profile.bio", this.profile.bio);
+    localStorage.setItem("mhtalk.profile.avatar", this.profile.avatar);
+    await this.publishProfile();
   }
 
   getProfile() {
     return this.profile;
+  }
+
+  getEventSoundSettings(): EventSoundSettings {
+    return {
+      presence: localStorage.getItem("mhtalk.sound.presence") !== "false",
+      media: localStorage.getItem("mhtalk.sound.media") !== "false",
+    };
+  }
+
+  setEventSoundEnabled(kind: EventSoundKind, enabled: boolean) {
+    localStorage.setItem(`mhtalk.sound.${kind}`, String(enabled));
+  }
+
+  async watchParticipantMedia(
+    identity: string,
+    source: "camera" | "screen",
+    requestedQuality: MediaQuality = "medium",
+  ) {
+    const participant = this.room?.remoteParticipants.get(identity);
+    if (!participant) return false;
+    const publication = participant.getTrackPublication(
+      source === "camera" ? Track.Source.Camera : Track.Source.ScreenShare,
+    );
+    if (!(publication instanceof RemoteTrackPublication)) return false;
+    const maximum = this.getParticipantMaximumQuality(identity, source);
+    const quality = capQuality(requestedQuality, maximum);
+    this.selectedRemoteQuality.set(`${identity}:${source}`, quality);
+    this.watchedMedia.add(`${identity}:${source}`);
+    publication.setVideoQuality(
+      qualityValue[quality] as Parameters<
+        RemoteTrackPublication["setVideoQuality"]
+      >[0],
+    );
+    publication.setSubscribed(true);
+    if (source === "screen") {
+      const audio = participant.getTrackPublication(
+        Track.Source.ScreenShareAudio,
+      );
+      if (audio instanceof RemoteTrackPublication) audio.setSubscribed(true);
+    }
+    return true;
+  }
+
+  stopWatchingParticipantMedia(
+    identity: string,
+    source: "camera" | "screen",
+  ) {
+    this.watchedMedia.delete(`${identity}:${source}`);
+    const participant = this.room?.remoteParticipants.get(identity);
+    const publication = participant?.getTrackPublication(
+      source === "camera" ? Track.Source.Camera : Track.Source.ScreenShare,
+    );
+    if (publication instanceof RemoteTrackPublication)
+      publication.setSubscribed(false);
+    if (source === "screen") {
+      const audio = participant?.getTrackPublication(
+        Track.Source.ScreenShareAudio,
+      );
+      if (audio instanceof RemoteTrackPublication) audio.setSubscribed(false);
+    }
+    this.detachParticipantSource(identity, source);
+  }
+
+  setParticipantVideoQuality(
+    identity: string,
+    source: "camera" | "screen",
+    requestedQuality: MediaQuality,
+  ) {
+    const participant = this.room?.remoteParticipants.get(identity);
+    const publication = participant?.getTrackPublication(
+      source === "camera" ? Track.Source.Camera : Track.Source.ScreenShare,
+    );
+    if (!(publication instanceof RemoteTrackPublication)) return;
+    const quality = capQuality(
+      requestedQuality,
+      this.getParticipantMaximumQuality(identity, source),
+    );
+    this.selectedRemoteQuality.set(`${identity}:${source}`, quality);
+    publication.setVideoQuality(
+      qualityValue[quality] as Parameters<
+        RemoteTrackPublication["setVideoQuality"]
+      >[0],
+    );
+  }
+
+  getParticipantMaximumQuality(
+    identity: string,
+    source: "camera" | "screen",
+  ): MediaQuality {
+    const announced = this.remoteMediaQuality.get(identity)?.[source];
+    if (announced) return announced;
+    const participant = this.room?.remoteParticipants.get(identity);
+    const publication = participant?.getTrackPublication(
+      source === "camera" ? Track.Source.Camera : Track.Source.ScreenShare,
+    );
+    return inferQuality(publication?.dimensions?.height);
   }
 
   async setDevice(kind: MediaDeviceKind, deviceId: string) {
@@ -373,31 +531,81 @@ export class RoomSession {
       this.update({
         localSpeaking: room.localParticipant.isSpeaking,
         participants: [...room.remoteParticipants.values()].map(
-          (participant) => ({
+          (participant) => {
+            const camera = participant.getTrackPublication(Track.Source.Camera);
+            const screen = participant.getTrackPublication(
+              Track.Source.ScreenShare,
+            );
+            return {
             identity: participant.identity,
             speaking: participant.isSpeaking,
             microphoneEnabled: participant.isMicrophoneEnabled,
-            cameraEnabled: participant.isCameraEnabled,
-            screenShareEnabled: participant.isScreenShareEnabled,
+            cameraEnabled: Boolean(camera && !camera.isMuted),
+            screenShareEnabled: Boolean(screen && !screen.isMuted),
+            cameraQuality: this.getParticipantMaximumQuality(
+              participant.identity,
+              "camera",
+            ),
+            screenShareQuality: this.getParticipantMaximumQuality(
+              participant.identity,
+              "screen",
+            ),
             ...this.remoteProfiles.get(participant.identity),
-          }),
+            };
+          },
         ),
       });
     };
     room.on(RoomEvent.ParticipantConnected, () => {
+      this.playEventTone("join");
       syncParticipants();
       // A newcomer did not receive profile packets sent before they joined.
       // Re-announce the local profile so names, avatars and bios converge.
       void this.setProfile(this.profile);
+      void this.requestProfiles();
     });
     room.on(RoomEvent.ParticipantDisconnected, (participant) => {
+      this.playEventTone("leave");
       this.detachParticipantSource(participant.identity, "camera");
       this.detachParticipantSource(participant.identity, "screen");
       this.remoteVoiceAudio.delete(participant.identity);
       this.remoteStreamAudio.delete(participant.identity);
+      this.remoteProfiles.delete(participant.identity);
+      this.remoteMediaQuality.delete(participant.identity);
+      syncParticipants();
+    });
+    room.on(RoomEvent.TrackPublished, (publication, participant) => {
+      const source =
+        publication.source === Track.Source.Camera
+          ? "camera"
+          : publication.source === Track.Source.ScreenShare ||
+              publication.source === Track.Source.ScreenShareAudio
+            ? "screen"
+            : null;
+      if (
+        publication.source === Track.Source.Microphone ||
+        (source && this.watchedMedia.has(`${participant.identity}:${source}`))
+      ) {
+        publication.setSubscribed(true);
+      } else {
+        publication.setSubscribed(false);
+      }
+      if (
+        publication.source === Track.Source.Camera ||
+        publication.source === Track.Source.ScreenShare
+      ) {
+        this.playEventTone("media-start");
+      }
       syncParticipants();
     });
     room.on(RoomEvent.ActiveSpeakersChanged, syncParticipants);
+    room.on(RoomEvent.ConnectionQualityChanged, (quality, participant) => {
+      if (participant !== room.localParticipant) return;
+      this.update({
+        connectionQuality: quality,
+        estimatedDropPercent: estimatedDropPercent(quality),
+      });
+    });
     room.on(RoomEvent.LocalTrackUnpublished, (publication) => {
       if (publication.source === Track.Source.Camera) {
         this.detachMedia("local-camera");
@@ -465,8 +673,10 @@ export class RoomSession {
       syncParticipants();
     });
     room.on(RoomEvent.TrackUnpublished, (publication) => {
-      if (publication.kind !== Track.Kind.Video) return;
-      this.detachMedia(`remote-${publication.trackSid}`);
+      if (publication.kind === Track.Kind.Video) {
+        this.detachMedia(`remote-${publication.trackSid}`);
+        this.playEventTone("media-stop");
+      }
       syncParticipants();
     });
     room.on(RoomEvent.TrackMuted, (publication, participant) => {
@@ -509,6 +719,8 @@ export class RoomSession {
           createdAt?: number;
           typing?: boolean;
           profile?: UserProfile;
+          source?: "camera" | "screen";
+          quality?: MediaQuality;
           replyTo?: ChatMessage["replyTo"];
         };
         if (event.type === "chat" && event.id && event.body && event.createdAt)
@@ -537,17 +749,29 @@ export class RoomSession {
             body: undefined,
             attachment: undefined,
           });
+        if (event.type === "profile-request") void this.publishProfile();
         if (event.type === "profile" && event.profile) {
-          this.remoteProfiles.set(participant.identity, event.profile);
+          const remoteProfile = sanitizeProfile(event.profile, participant.identity);
+          this.remoteProfiles.set(participant.identity, remoteProfile);
           this.chat = {
             ...this.chat,
             messages: this.chat.messages.map((message) =>
               message.senderIdentity === participant.identity
-                ? { ...message, sender: event.profile!.name }
+                ? { ...message, sender: remoteProfile.name }
                 : message,
             ),
           };
           this.emitChat();
+          syncParticipants();
+        }
+        if (
+          event.type === "media-quality" &&
+          (event.source === "camera" || event.source === "screen") &&
+          isMediaQuality(event.quality)
+        ) {
+          const qualities = this.remoteMediaQuality.get(participant.identity) || {};
+          qualities[event.source] = event.quality;
+          this.remoteMediaQuality.set(participant.identity, qualities);
           syncParticipants();
         }
       } catch {
@@ -592,14 +816,14 @@ export class RoomSession {
       const source = TokenSource.developmentTokenServer(developmentServerId);
       const details = await source.fetch({ roomName });
       await room.connect(details.serverUrl, details.participantToken, {
-        autoSubscribe: true,
+        autoSubscribe: false,
       });
     } else {
       const liveKitUrl = import.meta.env.VITE_LIVEKIT_URL;
       if (!liveKitUrl) throw new Error("LiveKit URL is missing");
       const credentials = await this.fetchToken(roomName);
       await room.connect(liveKitUrl, credentials.token, {
-        autoSubscribe: true,
+        autoSubscribe: false,
       });
       roomName = credentials.roomName;
     }
@@ -629,18 +853,102 @@ export class RoomSession {
       );
     }
     this.update({ state: "connected", roomName });
+    this.subscribeToRemoteVoice();
     if (this.snapshot.cameraEnabled)
       this.attachLocalVideo(Track.Source.Camera, "Camera");
-    void this.setProfile(this.profile);
+    void this.publishProfile();
+    void this.requestProfiles();
     syncParticipants();
+  }
+
+  private subscribeToRemoteVoice() {
+    this.room?.remoteParticipants.forEach((participant) => {
+      participant.trackPublications.forEach((publication) => {
+        if (!(publication instanceof RemoteTrackPublication)) return;
+        publication.setSubscribed(publication.source === Track.Source.Microphone);
+      });
+    });
+  }
+
+  private async publishProfile() {
+    if (!this.room) return;
+    const safe = sanitizeProfile(this.profile);
+    const avatar =
+      safe.avatar.startsWith("data:image/") &&
+      new TextEncoder().encode(safe.avatar).byteLength <= 11_000
+        ? safe.avatar
+        : "";
+    await this.room.localParticipant.publishData(
+      new TextEncoder().encode(
+        JSON.stringify({ type: "profile", profile: { ...safe, avatar } }),
+      ),
+      { reliable: true, topic: "mhtalk.chat" },
+    );
+  }
+
+  private async requestProfiles() {
+    if (!this.room) return;
+    await this.room.localParticipant.publishData(
+      new TextEncoder().encode(JSON.stringify({ type: "profile-request" })),
+      { reliable: true, topic: "mhtalk.chat" },
+    );
+  }
+
+  private async publishMediaQuality(
+    source: "camera" | "screen",
+    quality: MediaQuality,
+  ) {
+    if (!this.room) return;
+    await this.room.localParticipant.publishData(
+      new TextEncoder().encode(
+        JSON.stringify({ type: "media-quality", source, quality }),
+      ),
+      { reliable: true, topic: "mhtalk.chat" },
+    );
+  }
+
+  private playEventTone(kind: "join" | "leave" | "media-start" | "media-stop") {
+    const setting = kind === "join" || kind === "leave" ? "presence" : "media";
+    if (!this.getEventSoundSettings()[setting]) return;
+    try {
+      const context = this.toneContext || new AudioContext();
+      this.toneContext = context;
+      void context.resume();
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      const start = context.currentTime + 0.01;
+      const [from, to, duration] =
+        kind === "join"
+          ? [480, 720, 0.14]
+          : kind === "leave"
+            ? [620, 390, 0.16]
+            : kind === "media-start"
+              ? [720, 980, 0.11]
+              : [520, 340, 0.13];
+      oscillator.type = "sine";
+      oscillator.frequency.setValueAtTime(from, start);
+      oscillator.frequency.exponentialRampToValueAtTime(to, start + duration);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.045, start + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start(start);
+      oscillator.stop(start + duration + 0.02);
+    } catch {
+      /* Audio can be blocked until the first user gesture. */
+    }
   }
 
   private async fetchToken(roomName: string) {
     const endpoint = import.meta.env.VITE_LIVEKIT_TOKEN_ENDPOINT;
     if (!endpoint) throw new Error("Token endpoint is missing");
+    const accountToken = accountSession.getAccessToken();
     const response = await fetch(endpoint, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(accountToken ? { authorization: `Bearer ${accountToken}` } : {}),
+      },
       body: JSON.stringify({ roomName, inviteCode: this.inviteCode }),
     });
     if (!response.ok) throw new Error("Token service unavailable");
@@ -881,6 +1189,55 @@ function attachmentKind(
   if (mimeType.startsWith("video/")) return "video";
   if (mimeType.startsWith("audio/")) return "audio";
   return "file";
+}
+
+function isMediaQuality(value: unknown): value is MediaQuality {
+  return value === "low" || value === "medium" || value === "high";
+}
+
+function capQuality(requested: MediaQuality, maximum: MediaQuality) {
+  return qualityRank[requested] <= qualityRank[maximum] ? requested : maximum;
+}
+
+function inferQuality(height?: number): MediaQuality {
+  if (!height) return "high";
+  if (height <= 480) return "low";
+  if (height <= 900) return "medium";
+  return "high";
+}
+
+function estimatedDropPercent(quality: ConnectionQuality) {
+  if (quality === ConnectionQuality.Excellent) return 1;
+  if (quality === ConnectionQuality.Good) return 5;
+  if (quality === ConnectionQuality.Poor) return 24;
+  if (quality === ConnectionQuality.Lost) return 100;
+  return null;
+}
+
+function sanitizeProfile(
+  profile: UserProfile,
+  fallbackIdentity = "Me",
+): UserProfile {
+  const name =
+    typeof profile?.name === "string"
+      ? profile.name.trim().slice(0, 48)
+      : "";
+  const bio =
+    typeof profile?.bio === "string" ? profile.bio.trim().slice(0, 240) : "";
+  let avatar = typeof profile?.avatar === "string" ? profile.avatar : "";
+  if (
+    avatar &&
+    !avatar.startsWith("data:image/") &&
+    !/^[\p{L}\p{N}]{1,3}$/u.test(avatar)
+  ) {
+    avatar = "";
+  }
+  if (new TextEncoder().encode(avatar).byteLength > 11_000) avatar = "";
+  return {
+    name: name || fallbackIdentity.slice(0, 16) || "Member",
+    bio,
+    avatar: avatar || (name || fallbackIdentity || "M")[0].toUpperCase(),
+  };
 }
 
 export const roomSession = new RoomSession();

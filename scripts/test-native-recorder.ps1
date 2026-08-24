@@ -1,8 +1,9 @@
 $ErrorActionPreference = "Stop"
-$ffmpeg = Join-Path $env:APPDATA "com.mhlko.talk.remake\recorder-tools\ffmpeg.exe"
+$ffmpeg = Join-Path $env:APPDATA "com.mhlko.talk\recorder-tools\ffmpeg.exe"
 $temporaryMkv = Join-Path $env:TEMP "mhtalk-native-engine-test.recording.mkv"
 $finalMp4 = Join-Path $env:TEMP "mhtalk-native-engine-test.mp4"
-Remove-Item -LiteralPath $temporaryMkv, $finalMp4 -Force -ErrorAction SilentlyContinue
+$probeLog = Join-Path $env:TEMP "mhtalk-native-engine-test.probe.log"
+Remove-Item -LiteralPath $temporaryMkv, $finalMp4, $probeLog -Force -ErrorAction SilentlyContinue
 $port = 49327
 $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $startInfo.FileName = $ffmpeg
@@ -38,6 +39,7 @@ if (-not $process.WaitForExit(10000)) {
 }
 & $ffmpeg -y -hide_banner -loglevel error -i $temporaryMkv -map 0 -c copy -movflags +faststart $finalMp4
 if ($LASTEXITCODE -ne 0) { throw "MP4 remux failed" }
-& $ffmpeg -hide_banner -i $finalMp4 2>&1 | Select-String "Video:|Audio:|Duration:"
+$probeProcess = Start-Process -FilePath $ffmpeg -ArgumentList "-hide_banner", "-i", $finalMp4 -WindowStyle Hidden -RedirectStandardError $probeLog -PassThru -Wait
+Get-Content -LiteralPath $probeLog | Select-String "Video:|Audio:|Duration:"
 Get-Item -LiteralPath $temporaryMkv, $finalMp4 | Select-Object Name, Length
-Remove-Item -LiteralPath $temporaryMkv, $finalMp4 -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $temporaryMkv, $finalMp4, $probeLog -Force -ErrorAction SilentlyContinue

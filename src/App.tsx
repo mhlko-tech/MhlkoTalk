@@ -5,10 +5,12 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type {
   ChatMessage,
   ChatSnapshot,
+  MediaQuality,
   SessionSnapshot,
   UserProfile,
 } from "./core/types";
 import { roomSession } from "./services/roomSession";
+import { accountSession, type AccountState } from "./services/accountSession";
 import {
   startAutomaticUpdater,
   type UpdateActivity,
@@ -22,11 +24,24 @@ const initial: SessionSnapshot = {
   cameraEnabled: false,
   screenShareEnabled: false,
   screenShareAudioEnabled: false,
+  connectionQuality: "unknown",
+  estimatedDropPercent: null,
   recoveryAttempt: 0,
   lastRecoveryMs: null,
   participants: [],
 };
 const emptyChat: ChatSnapshot = { messages: [], typing: [] };
+const mediaQualityLabels: Record<MediaQuality, string> = {
+  low: "Low · 360p",
+  medium: "Medium · 720p",
+  high: "High · 1080p",
+};
+const mediaQualityOrder: MediaQuality[] = ["low", "medium", "high"];
+
+function availableQualities(maximum: MediaQuality) {
+  const maximumIndex = mediaQualityOrder.indexOf(maximum);
+  return mediaQualityOrder.slice(0, maximumIndex + 1);
+}
 const emojiList = [
   "😀",
   "😂",
@@ -112,6 +127,18 @@ export function App() {
   const [pendingAttachmentUrl, setPendingAttachmentUrl] = useState("");
   const [emojiOpen, setEmojiOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [shareQuality, setShareQuality] = useState<MediaQuality>(() => {
+    const stored = localStorage.getItem("mhtalk.share-quality");
+    return stored === "low" || stored === "high" ? stored : "medium";
+  });
+  const [shareSystemAudio, setShareSystemAudio] = useState(true);
+  const [eventSounds, setEventSounds] = useState(() =>
+    roomSession.getEventSoundSettings(),
+  );
+  const [accountState, setAccountState] = useState<AccountState>(() =>
+    accountSession.getState(),
+  );
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
@@ -181,6 +208,7 @@ export function App() {
 
   useEffect(() => roomSession.subscribe(setSession), []);
   useEffect(() => roomSession.subscribeChat(setChat), []);
+  useEffect(() => accountSession.subscribe(setAccountState), []);
   useEffect(() => roomSession.setRemoteVolume(remoteVolume / 100), []);
   useEffect(() => startAutomaticUpdater(setUpdateActivity), []);
   useEffect(() => {
@@ -933,6 +961,10 @@ export function App() {
                 bio={profile.bio}
                 speaking={session.localSpeaking}
                 microphoneEnabled={session.microphoneEnabled}
+                cameraEnabled={session.cameraEnabled}
+                screenShareEnabled={session.screenShareEnabled}
+                cameraQuality="high"
+                screenShareQuality={shareQuality}
                 local
                 onProfile={setViewProfile}
               />
@@ -948,6 +980,10 @@ export function App() {
                   bio={participant.bio || ""}
                   speaking={participant.speaking}
                   microphoneEnabled={participant.microphoneEnabled}
+                  cameraEnabled={participant.cameraEnabled}
+                  screenShareEnabled={participant.screenShareEnabled}
+                  cameraQuality={participant.cameraQuality}
+                  screenShareQuality={participant.screenShareQuality}
                   onProfile={setViewProfile}
                 />
               ))}
@@ -1009,10 +1045,9 @@ export function App() {
             className={`${session.screenShareEnabled ? "control enabled" : "control"} icon-control`}
             disabled={!active || roomTransitioning}
             onClick={() =>
-              roomSession.setScreenShareEnabled(
-                !session.screenShareEnabled,
-                true,
-              )
+              session.screenShareEnabled
+                ? roomSession.setScreenShareEnabled(false)
+                : setShareDialogOpen(true)
             }
             title={session.screenShareEnabled ? "Stop sharing" : "Share screen"}
             aria-label={
@@ -1471,6 +1506,101 @@ export function App() {
             >
               {testingSpeaker ? "Playing test sound…" : "Test speaker"}
             </button>
+            <div className="settings-section">
+              <h3>Event sounds</h3>
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={eventSounds.presence}
+                  onChange={(event) => {
+                    const presence = event.target.checked;
+                    setEventSounds((current) => ({ ...current, presence }));
+                    roomSession.setEventSoundEnabled("presence", presence);
+                  }}
+                />
+                Join and leave sounds
+              </label>
+              <label className="settings-check">
+                <input
+                  type="checkbox"
+                  checked={eventSounds.media}
+                  onChange={(event) => {
+                    const media = event.target.checked;
+                    setEventSounds((current) => ({ ...current, media }));
+                    roomSession.setEventSoundEnabled("media", media);
+                  }}
+                />
+                Camera and stream sounds
+              </label>
+            </div>
+            <div className="settings-section account-foundation">
+              <h3>Mangatak account</h3>
+              <p>
+                {accountState.status === "signed-in"
+                  ? `Signed in as ${accountState.account.displayName}`
+                  : accountState.status === "unavailable"
+                    ? "Account foundation is ready. Waiting for the official Mangatak login service."
+                    : "Mangatak sign-in service is configured."}
+              </p>
+            </div>
+          </section>
+        </div>
+      )}
+      {shareDialogOpen && (
+        <div className="modal-backdrop">
+          <section className="private-modal share-options-modal">
+            <button
+              className="modal-close"
+              onClick={() => setShareDialogOpen(false)}
+            >
+              ×
+            </button>
+            <h2>Start screen share</h2>
+            <label>
+              Broadcast quality
+              <select
+                value={shareQuality}
+                onChange={(event) =>
+                  setShareQuality(event.target.value as MediaQuality)
+                }
+              >
+                {mediaQualityOrder.map((quality) => (
+                  <option key={quality} value={quality}>
+                    {mediaQualityLabels[quality]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                checked={shareSystemAudio}
+                onChange={(event) => setShareSystemAudio(event.target.checked)}
+              />
+              Share computer audio
+            </label>
+            <div className={`network-advice ${session.connectionQuality}`}>
+              <strong>Network: {session.connectionQuality}</strong>
+              <span>
+                Estimated drops: {session.estimatedDropPercent ?? "calculating"}%
+              </span>
+              {session.connectionQuality === "poor" && (
+                <small>Low or Medium quality is recommended.</small>
+              )}
+            </div>
+            <button
+              className="primary modal-create"
+              onClick={async () => {
+                await roomSession.setScreenShareEnabled(
+                  true,
+                  shareSystemAudio,
+                  shareQuality,
+                );
+                setShareDialogOpen(false);
+              }}
+            >
+              Choose screen and start
+            </button>
           </section>
         </div>
       )}
@@ -1753,6 +1883,10 @@ function ParticipantMediaCard({
   bio,
   speaking,
   microphoneEnabled,
+  cameraEnabled,
+  screenShareEnabled,
+  cameraQuality,
+  screenShareQuality,
   local = false,
   onProfile,
 }: {
@@ -1762,10 +1896,73 @@ function ParticipantMediaCard({
   bio: string;
   speaking: boolean;
   microphoneEnabled: boolean;
+  cameraEnabled: boolean;
+  screenShareEnabled: boolean;
+  cameraQuality: MediaQuality;
+  screenShareQuality: MediaQuality;
   local?: boolean;
   onProfile: (profile: UserProfile) => void;
 }) {
   const hostIdentity = encodeURIComponent(identity);
+  const [watchingCamera, setWatchingCamera] = useState(false);
+  const [watchingScreen, setWatchingScreen] = useState(false);
+  const [selectedCameraQuality, setSelectedCameraQuality] = useState<MediaQuality>(
+    cameraQuality === "low" ? "low" : "medium",
+  );
+  const [selectedScreenQuality, setSelectedScreenQuality] = useState<MediaQuality>(
+    screenShareQuality === "low" ? "low" : "medium",
+  );
+
+  useEffect(() => {
+    if (!cameraEnabled && watchingCamera) {
+      roomSession.stopWatchingParticipantMedia(identity, "camera");
+      setWatchingCamera(false);
+    }
+  }, [cameraEnabled, identity, watchingCamera]);
+  useEffect(() => {
+    if (!screenShareEnabled && watchingScreen) {
+      roomSession.stopWatchingParticipantMedia(identity, "screen");
+      setWatchingScreen(false);
+    }
+  }, [identity, screenShareEnabled, watchingScreen]);
+  useEffect(() => {
+    if (!availableQualities(cameraQuality).includes(selectedCameraQuality))
+      setSelectedCameraQuality(cameraQuality);
+  }, [cameraQuality, selectedCameraQuality]);
+  useEffect(() => {
+    if (!availableQualities(screenShareQuality).includes(selectedScreenQuality))
+      setSelectedScreenQuality(screenShareQuality);
+  }, [screenShareQuality, selectedScreenQuality]);
+  useEffect(
+    () => () => {
+      if (!local) {
+        roomSession.stopWatchingParticipantMedia(identity, "camera");
+        roomSession.stopWatchingParticipantMedia(identity, "screen");
+      }
+    },
+    [identity, local],
+  );
+
+  const toggleMedia = async (source: "camera" | "screen") => {
+    const watching = source === "camera" ? watchingCamera : watchingScreen;
+    const quality =
+      source === "camera" ? selectedCameraQuality : selectedScreenQuality;
+    if (watching) {
+      roomSession.stopWatchingParticipantMedia(identity, source);
+      if (source === "camera") setWatchingCamera(false);
+      else setWatchingScreen(false);
+      return;
+    }
+    const opened = await roomSession.watchParticipantMedia(
+      identity,
+      source,
+      quality,
+    );
+    if (opened) {
+      if (source === "camera") setWatchingCamera(true);
+      else setWatchingScreen(true);
+    }
+  };
   return (
     <article className="participant-card">
       <button
@@ -1783,6 +1980,66 @@ function ParticipantMediaCard({
           {microphoneEnabled ? "🎙️" : "🔇"}
         </i>
       </button>
+      {!local && (cameraEnabled || screenShareEnabled) && (
+        <div className="participant-media-controls">
+          {cameraEnabled && (
+            <div>
+              <button onClick={() => void toggleMedia("camera")}>
+                {watchingCamera ? "Hide camera" : "Watch camera"}
+              </button>
+              {watchingCamera && (
+                <select
+                  aria-label="Camera quality"
+                  value={selectedCameraQuality}
+                  onChange={(event) => {
+                    const quality = event.target.value as MediaQuality;
+                    setSelectedCameraQuality(quality);
+                    roomSession.setParticipantVideoQuality(
+                      identity,
+                      "camera",
+                      quality,
+                    );
+                  }}
+                >
+                  {availableQualities(cameraQuality).map((quality) => (
+                    <option key={quality} value={quality}>
+                      {mediaQualityLabels[quality]}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+          {screenShareEnabled && (
+            <div>
+              <button onClick={() => void toggleMedia("screen")}>
+                {watchingScreen ? "Stop watching" : "Watch stream"}
+              </button>
+              {watchingScreen && (
+                <select
+                  aria-label="Stream quality"
+                  value={selectedScreenQuality}
+                  onChange={(event) => {
+                    const quality = event.target.value as MediaQuality;
+                    setSelectedScreenQuality(quality);
+                    roomSession.setParticipantVideoQuality(
+                      identity,
+                      "screen",
+                      quality,
+                    );
+                  }}
+                >
+                  {availableQualities(screenShareQuality).map((quality) => (
+                    <option key={quality} value={quality}>
+                      {mediaQualityLabels[quality]}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <div
         id={`media-host-${hostIdentity}-camera`}
         className="participant-media-host"

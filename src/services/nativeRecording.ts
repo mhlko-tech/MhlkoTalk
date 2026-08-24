@@ -48,6 +48,8 @@ export class NativeScreenRecording {
   private silentOutput: GainNode | null = null;
   private systemGain: GainNode | null = null;
   private microphoneGain: GainNode | null = null;
+  private systemAnalyser: AnalyserNode | null = null;
+  private microphoneAnalyser: AnalyserNode | null = null;
   private microphoneStream: MediaStream | null = null;
   private writes = Promise.resolve();
   private started = false;
@@ -88,14 +90,30 @@ export class NativeScreenRecording {
   }
 
   updateMix(settings: RecordingSettings) {
+    const now = this.context?.currentTime || 0;
     if (this.systemGain)
-      this.systemGain.gain.value = settings.includeAudio
-        ? Math.max(0, Math.min(2, settings.systemVolume))
-        : 0;
+      this.systemGain.gain.setTargetAtTime(
+        settings.includeAudio
+          ? Math.max(0, Math.min(2, settings.systemVolume))
+          : 0,
+        now,
+        0.012,
+      );
     if (this.microphoneGain)
-      this.microphoneGain.gain.value = settings.includeMic
-        ? Math.max(0, Math.min(2, settings.micVolume))
-        : 0;
+      this.microphoneGain.gain.setTargetAtTime(
+        settings.includeMic
+          ? Math.max(0, Math.min(2, settings.micVolume))
+          : 0,
+        now,
+        0.012,
+      );
+  }
+
+  getMixLevels() {
+    return {
+      system: analyserLevel(this.systemAnalyser),
+      microphone: analyserLevel(this.microphoneAnalyser),
+    };
   }
 
   status() {
@@ -118,12 +136,20 @@ export class NativeScreenRecording {
     display: MediaStream,
   ) {
     const context = new AudioContext({ sampleRate: 48_000 });
+    await context.resume();
     const processor = context.createScriptProcessor(4096, 2, 2);
     if (settings.includeAudio && display.getAudioTracks().length) {
       const gain = context.createGain();
       gain.gain.value = Math.max(0, Math.min(2, settings.systemVolume));
-      context.createMediaStreamSource(display).connect(gain).connect(processor);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      context
+        .createMediaStreamSource(display)
+        .connect(gain)
+        .connect(analyser)
+        .connect(processor);
       this.systemGain = gain;
+      this.systemAnalyser = analyser;
     }
     if (settings.includeMic) {
       this.microphoneStream = await navigator.mediaDevices.getUserMedia({
@@ -137,16 +163,24 @@ export class NativeScreenRecording {
       });
       const gain = context.createGain();
       gain.gain.value = Math.max(0, Math.min(2, settings.micVolume));
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
       context
         .createMediaStreamSource(this.microphoneStream)
         .connect(gain)
+        .connect(analyser)
         .connect(processor);
       this.microphoneGain = gain;
+      this.microphoneAnalyser = analyser;
     }
     const silentOutput = context.createGain();
     silentOutput.gain.value = 0;
     processor.connect(silentOutput).connect(context.destination);
     processor.onaudioprocess = (event) => {
+      // The graph starts before Rust/FFmpeg finishes opening its TCP input.
+      // Dropping those early frames prevents one rejected IPC call from
+      // poisoning every subsequent audio write.
+      if (!this.started) return;
       const left = event.inputBuffer.getChannelData(0);
       const right =
         event.inputBuffer.numberOfChannels > 1
@@ -157,9 +191,10 @@ export class NativeScreenRecording {
         samples[index * 2] = floatToInt16(left[index]);
         samples[index * 2 + 1] = floatToInt16(right[index]);
       }
-      this.writes = this.writes.then(() =>
-        invoke("append_native_recording_audio", { samples }),
-      );
+      this.writes = this.writes
+        .catch(() => undefined)
+        .then(() => invoke<void>("append_native_recording_audio", { samples }))
+        .catch(() => undefined);
     };
     this.context = context;
     this.processor = processor;
@@ -171,6 +206,8 @@ export class NativeScreenRecording {
     this.silentOutput?.disconnect();
     this.systemGain?.disconnect();
     this.microphoneGain?.disconnect();
+    this.systemAnalyser?.disconnect();
+    this.microphoneAnalyser?.disconnect();
     this.microphoneStream?.getTracks().forEach((track) => track.stop());
     void this.context?.close();
     this.context = null;
@@ -178,6 +215,8 @@ export class NativeScreenRecording {
     this.silentOutput = null;
     this.systemGain = null;
     this.microphoneGain = null;
+    this.systemAnalyser = null;
+    this.microphoneAnalyser = null;
     this.microphoneStream = null;
     this.writes = Promise.resolve();
   }
@@ -186,6 +225,16 @@ export class NativeScreenRecording {
 function floatToInt16(value: number) {
   const limited = Math.max(-1, Math.min(1, value));
   return Math.round(limited < 0 ? limited * 32768 : limited * 32767);
+}
+
+function analyserLevel(analyser: AnalyserNode | null) {
+  if (!analyser) return 0;
+  const samples = new Float32Array(analyser.fftSize);
+  analyser.getFloatTimeDomainData(samples);
+  let energy = 0;
+  for (const sample of samples) energy += sample * sample;
+  const rms = Math.sqrt(energy / samples.length);
+  return Math.min(100, Math.round(rms * 240));
 }
 
 function nativeSourceSettings(
