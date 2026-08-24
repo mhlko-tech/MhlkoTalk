@@ -2,16 +2,19 @@ package com.mhlko.talk.ui
 
 import android.Manifest
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.media.projection.MediaProjectionManager
+import android.media.projection.MediaProjectionConfig
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.net.Uri
+import android.util.Rational
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -62,18 +65,34 @@ import com.mhlko.talk.data.MemberUi
 import com.mhlko.talk.data.SessionUiState
 import com.mhlko.talk.data.UserProfile
 import com.mhlko.talk.data.ChatMessageUi
+import com.mhlko.talk.data.ShareQuality
 import com.mhlko.talk.ui.theme.*
 import io.livekit.android.room.track.Track
 import io.livekit.android.room.track.VideoTrack
+import io.livekit.android.room.track.VideoQuality
 import io.livekit.android.renderer.SurfaceViewRenderer
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 
+object PipController {
+    var inPictureInPicture by mutableStateOf(false)
+    var track by mutableStateOf<VideoTrack?>(null)
+}
+
 @Composable
 fun MHTalkApp(session: SessionViewModel = viewModel()) {
     val state by session.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    if (PipController.inPictureInPicture) {
+        PipVideoScreen(PipController.track, session)
+        return
+    }
+    var pendingShareOptions by remember { mutableStateOf<ShareOptions?>(null) }
+    if (!state.launchReady) {
+        LaunchScreen()
+        return
+    }
     var permissionAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -94,7 +113,7 @@ fun MHTalkApp(session: SessionViewModel = viewModel()) {
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            session.startScreenShare(result.data!!)
+            pendingShareOptions?.let { options -> session.startScreenShare(result.data!!, options.includeMicrophone, options.quality) }
         }
     }
     fun withCallPermission(action: () -> Unit) {
@@ -112,6 +131,7 @@ fun MHTalkApp(session: SessionViewModel = viewModel()) {
     var showProfile by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showHelp by remember { mutableStateOf(false) }
+    var shareOptionsOpen by remember { mutableStateOf(false) }
     var pendingProfilePhoto by remember { mutableStateOf<Uri?>(null) }
     val profilePhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) pendingProfilePhoto = uri
@@ -161,8 +181,7 @@ fun MHTalkApp(session: SessionViewModel = viewModel()) {
                         if (state.screenShareEnabled) {
                             session.stopScreenShare()
                         } else {
-                            val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                            screenShareLauncher.launch(manager.createScreenCaptureIntent())
+                            shareOptionsOpen = true
                         }
                     },
                 )
@@ -198,8 +217,25 @@ fun MHTalkApp(session: SessionViewModel = viewModel()) {
         onOutput = session::setOutputLevel,
         onTestSpeaker = session::testSpeaker,
         onSwitchCamera = session::switchCamera,
+        onMessageSounds = session::setMessageSounds,
+        onCameraSounds = session::setCameraSounds,
+        onScreenSounds = session::setScreenShareSounds,
+        onScreenPrivacy = session::setScreenSharePrivacy,
     )
     if (showHelp) HelpDialog(onDismiss = { showHelp = false })
+    if (shareOptionsOpen) ShareOptionsDialog(
+        onDismiss = { shareOptionsOpen = false },
+        onStart = { options ->
+            pendingShareOptions = options
+            shareOptionsOpen = false
+            val manager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val captureIntent = if (state.screenSharePrivacyEnabled && Build.VERSION.SDK_INT >= 34) {
+                // Lets Android offer single-app sharing, where system notifications are excluded.
+                manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
+            } else manager.createScreenCaptureIntent()
+            screenShareLauncher.launch(captureIntent)
+        },
+    )
     pendingProfilePhoto?.let { uri ->
         ProfileCropDialog(
             uri = uri,
@@ -230,7 +266,19 @@ fun MHTalkApp(session: SessionViewModel = viewModel()) {
         AlertDialog(
             onDismissRequest = session::clearPrivateCode,
             title = { Text("Private room created") },
-            text = { Column { Text("Send this code to your friend:", color = MHTalkMuted); Text(code, color = MHTalkPurple, fontWeight = FontWeight.Black, fontSize = 24.sp) } },
+            text = {
+                Column {
+                    Text("Send this code to your friend:", color = MHTalkMuted)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(code, color = MHTalkPurple, fontWeight = FontWeight.Black, fontSize = 24.sp, modifier = Modifier.weight(1f))
+                        IconButton(onClick = {
+                            context.getSystemService(ClipboardManager::class.java)
+                                .setPrimaryClip(ClipData.newPlainText("MHTalk private code", code))
+                            session.showNotice("Code copied")
+                        }) { Icon(Icons.Rounded.ContentCopy, "Copy code") }
+                    }
+                }
+            },
             confirmButton = { TextButton(session::clearPrivateCode) { Text("Done") } },
         )
     }
@@ -249,6 +297,33 @@ fun MHTalkApp(session: SessionViewModel = viewModel()) {
             text = { Text(notice) },
             confirmButton = { TextButton(session::dismissNotice) { Text("OK") } },
         )
+    }
+    state.updateVersion?.let { version ->
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("Update available") },
+            text = { Text("MHTalk $version is required to continue. Update now to use rooms and calls.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/mhlko-tech/MHTalk-Android/releases/latest")))
+                }) { Text("Update") }
+            },
+        )
+    }
+}
+
+@Composable
+private fun LaunchScreen() {
+    Box(Modifier.fillMaxSize().background(MHTalkBackground), contentAlignment = Alignment.Center) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(Modifier.size(108.dp).clip(RoundedCornerShape(30.dp)).background(Brush.linearGradient(listOf(MHTalkPurple, Color(0xFF40359D)))), contentAlignment = Alignment.Center) {
+                Text("M", color = Color.White, fontSize = 60.sp, fontWeight = FontWeight.Black)
+            }
+            Spacer(Modifier.height(18.dp))
+            Text("MHTalk", color = MHTalkText, fontWeight = FontWeight.ExtraBold, fontSize = 26.sp)
+            Spacer(Modifier.height(8.dp))
+            CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = MHTalkGreen)
+        }
     }
 }
 
@@ -357,6 +432,8 @@ private fun ActiveRoom(
     onScreenShare: () -> Unit,
 ) {
     var selectedMember by remember { mutableStateOf<MemberUi?>(null) }
+    var memberAvatarPreview by remember { mutableStateOf<String?>(null) }
+    var expandedMedia by remember { mutableStateOf<Set<String>>(emptySet()) }
     Column(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.weight(1f).padding(horizontal = 16.dp),
@@ -386,16 +463,32 @@ private fun ActiveRoom(
                 }
                 if (state.screenShareEnabled) {
                     Spacer(Modifier.height(8.dp))
-                    session.videoTrack(null, Track.Source.SCREEN_SHARE)?.let { VideoTile(it, session, "Your screen") }
+                    session.videoTrack(null, Track.Source.SCREEN_SHARE)?.let {
+                        VideoTile(it, session, "Your screen", isScreenShare = true)
+                    }
                 }
             }
             items(state.members, key = { it.identity }) { member ->
                 MemberRow(member, false, onClick = { selectedMember = it })
-                if (member.cameraEnabled) {
-                    session.videoTrack(member.identity, Track.Source.CAMERA)?.let { VideoTile(it, session, "${member.name}'s camera") }
-                }
-                if (member.screenShareEnabled) {
-                    session.videoTrack(member.identity, Track.Source.SCREEN_SHARE)?.let { VideoTile(it, session, "${member.name}'s screen") }
+                if (member.cameraEnabled || member.screenShareEnabled) {
+                    IconButton(
+                        onClick = {
+                            if (member.identity in expandedMedia) {
+                                session.stopWatchingMemberMedia(member.identity)
+                                expandedMedia -= member.identity
+                            } else {
+                                session.watchMemberMedia(member.identity)
+                                expandedMedia += member.identity
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Icon(if (member.identity in expandedMedia) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown, "Show media", tint = MHTalkGreen) }
+                    if (member.identity in expandedMedia) {
+                        if (member.cameraEnabled) session.videoTrack(member.identity, Track.Source.CAMERA)?.let { VideoTile(it, session, "${member.name}'s camera") }
+                        if (member.screenShareEnabled) session.videoTrack(member.identity, Track.Source.SCREEN_SHARE)?.let {
+                            VideoTile(it, session, "${member.name}'s screen", isScreenShare = true, member = member)
+                        }
+                    }
                 }
             }
         }
@@ -424,7 +517,7 @@ private fun ActiveRoom(
                             model = member.avatar,
                             contentDescription = member.name,
                             contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(110.dp).clip(CircleShape),
+                            modifier = Modifier.size(110.dp).clip(CircleShape).clickable { memberAvatarPreview = member.avatar },
                         )
                     }
                     Spacer(Modifier.height(14.dp))
@@ -468,12 +561,81 @@ private fun ActiveRoom(
             confirmButton = { TextButton({ selectedMember = null }) { Text("Close") } },
         )
     }
+    memberAvatarPreview?.let { avatar ->
+        androidx.compose.ui.window.Dialog(onDismissRequest = { memberAvatarPreview = null }) {
+            Box(Modifier.fillMaxWidth().background(Color.Black).padding(14.dp), contentAlignment = Alignment.Center) {
+                AsyncImage(model = avatar, contentDescription = "Profile photo", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().aspectRatio(1f))
+            }
+        }
+    }
+}
+
+private data class ShareOptions(val includeMicrophone: Boolean, val quality: ShareQuality)
+
+@Composable
+private fun ShareOptionsDialog(onDismiss: () -> Unit, onStart: (ShareOptions) -> Unit) {
+    var includeMic by remember { mutableStateOf(true) }
+    var quality by remember { mutableStateOf(ShareQuality.Medium) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Start screen share") },
+        text = {
+            Column {
+                Text("Audio", fontWeight = FontWeight.Bold)
+                Row(Modifier.fillMaxWidth().clickable { includeMic = true }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(includeMic, { includeMic = true })
+                    Text("Share with microphone")
+                }
+                Row(Modifier.fillMaxWidth().clickable { includeMic = false }, verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(!includeMic, { includeMic = false })
+                    Text("Share without microphone")
+                }
+                Spacer(Modifier.height(12.dp))
+                Text("Video quality", fontWeight = FontWeight.Bold)
+                ShareQuality.entries.forEach { option ->
+                    Row(Modifier.fillMaxWidth().clickable { quality = option }, verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(quality == option, { quality = option })
+                        Text(option.name)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton({ onStart(ShareOptions(includeMic, quality)) }) { Text("Continue") } },
+        dismissButton = { TextButton(onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable
-private fun VideoTile(track: VideoTrack, session: SessionViewModel, label: String) {
+private fun VideoTile(
+    track: VideoTrack,
+    session: SessionViewModel,
+    label: String,
+    isScreenShare: Boolean = false,
+    member: MemberUi? = null,
+) {
+    val context = LocalContext.current
+    var controlsVisible by remember(track) { mutableStateOf(isScreenShare) }
+    var fullScreen by remember(track) { mutableStateOf(false) }
+    var soundMenuOpen by remember(track) { mutableStateOf(false) }
+    var qualityMenuOpen by remember(track) { mutableStateOf(false) }
+    var userVolume by remember(member?.identity) { mutableIntStateOf(member?.userVolume ?: 100) }
+    var streamVolume by remember(member?.identity) { mutableIntStateOf(member?.streamVolume ?: 100) }
+    var aspectRatio by remember(track) { mutableFloatStateOf(16f / 9f) }
+
+    // Remote publications update their dimensions whenever Android rotates the shared display.
+    // Sampling this small piece of metadata keeps the Compose container in sync as well.
+    LaunchedEffect(track, member?.identity, isScreenShare) {
+        while (true) {
+            session.videoAspectRatio(member?.identity, if (isScreenShare) Track.Source.SCREEN_SHARE else Track.Source.CAMERA)
+                ?.let { aspectRatio = it }
+            delay(350)
+        }
+    }
+
     Surface(
-        modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
+        // Screen capture can switch between portrait and landscape while it is live.
+        // The renderer reports every frame-size/rotation change, so never force it into 16:9.
+        modifier = Modifier.fillMaxWidth().aspectRatio(aspectRatio.coerceIn(0.35f, 3f)),
         color = Color.Black,
         shape = RoundedCornerShape(18.dp),
     ) {
@@ -492,11 +654,144 @@ private fun VideoTile(track: VideoTrack, session: SessionViewModel, label: Strin
                     it.release()
                 },
             )
-            Text(
-                label,
-                modifier = Modifier.align(Alignment.BottomStart).background(Color(0x99000000)).padding(horizontal = 10.dp, vertical = 5.dp),
-                color = Color.White,
-                fontSize = 12.sp,
+            Box(
+                Modifier.fillMaxSize().clickable { if (isScreenShare) controlsVisible = !controlsVisible },
+            ) {
+                if (!isScreenShare || controlsVisible) {
+                    Text(
+                        label,
+                        modifier = Modifier.align(Alignment.BottomStart).background(Color(0x99000000)).padding(horizontal = 10.dp, vertical = 5.dp),
+                        color = Color.White,
+                        fontSize = 12.sp,
+                    )
+                }
+                if (isScreenShare && controlsVisible) {
+                    Row(
+                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    ) {
+                        if (member != null) {
+                            Box {
+                                IconButton(
+                                    onClick = { soundMenuOpen = true },
+                                    modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xB8000000)),
+                                ) { Icon(Icons.Rounded.MoreVert, "Audio controls") }
+                                DropdownMenu(soundMenuOpen, { soundMenuOpen = false }) {
+                                    Column(Modifier.width(260.dp).padding(16.dp)) {
+                                        Text("Audio controls", fontWeight = FontWeight.Bold)
+                                        Spacer(Modifier.height(10.dp))
+                                        Text("${member.name}'s voice · $userVolume%", color = MHTalkMuted, fontSize = 12.sp)
+                                        Slider(
+                                            value = userVolume.toFloat(),
+                                            onValueChange = { value ->
+                                                userVolume = value.toInt()
+                                                session.setParticipantVolume(member.identity, stream = false, userVolume)
+                                            },
+                                            valueRange = 0f..100f,
+                                        )
+                                        Text("Screen-share sound · $streamVolume%", color = MHTalkMuted, fontSize = 12.sp)
+                                        Slider(
+                                            value = streamVolume.toFloat(),
+                                            onValueChange = { value ->
+                                                streamVolume = value.toInt()
+                                                session.setParticipantVolume(member.identity, stream = true, streamVolume)
+                                            },
+                                            valueRange = 0f..100f,
+                                        )
+                                    }
+                                }
+                            }
+                            Box {
+                                IconButton(
+                                    onClick = { qualityMenuOpen = true },
+                                    modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xB8000000)),
+                                ) { Icon(Icons.Rounded.HighQuality, "Stream quality") }
+                                DropdownMenu(qualityMenuOpen, { qualityMenuOpen = false }) {
+                                    listOf(VideoQuality.LOW, VideoQuality.MEDIUM, VideoQuality.HIGH).forEach { quality ->
+                                        DropdownMenuItem(
+                                            text = { Text("${quality.name.lowercase().replaceFirstChar { it.uppercase() }} quality") },
+                                            onClick = {
+                                                session.setMemberVideoQuality(member.identity, Track.Source.SCREEN_SHARE, quality)
+                                                qualityMenuOpen = false
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        IconButton(
+                            onClick = { fullScreen = true },
+                            modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xB8000000)),
+                        ) { Icon(Icons.Rounded.Fullscreen, "Full screen") }
+                        if (member != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            IconButton(
+                                onClick = {
+                                    PipController.track = track
+                                    (context as? Activity)?.enterPictureInPictureMode(
+                                        PictureInPictureParams.Builder()
+                                            .setAspectRatio(Rational((aspectRatio * 1_000).toInt().coerceAtLeast(1), 1_000))
+                                            .build(),
+                                    )
+                                },
+                                modifier = Modifier.size(40.dp).clip(CircleShape).background(Color(0xB8000000)),
+                            ) { Icon(Icons.Rounded.PictureInPictureAlt, "Picture in picture") }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (fullScreen) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { fullScreen = false },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            var fullControlsVisible by remember { mutableStateOf(true) }
+            Box(
+                Modifier.fillMaxSize().background(Color.Black).clickable { fullControlsVisible = !fullControlsVisible },
+                contentAlignment = Alignment.Center,
+            ) {
+                AndroidView(
+                    modifier = Modifier.fillMaxWidth().aspectRatio(aspectRatio.coerceIn(0.35f, 3f)),
+                    factory = { context ->
+                        SurfaceViewRenderer(context).also {
+                            session.initializeVideoRenderer(it)
+                            track.addRenderer(it)
+                        }
+                    },
+                    onRelease = { view ->
+                        track.removeRenderer(view)
+                        view.release()
+                    },
+                )
+                if (fullControlsVisible) {
+                    IconButton(
+                        onClick = { fullScreen = false },
+                        modifier = Modifier.align(Alignment.TopEnd).padding(18.dp).size(48.dp).clip(CircleShape).background(Color(0xB8000000)),
+                    ) { Icon(Icons.Rounded.FullscreenExit, "Exit full screen") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PipVideoScreen(track: VideoTrack?, session: SessionViewModel) {
+    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+        track?.let { videoTrack ->
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { viewContext ->
+                    SurfaceViewRenderer(viewContext).also {
+                        session.initializeVideoRenderer(it)
+                        videoTrack.addRenderer(it)
+                    }
+                },
+                onRelease = { view ->
+                    videoTrack.removeRenderer(view)
+                    view.release()
+                },
             )
         }
     }
@@ -523,6 +818,7 @@ private fun MemberRow(member: MemberUi, mine: Boolean, onClick: (MemberUi) -> Un
                 Text(if (member.microphoneEnabled) "Mic on" else "Listening", color = MHTalkMuted, fontSize = 12.sp)
             }
             if (member.cameraEnabled) Icon(Icons.Rounded.Videocam, "Camera on", tint = MHTalkGreen)
+            if (member.screenShareEnabled) Icon(Icons.Rounded.PresentToAll, "Screen sharing", tint = MHTalkGreen, modifier = Modifier.padding(start = 6.dp))
         }
     }
 }
@@ -541,10 +837,10 @@ private fun Control(icon: ImageVector, active: Boolean, danger: Boolean, onClick
 private fun RoomChat(state: SessionUiState, session: SessionViewModel) {
     var text by remember { mutableStateOf("") }
     var imagePreview by remember { mutableStateOf<String?>(null) }
+    var videoPreview by remember { mutableStateOf<String?>(null) }
     var selectedMessage by remember { mutableStateOf<ChatMessageUi?>(null) }
     var replyTo by remember { mutableStateOf<ChatMessageUi?>(null) }
     var editing by remember { mutableStateOf<ChatMessageUi?>(null) }
-    var emojiOpen by remember { mutableStateOf(false) }
     var newMessageLabel by remember { mutableStateOf<String?>(null) }
     val focusRequester = remember { FocusRequester() }
     val context = LocalContext.current
@@ -576,7 +872,7 @@ private fun RoomChat(state: SessionUiState, session: SessionViewModel) {
             }
         }
     }
-    Column(Modifier.fillMaxSize().then(if (imagePreview != null) Modifier.blur(8.dp) else Modifier)) {
+    Column(Modifier.fillMaxSize().then(if (imagePreview != null || videoPreview != null) Modifier.blur(8.dp) else Modifier)) {
         Box(Modifier.weight(1f)) {
             LazyColumn(
                 state = listState, modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(14.dp),
@@ -619,12 +915,15 @@ private fun RoomChat(state: SessionUiState, session: SessionViewModel) {
                                         AsyncImage(
                                             model = attachment.uri,
                                             contentDescription = attachment.name,
-                                            modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp).clip(RoundedCornerShape(12.dp)).clickable { imagePreview = attachment.uri },
+                                            modifier = Modifier.fillMaxWidth().heightIn(max = 260.dp).clip(RoundedCornerShape(12.dp)).combinedClickable(
+                                                onClick = { imagePreview = attachment.uri },
+                                                onLongClick = { selectedMessage = message },
+                                            ),
                                         )
                                     } else if (attachment.mimeType.startsWith("audio/")) {
                                         VoiceAttachment(attachment.uri, attachment.name)
                                     } else if (attachment.mimeType.startsWith("video/")) {
-                                        VideoAttachment(attachment.uri, attachment.name)
+                                        VideoAttachment(attachment.uri, attachment.name, onPreview = { videoPreview = attachment.uri }, onLongClick = { selectedMessage = message })
                                     } else {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
@@ -710,26 +1009,6 @@ private fun RoomChat(state: SessionUiState, session: SessionViewModel) {
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { submitMessage() }),
                 shape = RoundedCornerShape(18.dp),
-                trailingIcon = {
-                    Box {
-                        IconButton({ emojiOpen = true }) { Icon(Icons.Rounded.EmojiEmotions, "Emojis") }
-                        DropdownMenu(emojiOpen, { emojiOpen = false }) {
-                            LazyVerticalGrid(
-                                columns = GridCells.Fixed(6),
-                                modifier = Modifier.width(300.dp).heightIn(max = 320.dp),
-                                contentPadding = PaddingValues(8.dp),
-                            ) {
-                                items(emojis) { emoji ->
-                                    TextButton(
-                                        onClick = { text += emoji },
-                                        contentPadding = PaddingValues(2.dp),
-                                        modifier = Modifier.size(46.dp),
-                                    ) { Text(emoji, fontSize = 24.sp) }
-                                }
-                            }
-                        }
-                    }
-                },
             )
             Spacer(Modifier.width(8.dp))
             if (text.isBlank() && editing == null && replyTo == null) {
@@ -764,63 +1043,112 @@ private fun RoomChat(state: SessionUiState, session: SessionViewModel) {
             }
         }
     }
+    videoPreview?.let { uri ->
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { videoPreview = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+        ) {
+            Box(Modifier.fillMaxSize().background(Color.Black).clickable { videoPreview = null }, contentAlignment = Alignment.Center) {
+                AndroidView(
+                    factory = { viewContext ->
+                        VideoView(viewContext).apply {
+                            setVideoURI(Uri.parse(uri))
+                            setMediaController(MediaController(viewContext).also { it.setAnchorView(this) })
+                            setOnPreparedListener { it.start() }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().fillMaxHeight(0.86f).clickable(enabled = false) {},
+                )
+            }
+        }
+    }
     selectedMessage?.let { message ->
-        AlertDialog(
-            onDismissRequest = { selectedMessage = null },
-            title = { Text("Message") },
-            text = {
-                Column {
-                    TextButton(
-                        onClick = {
-                            replyTo = message
-                            selectedMessage = null
-                            scope.launch { focusRequester.requestFocus() }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Reply") }
-                    TextButton(
-                        onClick = {
-                            val clipboard = context.getSystemService(ClipboardManager::class.java)
-                            clipboard.setPrimaryClip(ClipData.newPlainText("MHTalk message", message.body))
-                            selectedMessage = null
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Copy") }
-                    if (message.mine && message.attachment == null) {
-                        TextButton(
-                            onClick = {
-                                editing = message
-                                text = message.body
-                                selectedMessage = null
-                                scope.launch { focusRequester.requestFocus() }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Edit") }
-                    }
-                    if (message.mine) {
-                        TextButton(
-                            onClick = { session.deleteMessage(message.id); selectedMessage = null },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Delete", color = Color(0xFFFF7A8D)) }
-                    } else if (!message.senderIdentity.isNullOrBlank()) {
-                        TextButton(
-                            onClick = { session.reportUser(message.senderIdentity, message); selectedMessage = null },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Report message") }
-                        TextButton(
-                            onClick = { session.blockUser(message.senderIdentity); selectedMessage = null },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Block user", color = Color(0xFFFF7A8D)) }
-                    }
-                }
+        MessageActionsSheet(
+            message = message,
+            onDismiss = { selectedMessage = null },
+            onReply = {
+                replyTo = message
+                selectedMessage = null
+                scope.launch { focusRequester.requestFocus() }
             },
-            confirmButton = { TextButton({ selectedMessage = null }) { Text("Close") } },
+            onCopy = {
+                context.getSystemService(ClipboardManager::class.java)
+                    .setPrimaryClip(ClipData.newPlainText("MHTalk message", message.body))
+                selectedMessage = null
+            },
+            onEdit = {
+                editing = message
+                text = message.body
+                selectedMessage = null
+                scope.launch { focusRequester.requestFocus() }
+            },
+            onDelete = { session.deleteMessage(message.id); selectedMessage = null },
+            onReport = { message.senderIdentity?.let { session.reportUser(it, message) }; selectedMessage = null },
+            onBlock = { message.senderIdentity?.let { session.blockUser(it) }; selectedMessage = null },
+            onDownload = { message.attachment?.let(session::saveAttachmentToDownloads); selectedMessage = null },
         )
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun VideoAttachment(uri: String, name: String) {
+private fun MessageActionsSheet(
+    message: ChatMessageUi,
+    onDismiss: () -> Unit,
+    onReply: () -> Unit,
+    onCopy: () -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    onReport: () -> Unit,
+    onBlock: () -> Unit,
+    onDownload: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = MHTalkSurfaceRaised,
+        contentColor = MHTalkText,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 18.dp).padding(bottom = 28.dp)) {
+            Surface(
+                color = if (message.mine) Color(0xFF5749A8) else MHTalkSurface,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(message.sender, color = MHTalkPurple, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Text(message.body.ifBlank { message.attachment?.name ?: "Attachment" }, maxLines = 3, color = MHTalkText)
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                MessageAction(Icons.Rounded.Reply, "Reply", onReply)
+                MessageAction(Icons.Rounded.ContentCopy, "Copy", onCopy)
+                if (message.mine && message.attachment == null) MessageAction(Icons.Rounded.Edit, "Edit", onEdit)
+                if (message.mine) MessageAction(Icons.Rounded.Delete, "Delete", onDelete, destructive = true)
+                if (message.attachment != null) MessageAction(Icons.Rounded.Download, "Download", onDownload)
+                if (!message.mine && !message.senderIdentity.isNullOrBlank()) {
+                    MessageAction(Icons.Rounded.Flag, "Report", onReport, destructive = true)
+                    MessageAction(Icons.Rounded.Block, "Block", onBlock, destructive = true)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MessageAction(icon: ImageVector, label: String, onClick: () -> Unit, destructive: Boolean = false) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clickable(onClick = onClick).padding(4.dp)) {
+        Box(
+            Modifier.size(48.dp).clip(CircleShape).background(if (destructive) Color(0xFF60313F) else Color(0xFF303751)),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, label, tint = if (destructive) Color(0xFFFFA4B2) else MHTalkText) }
+        Spacer(Modifier.height(5.dp))
+        Text(label, color = if (destructive) Color(0xFFFFA4B2) else MHTalkMuted, fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun VideoAttachment(uri: String, name: String, onPreview: () -> Unit, onLongClick: () -> Unit) {
     AndroidView(
         factory = { context ->
             VideoView(context).apply {
@@ -832,6 +1160,8 @@ private fun VideoAttachment(uri: String, name: String) {
                     player.isLooping = false
                     seekTo(1)
                 }
+                setOnClickListener { onPreview() }
+                setOnLongClickListener { onLongClick(); true }
             }
         },
         update = { view ->
@@ -1078,12 +1408,17 @@ private fun SettingsDialog(
     onOutput: (Int) -> Unit,
     onTestSpeaker: () -> Unit,
     onSwitchCamera: () -> Unit,
+    onMessageSounds: (Boolean) -> Unit,
+    onCameraSounds: (Boolean) -> Unit,
+    onScreenSounds: (Boolean) -> Unit,
+    onScreenPrivacy: (Boolean) -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Settings") },
         text = {
-            Column {
+            LazyColumn(Modifier.heightIn(max = 510.dp)) {
+                item { Column {
                 Text("Speaker", fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(8.dp))
                 Text("Output level · ${state.outputLevel}%", color = MHTalkMuted)
@@ -1101,10 +1436,30 @@ private fun SettingsDialog(
                     enabled = state.cameraEnabled,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Switch front / back") }
+                Spacer(Modifier.height(18.dp))
+                Text("Event sounds", fontWeight = FontWeight.Bold)
+                SettingSwitch("New messages", "A soft sound when someone sends a message.", state.messageSoundsEnabled, onMessageSounds)
+                SettingSwitch("Camera activity", "A sound when a member starts their camera.", state.cameraSoundsEnabled, onCameraSounds)
+                SettingSwitch("Screen-share activity", "A sound when a member starts sharing their screen.", state.screenShareSoundsEnabled, onScreenSounds)
+                Spacer(Modifier.height(18.dp))
+                Text("Screen-share privacy", fontWeight = FontWeight.Bold)
+                SettingSwitch("Keep notification protection", "Keep Android's privacy protection enabled while sharing. Android may still control this on some devices.", state.screenSharePrivacyEnabled, onScreenPrivacy)
+                } }
             }
         },
         confirmButton = { TextButton(onDismiss) { Text("Done") } },
     )
+}
+
+@Composable
+private fun SettingSwitch(title: String, detail: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(top = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 14.sp)
+            Text(detail, color = MHTalkMuted, fontSize = 11.sp)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
 }
 
 @Composable

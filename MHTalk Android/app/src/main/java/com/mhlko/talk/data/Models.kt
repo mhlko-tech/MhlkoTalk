@@ -8,6 +8,8 @@ enum class ConnectionStatus {
     Failed,
 }
 
+enum class ShareQuality { Low, Medium, High }
+
 data class UserProfile(
     val name: String = "Me",
     val bio: String = "",
@@ -68,4 +70,10 @@ data class SessionUiState(
     val localProfile: UserProfile = UserProfile(),
     val outputLevel: Int = 100,
     val isRecordingVoice: Boolean = false,
+    val messageSoundsEnabled: Boolean = true,
+    val cameraSoundsEnabled: Boolean = true,
+    val screenShareSoundsEnabled: Boolean = true,
+    val screenSharePrivacyEnabled: Boolean = true,
+    val launchReady: Boolean = false,
+    val updateVersion: String? = null,
 )

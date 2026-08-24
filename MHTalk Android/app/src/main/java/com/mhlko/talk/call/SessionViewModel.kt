@@ -2,6 +2,9 @@ package com.mhlko.talk.call
 
 import android.app.Application
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.net.Uri
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -9,6 +12,9 @@ import android.media.MediaRecorder
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.provider.OpenableColumns
+import android.provider.MediaStore
+import android.content.ContentValues
+import android.os.Environment
 import android.util.Base64
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -23,6 +29,8 @@ import com.mhlko.talk.data.MHTalkApi
 import com.mhlko.talk.data.MemberUi
 import com.mhlko.talk.data.SessionUiState
 import com.mhlko.talk.data.UserProfile
+import com.mhlko.talk.data.ShareQuality
+import io.livekit.android.audio.ScreenAudioCapturer
 import io.livekit.android.LiveKit
 import io.livekit.android.events.RoomEvent
 import io.livekit.android.events.collect
@@ -31,7 +39,12 @@ import io.livekit.android.room.datastream.StreamBytesOptions
 import io.livekit.android.room.participant.Participant
 import io.livekit.android.room.track.Track
 import io.livekit.android.room.track.VideoTrack
+import io.livekit.android.room.track.LocalVideoTrack
+import io.livekit.android.room.track.LocalAudioTrack
+import io.livekit.android.room.participant.AudioTrackPublishOptions
 import io.livekit.android.room.track.RemoteAudioTrack
+import io.livekit.android.room.track.RemoteTrackPublication
+import io.livekit.android.room.track.VideoQuality
 import io.livekit.android.room.track.screencapture.ScreenCaptureParams
 import io.livekit.android.renderer.SurfaceViewRenderer
 import kotlinx.coroutines.Job
@@ -43,6 +56,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.util.UUID
 import java.io.File
@@ -69,12 +84,23 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     private var voiceRecorder: MediaRecorder? = null
     private var voiceFile: File? = null
     private var microphoneBeforeVoiceNote = true
+    private var screenAudioCapturer: ScreenAudioCapturer? = null
+    private var screenAudioTrack: LocalAudioTrack? = null
+    private val taskRemovedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == CallService.ACTION_TASK_REMOVED) leave()
+        }
+    }
 
     private val _state = MutableStateFlow(
         SessionUiState(
             termsAccepted = preferences.getBoolean("legal.termsAccepted", false),
             localProfile = profile,
             outputLevel = preferences.getInt("audio.output", 100),
+            messageSoundsEnabled = preferences.getBoolean("sounds.messages", true),
+            cameraSoundsEnabled = preferences.getBoolean("sounds.camera", true),
+            screenShareSoundsEnabled = preferences.getBoolean("sounds.screen", true),
+            screenSharePrivacyEnabled = preferences.getBoolean("privacy.screenShare", true),
         ),
     )
     val state: StateFlow<SessionUiState> = _state.asStateFlow()
@@ -93,8 +119,10 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     init {
         registerFileReceiver()
+        ContextCompat.registerReceiver(application, taskRemovedReceiver, IntentFilter(CallService.ACTION_TASK_REMOVED), ContextCompat.RECEIVER_NOT_EXPORTED)
         collectRoomEvents()
         pollMainCount()
+        checkForUpdate()
     }
 
     fun joinMain() = connect("Main", null)
@@ -119,6 +147,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     }
 
     fun clearPrivateCode() = _state.update { it.copy(privateCode = null) }
+    fun showNotice(message: String) = _state.update { it.copy(notice = message) }
 
     private fun connect(roomName: String, inviteCode: String?) {
         if (_state.value.status == ConnectionStatus.Connecting) return
@@ -146,6 +175,8 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                     )
                 }
                 syncParticipants()
+                disableAutoSubscribeForRemoteMedia()
+                requestProfiles()
             }.onFailure(::showFailure)
         }
     }
@@ -162,6 +193,11 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             mainActiveCount = _state.value.mainActiveCount,
             localProfile = profile,
             outputLevel = preferences.getInt("audio.output", 100),
+            messageSoundsEnabled = preferences.getBoolean("sounds.messages", true),
+            cameraSoundsEnabled = preferences.getBoolean("sounds.camera", true),
+            screenShareSoundsEnabled = preferences.getBoolean("sounds.screen", true),
+            screenSharePrivacyEnabled = preferences.getBoolean("privacy.screenShare", true),
+            launchReady = true,
         )
     }
 
@@ -195,19 +231,23 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
-    fun startScreenShare(permissionData: Intent) {
+    fun startScreenShare(permissionData: Intent, includeMicrophone: Boolean, quality: ShareQuality) {
         if (_state.value.status != ConnectionStatus.Connected) return
         viewModelScope.launch {
+            configureShareQuality(quality)
             startCallService(_state.value.cameraEnabled, screenShare = true)
             runCatching {
+                room.localParticipant.setMicrophoneEnabled(includeMicrophone)
                 room.localParticipant.setScreenShareEnabled(
                     true,
                     ScreenCaptureParams(permissionData) {
+                        stopScreenAudio()
                         _state.update { it.copy(screenShareEnabled = false) }
                         startCallService(_state.value.cameraEnabled, screenShare = false)
                     },
                 )
             }.onSuccess {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) startScreenAudio()
                 _state.update { it.copy(screenShareEnabled = true) }
                 syncParticipants()
             }.onFailure {
@@ -219,7 +259,10 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
 
     fun stopScreenShare() {
         viewModelScope.launch {
-            runCatching { room.localParticipant.setScreenShareEnabled(false) }
+            runCatching {
+                stopScreenAudio()
+                room.localParticipant.setScreenShareEnabled(false)
+            }
                 .onSuccess {
                     _state.update { it.copy(screenShareEnabled = false) }
                     startCallService(_state.value.cameraEnabled, screenShare = false)
@@ -240,6 +283,57 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             room.remoteParticipants.values.firstOrNull { it.identity?.value == identity }
         } ?: return null
         return participant.getTrackPublication(source)?.track as? VideoTrack
+    }
+
+    /** Opt-in media: remote camera/screen video and screen audio remain off until the user chooses to watch. */
+    fun watchMemberMedia(identity: String) {
+        val participant = room.remoteParticipants.values.firstOrNull { it.identity?.value == identity } ?: return
+        listOf(Track.Source.CAMERA, Track.Source.SCREEN_SHARE, Track.Source.SCREEN_SHARE_AUDIO).forEach { source ->
+            (participant.getTrackPublication(source) as? RemoteTrackPublication)?.setSubscribed(true)
+        }
+    }
+
+    fun stopWatchingMemberMedia(identity: String) {
+        val participant = room.remoteParticipants.values.firstOrNull { it.identity?.value == identity } ?: return
+        listOf(Track.Source.CAMERA, Track.Source.SCREEN_SHARE, Track.Source.SCREEN_SHARE_AUDIO).forEach { source ->
+            (participant.getTrackPublication(source) as? RemoteTrackPublication)?.setSubscribed(false)
+        }
+    }
+
+    fun setMemberVideoQuality(identity: String, source: Track.Source, quality: VideoQuality) {
+        val participant = room.remoteParticipants.values.firstOrNull { it.identity?.value == identity } ?: return
+        (participant.getTrackPublication(source) as? RemoteTrackPublication)?.setVideoQuality(quality)
+    }
+
+    private fun configureShareQuality(quality: ShareQuality) {
+        val preset = when (quality) {
+            ShareQuality.Low -> io.livekit.android.room.track.ScreenSharePresets.H360_FPS15
+            ShareQuality.Medium -> io.livekit.android.room.track.ScreenSharePresets.H720_FPS15
+            ShareQuality.High -> io.livekit.android.room.track.ScreenSharePresets.H1080_FPS30
+        }
+        room.screenShareTrackCaptureDefaults = io.livekit.android.room.track.LocalVideoTrackOptions(
+            isScreencast = true,
+            captureParams = preset.capture,
+        )
+        room.screenShareTrackPublishDefaults = io.livekit.android.room.participant.VideoTrackPublishDefaults(
+            videoEncoding = preset.encoding,
+            simulcast = true,
+        )
+    }
+
+    /** The actual capture dimensions, including a live device rotation during screen sharing. */
+    fun videoAspectRatio(identity: String?, source: Track.Source): Float? {
+        val participant = if (identity == null) {
+            room.localParticipant
+        } else {
+            room.remoteParticipants.values.firstOrNull { it.identity?.value == identity }
+        } ?: return null
+        val publication = participant.getTrackPublication(source) ?: return null
+        val dimensions = publication.dimensions
+            ?: (publication.track as? LocalVideoTrack)?.dimensions
+            ?: return null
+        if (dimensions.width <= 0 || dimensions.height <= 0) return null
+        return dimensions.width.toFloat() / dimensions.height.toFloat()
     }
 
     fun setParticipantVolume(identity: String, stream: Boolean, volume: Int) {
@@ -481,6 +575,23 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         attachmentJobs.remove(id)?.cancel()
     }
 
+    fun saveAttachmentToDownloads(attachment: AttachmentUi) {
+        viewModelScope.launch {
+            runCatching {
+                val resolver = getApplication<Application>().contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.Downloads.DISPLAY_NAME, attachment.name)
+                    put(MediaStore.Downloads.MIME_TYPE, attachment.mimeType)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                }
+                val destination = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: error("Could not create download")
+                resolver.openInputStream(Uri.parse(attachment.uri))!!.use { input ->
+                    resolver.openOutputStream(destination)!!.use { output -> input.copyTo(output) }
+                }
+            }.onSuccess { _state.update { it.copy(notice = "Saved to Downloads") } }.onFailure(::showFailure)
+        }
+    }
+
     private fun patchAttachment(id: String, transform: (AttachmentUi) -> AttachmentUi) {
         _state.update { current ->
             current.copy(messages = current.messages.map { message ->
@@ -497,11 +608,9 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                     val directory = File(getApplication<Application>().cacheDir, "attachments").apply { mkdirs() }
                     val safeName = (reader.info.name ?: "Attachment").replace(Regex("[^A-Za-z0-9._ -]"), "_").take(120)
                     val file = File(directory, "${reader.info.id}-$safeName")
-                    FileOutputStream(file).use { output ->
-                        reader.flow.collect { chunk -> output.write(chunk) }
-                    }
                     val id = identity.value
-                    ChatMessageUi(
+                    val size = reader.info.totalSize ?: -1L
+                    val message = ChatMessageUi(
                         id = reader.info.id,
                         sender = profiles[id]?.name ?: id.take(16),
                         senderIdentity = id,
@@ -512,11 +621,23 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                             uri = FileProvider.getUriForFile(getApplication(), "com.mhlko.talk.files", file).toString(),
                             name = reader.info.name ?: "Attachment",
                             mimeType = reader.info.mimeType,
-                            size = file.length(),
+                            size = size,
+                            progress = 0f,
+                            sending = true,
                         ),
                     )
-                }.onSuccess { message ->
                     _state.update { it.copy(messages = it.messages + message) }
+                    var received = 0L
+                    FileOutputStream(file).use { output ->
+                        reader.flow.collect { chunk ->
+                            output.write(chunk)
+                            received += chunk.size
+                            if (size > 0) patchAttachment(reader.info.id) {
+                                it.copy(progress = (received.toFloat() / size).coerceIn(0f, 1f))
+                            }
+                        }
+                    }
+                    patchAttachment(reader.info.id) { it.copy(size = file.length(), progress = 1f, sending = false) }
                 }.onFailure { /* isolate a failed transfer from the call */ }
             }
         }
@@ -559,9 +680,9 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                     val left = (centerX - side / 2f).toInt().coerceIn(0, source.width - side)
                     val top = (centerY - side / 2f).toInt().coerceIn(0, source.height - side)
                     val cropped = Bitmap.createBitmap(source, left, top, side, side)
-                    val avatar = Bitmap.createScaledBitmap(cropped, 192, 192, true)
+                    val avatar = Bitmap.createScaledBitmap(cropped, 96, 96, true)
                     val output = ByteArrayOutputStream()
-                    avatar.compress(Bitmap.CompressFormat.JPEG, 78, output)
+                    avatar.compress(Bitmap.CompressFormat.JPEG, 52, output)
                     if (avatar !== cropped) avatar.recycle()
                     if (cropped !== source) cropped.recycle()
                     source.recycle()
@@ -594,12 +715,69 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun setMessageSounds(enabled: Boolean) = setBooleanPreference("sounds.messages", enabled) { it.copy(messageSoundsEnabled = enabled) }
+    fun setCameraSounds(enabled: Boolean) = setBooleanPreference("sounds.camera", enabled) { it.copy(cameraSoundsEnabled = enabled) }
+    fun setScreenShareSounds(enabled: Boolean) = setBooleanPreference("sounds.screen", enabled) { it.copy(screenShareSoundsEnabled = enabled) }
+    fun setScreenSharePrivacy(enabled: Boolean) = setBooleanPreference("privacy.screenShare", enabled) { it.copy(screenSharePrivacyEnabled = enabled) }
+
+    private fun setBooleanPreference(key: String, value: Boolean, update: (SessionUiState) -> SessionUiState) {
+        preferences.edit().putBoolean(key, value).apply()
+        _state.update(update)
+    }
+
+    private fun playEventTone(kind: Int) {
+        val enabled = when (kind) {
+            1 -> _state.value.messageSoundsEnabled
+            2 -> _state.value.cameraSoundsEnabled
+            3, 6 -> _state.value.screenShareSoundsEnabled
+            else -> _state.value.messageSoundsEnabled
+        }
+        if (!enabled) return
+        val tone = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 45)
+        tone.startTone(
+            when (kind) {
+                1 -> ToneGenerator.TONE_PROP_BEEP2
+                2 -> ToneGenerator.TONE_PROP_ACK
+                3 -> ToneGenerator.TONE_PROP_BEEP
+                4 -> ToneGenerator.TONE_PROP_PROMPT
+                5 -> ToneGenerator.TONE_PROP_NACK
+                else -> ToneGenerator.TONE_PROP_BEEP2
+            },
+            120,
+        )
+        viewModelScope.launch { delay(180); tone.release() }
+    }
+
+    private fun checkForUpdate() {
+        viewModelScope.launch {
+            val remote = runCatching {
+                withContext(Dispatchers.IO) {
+                    val connection = java.net.URL("https://api.github.com/repos/mhlko-tech/MHTalk-Android/releases/latest").openConnection()
+                    connection.connectTimeout = 2_500
+                    connection.readTimeout = 2_500
+                    connection.getInputStream().bufferedReader().use { JSONObject(it.readText()).optString("tag_name") }
+                }
+            }.getOrNull()
+            val available = remote?.trim()?.removePrefix("v")?.takeIf { it.isNotBlank() && isNewerVersion(it, BuildConfig.VERSION_NAME) }
+            _state.update { it.copy(launchReady = true, updateVersion = available) }
+        }
+        viewModelScope.launch { delay(2_800); _state.update { it.copy(launchReady = true) } }
+    }
+
+    private fun isNewerVersion(remote: String, current: String): Boolean {
+        val a = remote.split('.').map { it.toIntOrNull() ?: 0 }
+        val b = current.split('.').map { it.toIntOrNull() ?: 0 }
+        return (0 until maxOf(a.size, b.size)).firstOrNull { (a.getOrElse(it) { 0 }) != (b.getOrElse(it) { 0 }) }
+            ?.let { a.getOrElse(it) { 0 } > b.getOrElse(it) { 0 } } ?: false
+    }
+
     fun switchCamera() {
         (room.localParticipant.getTrackPublication(Track.Source.CAMERA)?.track as? io.livekit.android.room.track.LocalVideoTrack)
             ?.switchCamera()
     }
 
     fun dismissError() = _state.update { it.copy(error = null) }
+    fun dismissUpdate() = _state.update { it.copy(updateVersion = null) }
 
     private fun collectRoomEvents() {
         roomEventsJob?.cancel()
@@ -607,23 +785,34 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             room.events.collect { event ->
                 when (event) {
                     is RoomEvent.Connected,
-                    is RoomEvent.ParticipantDisconnected,
                     is RoomEvent.ActiveSpeakersChanged,
-                    is RoomEvent.TrackPublished,
                     is RoomEvent.TrackUnpublished,
                     is RoomEvent.TrackSubscribed,
                     is RoomEvent.TrackUnsubscribed,
                     is RoomEvent.TrackMuted,
                     is RoomEvent.TrackUnmuted -> syncParticipants()
 
+                    is RoomEvent.TrackPublished -> {
+                        if (event.participant != room.localParticipant && event.publication.source in setOf(Track.Source.CAMERA, Track.Source.SCREEN_SHARE, Track.Source.SCREEN_SHARE_AUDIO)) {
+                            (event.publication as? RemoteTrackPublication)?.setSubscribed(false)
+                        }
+                        syncParticipants()
+                    }
+
                     is RoomEvent.Reconnecting -> _state.update { it.copy(status = ConnectionStatus.Recovering) }
                     is RoomEvent.ParticipantConnected -> {
+                        playEventTone(4)
                         syncParticipants()
                         sendProfile()
+                    }
+                    is RoomEvent.ParticipantDisconnected -> {
+                        playEventTone(5)
+                        syncParticipants()
                     }
                     is RoomEvent.Reconnected -> {
                         _state.update { it.copy(status = ConnectionStatus.Connected, error = null) }
                         sendProfile()
+                        requestProfiles()
                         syncParticipants()
                     }
                     is RoomEvent.Disconnected -> {
@@ -645,6 +834,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             val identity = participant.identity?.value ?: return
             if (identity in blockedIdentities) return
             when (payload.optString("type")) {
+                "profile-request" -> viewModelScope.launch { sendProfile() }
                 "profile" -> {
                     val source = payload.optJSONObject("profile") ?: return
                     profiles[identity] = UserProfile(
@@ -682,6 +872,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
                         replyToBody = payload.optJSONObject("replyTo")?.optString("body"),
                     )
                     _state.update { it.copy(messages = it.messages + incoming) }
+                    playEventTone(1)
                 }
                 "edit" -> {
                     val id = payload.optString("id")
@@ -717,11 +908,27 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     private fun syncParticipants() {
         val remote = room.remoteParticipants.values.map { participant -> participant.toUi() }
             .filterNot { it.identity in blockedIdentities }
+        val previous = _state.value.members.associateBy { it.identity }
+        remote.forEach { member ->
+            previous[member.identity]?.let { old ->
+                if (!old.cameraEnabled && member.cameraEnabled) playEventTone(2)
+                if (!old.screenShareEnabled && member.screenShareEnabled) playEventTone(3)
+                if (old.screenShareEnabled && !member.screenShareEnabled) playEventTone(6)
+            }
+        }
         _state.update {
             it.copy(
                 localSpeaking = room.localParticipant.isSpeaking,
                 members = remote,
             )
+        }
+    }
+
+    private fun disableAutoSubscribeForRemoteMedia() {
+        room.remoteParticipants.values.forEach { participant ->
+            listOf(Track.Source.CAMERA, Track.Source.SCREEN_SHARE, Track.Source.SCREEN_SHARE_AUDIO).forEach { source ->
+                (participant.getTrackPublication(source) as? RemoteTrackPublication)?.setSubscribed(false)
+            }
         }
     }
 
@@ -738,8 +945,8 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
             name = displayName,
             speaking = isSpeaking,
             microphoneEnabled = microphone != null && !microphone.muted,
-            cameraEnabled = camera?.track != null && !camera.muted,
-            screenShareEnabled = screen?.track != null && !screen.muted,
+            cameraEnabled = camera != null && !camera.muted,
+            screenShareEnabled = screen != null && !screen.muted,
             bio = profiles[id]?.bio.orEmpty(),
             avatar = profiles[id]?.avatar.orEmpty(),
             userVolume = userVolumes[id] ?: 100,
@@ -750,13 +957,45 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     private suspend fun sendProfile() {
         if (_state.value.status == ConnectionStatus.Idle) return
         val value = profile
+        val safeAvatar = value.avatar.takeIf { it.toByteArray().size <= 11_000 }.orEmpty()
         val payload = JSONObject()
             .put("type", "profile")
             .put(
                 "profile",
-                JSONObject().put("name", value.name).put("bio", value.bio).put("avatar", value.avatar),
+                JSONObject().put("name", value.name).put("bio", value.bio).put("avatar", safeAvatar),
             )
         room.localParticipant.publishData(payload.toString().toByteArray(), topic = "mhtalk.chat").getOrThrow()
+    }
+
+    private suspend fun requestProfiles() {
+        room.localParticipant.publishData(
+            JSONObject().put("type", "profile-request").toString().toByteArray(),
+            topic = "mhtalk.chat",
+        ).getOrThrow()
+    }
+
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.Q)
+    private suspend fun startScreenAudio() {
+        val screenTrack = room.localParticipant.getTrackPublication(Track.Source.SCREEN_SHARE)?.track as? LocalVideoTrack ?: return
+        stopScreenAudio()
+        ScreenAudioCapturer.createFromScreenShareTrack(screenTrack)?.let { capturer ->
+            val audioTrack = room.localParticipant.createAudioTrack("MHTalk screen audio")
+            audioTrack.setAudioBufferCallback(capturer)
+            room.localParticipant.publishAudioTrack(
+                audioTrack,
+                AudioTrackPublishOptions(name = "Screen audio", source = Track.Source.SCREEN_SHARE_AUDIO),
+            )
+            screenAudioTrack = audioTrack
+            screenAudioCapturer = capturer
+        }
+    }
+
+    private fun stopScreenAudio() {
+        screenAudioTrack?.let { room.localParticipant.unpublishTrack(it) }
+        screenAudioTrack?.dispose()
+        screenAudioTrack = null
+        screenAudioCapturer?.releaseAudioResources()
+        screenAudioCapturer = null
     }
 
     private fun scheduleRecovery() {
@@ -820,6 +1059,7 @@ class SessionViewModel(application: Application) : AndroidViewModel(application)
     }
 
     override fun onCleared() {
+        runCatching { getApplication<Application>().unregisterReceiver(taskRemovedReceiver) }
         room.disconnect()
         super.onCleared()
     }

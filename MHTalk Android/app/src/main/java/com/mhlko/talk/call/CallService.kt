@@ -46,6 +46,14 @@ class CallService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Swiping MHTalk from Recents means a deliberate full exit, unlike simply backgrounding it.
+        sendBroadcast(Intent(ACTION_TASK_REMOVED).setPackage(packageName))
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
     private fun createChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val channel = NotificationChannel(
@@ -62,6 +70,7 @@ class CallService : Service() {
     companion object {
         const val EXTRA_CAMERA = "camera"
         const val EXTRA_SCREEN_SHARE = "screen_share"
+        const val ACTION_TASK_REMOVED = "com.mhlko.talk.ACTION_TASK_REMOVED"
         private const val CHANNEL_ID = "mhtalk_active_call"
         private const val NOTIFICATION_ID = 7614
     }
