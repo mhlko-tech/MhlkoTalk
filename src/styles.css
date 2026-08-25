@@ -314,6 +314,64 @@ button {
 .social-accept { background: #4f8dff; }
 .social-icon-button { background: #34384d; padding: 7px 11px !important; }
 .social-error { color: #ff8e9c !important; }
+.auth-gate-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 50% 18%, #282658 0, transparent 38%),
+    linear-gradient(160deg, #0b0e19, #12172a 60%, #0b0e19);
+}
+.auth-gate-card {
+  width: min(430px, calc(100vw - 42px));
+  display: grid;
+  gap: 13px;
+  padding: 34px;
+  border: 1px solid #444b72;
+  border-radius: 24px;
+  background: #191d31f2;
+  box-shadow: 0 28px 90px #0009;
+  text-align: center;
+}
+.auth-gate-logo {
+  width: 82px;
+  height: 82px;
+  display: grid;
+  place-items: center;
+  justify-self: center;
+  border-radius: 24px;
+  background: linear-gradient(145deg, #8b78ff, #5c4de0);
+  box-shadow: 0 14px 42px #6957ef66;
+  color: #fff;
+  font-size: 49px;
+  font-weight: 900;
+}
+.auth-gate-card h1 { margin: 1px 0 0; font-size: 33px; }
+.auth-gate-card h1 small {
+  color: #9299b7;
+  font-size: 13px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.auth-gate-card h2 { margin: 0; font-size: 19px; }
+.auth-gate-card p { margin: 0 0 6px; color: #afb7d3; line-height: 1.55; }
+.auth-gate-card button { width: 100%; }
+.auth-google { min-height: 48px; font-size: 14px; }
+.auth-retry { margin-top: -3px; }
+.auth-gate-note { color: #858eac; line-height: 1.45; }
+.auth-gate-progress { color: #c8cdec; }
+.auth-gate-progress i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border: 2px solid #8173f4;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: auth-spin .8s linear infinite;
+}
+@keyframes auth-spin { to { transform: rotate(360deg); } }
 .social-row-actions { display: flex; gap: 9px; }
 .social-invite-backdrop { z-index: 30; }
 .social-invite-modal { width: min(420px, calc(100vw - 40px)); }

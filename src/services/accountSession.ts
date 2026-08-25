@@ -22,6 +22,7 @@ export type RoomInvite = {
 };
 export type AccountState =
   | { status: "unavailable" }
+  | { status: "checking" }
   | { status: "signed-out" }
   | { status: "authenticating" }
   | { status: "signed-in"; account: MHTalkAccount }
@@ -57,7 +58,7 @@ class AccountSession {
       })
     : null;
   private session: Session | null = null;
-  private state: AccountState = this.client && apiEndpoint ? { status: "signed-out" } : { status: "unavailable" };
+  private state: AccountState = this.client && apiEndpoint ? { status: "checking" } : { status: "unavailable" };
   private social: SocialState = initialSocial;
   private listeners = new Set<(state: AccountState) => void>();
   private socialListeners = new Set<(state: SocialState) => void>();
@@ -83,14 +84,27 @@ class AccountSession {
     this.client.auth.onAuthStateChange((_event, session) => {
       window.setTimeout(() => void this.applySession(session), 0);
     });
-    const { data } = await this.client.auth.getSession();
-    await this.applySession(data.session);
+    await this.retry();
     try {
       (await getCurrent())?.forEach((url) => void this.handleDeepLink(url));
       await onOpenUrl((urls) => urls.forEach((url) => void this.handleDeepLink(url)));
     } catch {
       // Browser preview has no registered desktop deep-link handler.
     }
+  }
+
+  async retry() {
+    if (!this.client || !apiEndpoint) {
+      this.setState({ status: "unavailable" });
+      return;
+    }
+    this.setState({ status: "checking" });
+    const { data, error } = await this.client.auth.getSession();
+    if (error) {
+      this.setState({ status: "failed", message: error.message });
+      return;
+    }
+    await this.applySession(data.session);
   }
 
   async signIn(provider: "google" | "facebook") {

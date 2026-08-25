@@ -84,8 +84,19 @@ const rpc = (env: Env, user: AuthUser, name: string, body: unknown) => userApi(e
   method: "POST", body: JSON.stringify(body),
 });
 async function profileFor(env: Env, user: AuthUser): Promise<Profile | null> {
-  const response = await userApi(env, user, `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,username,display_name,avatar_url,bio&limit=1`);
-  return response.ok ? ((await response.json()) as Profile[])[0] || null : null;
+  const path = `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,username,display_name,avatar_url,bio&limit=1`;
+  let response = await userApi(env, user, path);
+  let profile = response.ok ? ((await response.json()) as Profile[])[0] || null : null;
+  if (profile) return profile;
+
+  // Repair accounts created while the social schema was unavailable, then retry.
+  const repaired = await userApi(env, user, "/rest/v1/rpc/ensure_my_profile", {
+    method: "POST", body: "{}",
+  });
+  if (!repaired.ok) return null;
+  response = await userApi(env, user, path);
+  profile = response.ok ? ((await response.json()) as Profile[])[0] || null : null;
+  return profile;
 }
 
 async function hmacKey(secret: string) {

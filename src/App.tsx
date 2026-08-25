@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import appPackage from "../package.json";
 import type {
   ChatMessage,
   ChatSnapshot,
@@ -42,6 +43,7 @@ const mediaQualityLabels: Record<MediaQuality, string> = {
   high: "High · 1080p",
 };
 const mediaQualityOrder: MediaQuality[] = ["low", "medium", "high"];
+const appVersion = appPackage.version;
 
 function availableQualities(maximum: MediaQuality) {
   const maximumIndex = mediaQualityOrder.indexOf(maximum);
@@ -787,6 +789,46 @@ export function App() {
     }
   };
 
+  if (accountState.status !== "signed-in") {
+    const busy = accountState.status === "checking" || accountState.status === "authenticating";
+    return (
+      <main className="auth-gate-shell" onContextMenu={(event) => event.preventDefault()}>
+        <section className="auth-gate-card" aria-label="MHTalk sign in">
+          <div className="auth-gate-logo" aria-hidden="true">M</div>
+          <h1>MHTalk <small>{appVersion}</small></h1>
+          <h2>Sign in required</h2>
+          <p>Your account keeps your profile, friends and room invitations synchronized between phone and PC.</p>
+          {accountState.status === "checking" ? (
+            <div className="auth-gate-progress"><i /> Verifying your account…</div>
+          ) : accountState.status === "unavailable" ? (
+            <small className="social-error">Account service is unavailable. Check your connection and try again.</small>
+          ) : (
+            <>
+              <button className="primary auth-google" disabled={busy} onClick={() => void accountSession.signIn("google")}>
+                {accountState.status === "authenticating" ? "Opening Google…" : "Continue with Google"}
+              </button>
+              {accountState.status === "failed" && <small className="social-error">{accountState.message}</small>}
+            </>
+          )}
+          {(accountState.status === "failed" || accountState.status === "unavailable") && (
+            <button className="control auth-retry" onClick={() => void accountSession.retry()}>Try again</button>
+          )}
+          <small className="auth-gate-note">You must be signed in before MHTalk can open rooms or start a call.</small>
+        </section>
+        {updateActivity && (
+          <div className="update-activity" aria-live="polite">
+            <span>
+              {updateActivity.phase === "installing"
+                ? "Installing update…"
+                : `Updating MHTalk${updateActivity.progress === null ? "" : ` · ${updateActivity.progress}%`}`}
+            </span>
+            <i style={{ width: `${updateActivity.progress ?? 8}%` }} />
+          </div>
+        )}
+      </main>
+    );
+  }
+
   return (
     <main
       className="app-shell"
@@ -833,7 +875,7 @@ export function App() {
       <aside className="sidebar">
         <div className="brand">
           <span><img src="/mhtalk-icon.png" alt="" /></span>
-          <div>MHTalk</div>
+          <div>MHTalk<small>{appVersion}</small></div>
         </div>
         <div className="section-label">Rooms</div>
         <button
@@ -1489,21 +1531,7 @@ export function App() {
           <section className="private-modal friends-modal" role="dialog" aria-modal="true" aria-label="Friends">
             <button className="modal-close" onClick={() => setFriendsOpen(false)}>×</button>
             <h2>Friends</h2>
-            {accountState.status === "unavailable" ? (
-              <p>Accounts are ready in the application. Add the Supabase URL and publishable key to activate them.</p>
-            ) : accountState.status !== "signed-in" ? (
-              <div className="social-sign-in">
-                <p>Sign in to use the same profile and friend list on phone and PC.</p>
-                <button className="primary" disabled={accountState.status === "authenticating"} onClick={() => void accountSession.signIn("google")}>
-                  Continue with Google
-                </button>
-                <button className="control" disabled={accountState.status === "authenticating"} onClick={() => void accountSession.signIn("facebook")}>
-                  Continue with Facebook
-                </button>
-                {accountState.status === "failed" && <small className="social-error">{accountState.message}</small>}
-              </div>
-            ) : (
-              <div className="social-content">
+            <div className="social-content">
                 <div className="social-account-card">
                   <Avatar value={accountState.account.avatarUrl || accountState.account.displayName.slice(0, 1)} />
                   <span><strong>{accountState.account.displayName}</strong><small>@{accountState.account.username}</small></span>
@@ -1558,8 +1586,7 @@ export function App() {
                   ))}
                   {socialState.error && <small className="social-error">{socialState.error}</small>}
                 </div>
-              </div>
-            )}
+            </div>
           </section>
         </div>
       )}
@@ -1699,23 +1726,8 @@ export function App() {
             </div>
             <div className="settings-section account-foundation">
               <h3>MHTalk account</h3>
-              <p>
-                {accountState.status === "signed-in"
-                  ? `Signed in as ${accountState.account.displayName} (@${accountState.account.username})`
-                  : accountState.status === "unavailable"
-                    ? "Add the Supabase project settings to enable accounts and friends."
-                    : accountState.status === "failed"
-                      ? accountState.message
-                      : "Sign in to keep your profile and friends on phone and PC."}
-              </p>
-              {accountState.status === "signed-in" ? (
-                <button className="control" onClick={() => void accountSession.signOut()}>Sign out</button>
-              ) : accountState.status !== "unavailable" ? (
-                <div className="account-actions">
-                  <button className="control" onClick={() => void accountSession.signIn("google")}>Continue with Google</button>
-                  <button className="control" onClick={() => void accountSession.signIn("facebook")}>Continue with Facebook</button>
-                </div>
-              ) : null}
+              <p>{`Signed in as ${accountState.account.displayName} (@${accountState.account.username})`}</p>
+              <button className="control" onClick={() => void accountSession.signOut()}>Sign out</button>
             </div>
           </section>
         </div>
