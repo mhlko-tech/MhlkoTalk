@@ -1,6 +1,6 @@
 param(
     [string]$ProjectRoot = "C:\Dev\MHTalk Remake",
-    [string]$Version = "1.2.1"
+    [string]$Version = "1.3.0"
 )
 
 $ErrorActionPreference = "Stop"

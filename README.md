@@ -2,21 +2,35 @@
 
 MHTalk is a Windows desktop application for persistent voice rooms, video,
 screen sharing, room chat, private invitations, file exchange and local screen
-recording. Version 1.1 adds opt-in remote video, selectable broadcast quality,
-reliable cross-platform profiles, event sounds and a corrected recording mixer.
+recording. The desktop client is built with Tauri, Rust, React, Supabase and
+LiveKit.
 
-The desktop client is built with Tauri, Rust, React and LiveKit. The public Main
-channel is joined directly, private rooms use invitation codes and signed access
-tokens, and transient network failures are recovered in the background.
+## Account system
 
-Remote camera and screen tracks are announced without being downloaded. A user
-subscribes only after choosing Watch, and can request any simulcast layer up to
-the maximum quality published by the sender. Microphone audio remains connected
-for the room conversation.
+Version 1.3 provides a production account boundary on both desktop and Android:
 
-The Mangatak account boundary is present but intentionally disabled until an
-official OAuth-compatible service URL is supplied through
-`VITE_MANGATAK_AUTH_ENDPOINT`. No account token is persisted to disk.
+- username or email plus password sign-in;
+- account registration with private, globally unique usernames;
+- mandatory email verification and password recovery deep links;
+- Google OAuth with PKCE;
+- enumeration-resistant errors and rate-limited auth gateway endpoints;
+- encrypted session storage through Windows Credential Manager;
+- automatic room departure when an account signs out.
 
-Official releases are published at:
-https://github.com/mhlko-tech/MhlkoTalk/releases
+Authentication is backed by Supabase. Username-to-email resolution stays on the
+Cloudflare Worker and is never exposed to clients. Apply the migrations in
+`supabase/migrations` before deploying the matching Worker in `worker`.
+
+## Development
+
+```powershell
+npm install
+npm test
+npm run build
+```
+
+Required public client settings are documented in `.env.example`. Production
+secrets belong in Cloudflare Worker secrets and must never be committed.
+
+Official releases are published at
+[github.com/mhlko-tech/MhlkoTalk/releases](https://github.com/mhlko-tech/MhlkoTalk/releases).

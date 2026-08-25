@@ -1,6 +1,7 @@
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 
 export type MHTalkAccount = {
   id: string;
@@ -25,6 +26,8 @@ export type AccountState =
   | { status: "checking" }
   | { status: "signed-out" }
   | { status: "authenticating" }
+  | { status: "awaiting-verification"; email: string }
+  | { status: "password-recovery" }
   | { status: "signed-in"; account: MHTalkAccount }
   | { status: "failed"; message: string };
 export type SocialState = {
@@ -50,11 +53,26 @@ const initialSocial: SocialState = { friends: [], requests: [], incomingInvite: 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "https://fcadjrqrrzcvbyqrgnnm.supabase.co";
 const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_3Azp3R7eFE8YI81Eg_Bekw_D353_Efc";
 const apiEndpoint = import.meta.env.VITE_SOCIAL_API_ENDPOINT || import.meta.env.VITE_LIVEKIT_TOKEN_ENDPOINT;
+const runningInTauri = () => Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+const secureStorage = {
+  async getItem(key: string) {
+    if (!runningInTauri()) return localStorage.getItem(key);
+    return invoke<string | null>("auth_secret_get", { key });
+  },
+  async setItem(key: string, value: string) {
+    if (!runningInTauri()) localStorage.setItem(key, value);
+    else await invoke("auth_secret_set", { key, value });
+  },
+  async removeItem(key: string) {
+    if (!runningInTauri()) localStorage.removeItem(key);
+    else await invoke("auth_secret_delete", { key });
+  },
+};
 
 class AccountSession {
   private readonly client: SupabaseClient | null = supabaseUrl && supabaseKey
-    ? createClient(supabaseUrl, supabaseKey, {
-        auth: { flowType: "pkce", persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+      ? createClient(supabaseUrl, supabaseKey, {
+        auth: { flowType: "pkce", persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storage: secureStorage },
       })
     : null;
   private session: Session | null = null;
@@ -65,6 +83,7 @@ class AccountSession {
   private presence: WebSocket | null = null;
   private reconnectTimer: number | undefined;
   private initialized = false;
+  private handlingPasswordRecovery = false;
 
   subscribe(listener: (state: AccountState) => void) {
     this.listeners.add(listener); listener(this.state);
@@ -81,7 +100,12 @@ class AccountSession {
   async initialize() {
     if (this.initialized || !this.client) return;
     this.initialized = true;
-    this.client.auth.onAuthStateChange((_event, session) => {
+    this.client.auth.onAuthStateChange((event, session) => {
+      if (event === "PASSWORD_RECOVERY" || this.handlingPasswordRecovery) {
+        this.session = session;
+        if (session) this.setState({ status: "password-recovery" });
+        return;
+      }
       window.setTimeout(() => void this.applySession(session), 0);
     });
     await this.retry();
@@ -105,6 +129,94 @@ class AccountSession {
       return;
     }
     await this.applySession(data.session);
+  }
+
+  async login(identifier: string, password: string) {
+    if (!this.client || !apiEndpoint) throw new Error("Account service is unavailable");
+    this.setState({ status: "authenticating" });
+    try {
+      const response = await fetch(new URL("/auth/login", apiEndpoint), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ identifier: identifier.trim(), password }),
+      });
+      const value = (await response.json().catch(() => null)) as {
+        access_token?: string; refresh_token?: string; error?: string;
+      } | null;
+      if (!response.ok || !value?.access_token || !value.refresh_token)
+        throw new Error(value?.error || "Username/email or password is incorrect");
+      const { data, error } = await this.client.auth.setSession({
+        access_token: value.access_token,
+        refresh_token: value.refresh_token,
+      });
+      if (error || !data.session) throw error || new Error("Sign-in failed");
+      await this.applySession(data.session);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Sign-in failed";
+      this.setState({ status: "failed", message });
+      throw new Error(message);
+    }
+  }
+
+  async usernameAvailable(username: string) {
+    if (!apiEndpoint) return false;
+    const endpoint = new URL("/auth/username-available", apiEndpoint);
+    endpoint.searchParams.set("username", username.trim());
+    const response = await fetch(endpoint);
+    const value = (await response.json().catch(() => null)) as { available?: boolean; error?: string } | null;
+    if (!response.ok) throw new Error(value?.error || "Could not check username");
+    return value?.available === true;
+  }
+
+  async register(username: string, displayName: string, email: string, password: string) {
+    if (!apiEndpoint) throw new Error("Account service is unavailable");
+    this.setState({ status: "authenticating" });
+    try {
+      const response = await fetch(new URL("/auth/register", apiEndpoint), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: username.trim(), displayName: displayName.trim(), email: email.trim(), password }),
+      });
+      const value = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (!response.ok) throw new Error(value?.error || "Could not create account");
+      this.setState({ status: "awaiting-verification", email: email.trim() });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not create account";
+      this.setState({ status: "failed", message });
+      throw new Error(message);
+    }
+  }
+
+  async requestPasswordReset(identifier: string) {
+    if (!apiEndpoint) throw new Error("Account service is unavailable");
+    const response = await fetch(new URL("/auth/forgot-password", apiEndpoint), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ identifier: identifier.trim() }),
+    });
+    const value = (await response.json().catch(() => null)) as { error?: string } | null;
+    if (!response.ok) throw new Error(value?.error || "Could not request password reset");
+  }
+
+  async resendVerification(email: string) {
+    if (!this.client) throw new Error("Account service is unavailable");
+    const { error } = await this.client.auth.resend({
+      type: "signup", email: email.trim(), options: { emailRedirectTo: "mhtalk://auth/callback" },
+    });
+    if (error) throw error;
+  }
+
+  async completePasswordRecovery(password: string) {
+    if (!this.client || !this.session) throw new Error("The recovery link is invalid or expired");
+    const { error } = await this.client.auth.updateUser({ password });
+    if (error) throw error;
+    this.handlingPasswordRecovery = false;
+    await this.applySession(this.session);
+  }
+
+  async cancelPasswordRecovery() {
+    this.handlingPasswordRecovery = false;
+    await this.signOut();
   }
 
   async signIn(provider: "google" | "facebook") {
@@ -194,12 +306,29 @@ class AccountSession {
 
   private async handleDeepLink(value: string) {
     const url = new URL(value);
-    if (url.hostname === "auth" && url.pathname === "/callback") {
+    if (url.hostname === "auth" && (url.pathname === "/callback" || url.pathname === "/reset")) {
+      const recovery = url.pathname === "/reset";
+      this.handlingPasswordRecovery = recovery;
+      const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
+      const accessToken = fragment.get("access_token");
+      const refreshToken = fragment.get("refresh_token");
       const code = url.searchParams.get("code");
-      if (!code || !this.client) return;
-      const { data, error } = await this.client.auth.exchangeCodeForSession(code);
-      if (error) this.setState({ status: "failed", message: error.message });
-      else await this.applySession(data.session);
+      if (!this.client) return;
+      const result = accessToken && refreshToken
+        ? await this.client.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
+        : code
+          ? await this.client.auth.exchangeCodeForSession(code)
+          : { data: { session: null }, error: new Error(url.searchParams.get("error_description") || "The sign-in link is invalid or expired") };
+      if (result.error || !result.data.session) {
+        this.handlingPasswordRecovery = false;
+        this.setState({ status: "failed", message: result.error?.message || "The sign-in link is invalid or expired" });
+      } else if (recovery) {
+        this.session = result.data.session;
+        this.setState({ status: "password-recovery" });
+      } else {
+        this.handlingPasswordRecovery = false;
+        await this.applySession(result.data.session);
+      }
       return;
     }
     if (url.hostname === "invite" && url.pathname.length > 1 && this.session) {

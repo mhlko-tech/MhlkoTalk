@@ -1,5 +1,7 @@
 use tauri::Manager;
 
+const AUTH_VAULT_SERVICE: &str = "MHTalk";
+
 #[cfg(target_os = "windows")]
 fn copy_missing_tree(source: &std::path::Path, destination: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(source) else {
@@ -75,6 +77,33 @@ fn open_report_bug() -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn auth_secret_get(key: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(AUTH_VAULT_SERVICE, &key).map_err(|error| error.to_string())?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+#[tauri::command]
+fn auth_secret_set(key: String, value: String) -> Result<(), String> {
+    keyring::Entry::new(AUTH_VAULT_SERVICE, &key)
+        .map_err(|error| error.to_string())?
+        .set_password(&value)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn auth_secret_delete(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(AUTH_VAULT_SERVICE, &key).map_err(|error| error.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     migrate_previous_windows_identity();
@@ -98,6 +127,9 @@ pub fn run() {
             read_dropped_file,
             open_report_bug,
             apply_window_icon,
+            auth_secret_get,
+            auth_secret_set,
+            auth_secret_delete,
             native_recorder::recorder_capabilities,
             native_recorder::start_native_recording,
             native_recorder::switch_native_recording_source,

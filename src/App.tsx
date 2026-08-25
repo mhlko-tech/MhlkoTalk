@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import appPackage from "../package.json";
@@ -11,6 +12,7 @@ import type {
   UserProfile,
 } from "./core/types";
 import { roomSession } from "./services/roomSession";
+import { passwordError, usernameError } from "./core/authRules";
 import {
   accountSession,
   type AccountState,
@@ -44,6 +46,7 @@ const mediaQualityLabels: Record<MediaQuality, string> = {
 };
 const mediaQualityOrder: MediaQuality[] = ["low", "medium", "high"];
 const appVersion = appPackage.version;
+const publicServiceUrl = (import.meta.env.VITE_SOCIAL_API_ENDPOINT || "https://mhtalk-token-service.mhlkotalk.workers.dev").replace(/\/$/, "");
 
 function availableQualities(maximum: MediaQuality) {
   const maximumIndex = mediaQualityOrder.indexOf(maximum);
@@ -100,10 +103,10 @@ const infoPages: Record<InfoPage, { title: string; paragraphs: string[] }> = {
   privacy: {
     title: "Privacy Policy",
     paragraphs: [
-      "Your profile is stored on your device and shared with people in the room when needed to display your name, avatar and bio. Room media and messages are transmitted through the configured communication service.",
-      "MHTalk does not intentionally sell personal data. Files, recordings and recovered recording pieces remain on the device paths selected by you unless you deliberately send them.",
+      "Your account identifier, username, email address, profile, friend relationships, blocks and notification tokens are hosted by Supabase. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk. Google supplies basic account information only when you choose Google sign-in.",
+      "MHTalk does not sell personal data. Live room media and messages are transmitted through LiveKit. Files, recordings and recovered recording pieces remain on the device paths selected by you unless you deliberately send them.",
       "People in a room may capture or redistribute what they receive. Share only what you are comfortable revealing and use private invitations carefully.",
-      "You can remove your profile photo, leave a room, delete local recordings and stop camera, microphone or screen sharing at any time from the application controls.",
+      "You can sign out, remove your profile photo, leave a room, delete local recordings and stop camera, microphone or screen sharing at any time. Contact MHTalk to request account deletion.",
     ],
   },
 };
@@ -225,6 +228,9 @@ export function App() {
   useEffect(() => accountSession.subscribe(setAccountState), []);
   useEffect(() => accountSession.subscribeSocial(setSocialState), []);
   useEffect(() => { void accountSession.initialize(); }, []);
+  useEffect(() => {
+    if (accountState.status !== "signed-in" && session.state !== "idle") void roomSession.leave();
+  }, [accountState.status, session.state]);
   useEffect(() => {
     if (accountState.status !== "signed-in") return;
     const accountProfile = {
@@ -790,31 +796,9 @@ export function App() {
   };
 
   if (accountState.status !== "signed-in") {
-    const busy = accountState.status === "checking" || accountState.status === "authenticating";
     return (
       <main className="auth-gate-shell" onContextMenu={(event) => event.preventDefault()}>
-        <section className="auth-gate-card" aria-label="MHTalk sign in">
-          <div className="auth-gate-logo" aria-hidden="true">M</div>
-          <h1>MHTalk <small>{appVersion}</small></h1>
-          <h2>Sign in required</h2>
-          <p>Your account keeps your profile, friends and room invitations synchronized between phone and PC.</p>
-          {accountState.status === "checking" ? (
-            <div className="auth-gate-progress"><i /> Verifying your account…</div>
-          ) : accountState.status === "unavailable" ? (
-            <small className="social-error">Account service is unavailable. Check your connection and try again.</small>
-          ) : (
-            <>
-              <button className="primary auth-google" disabled={busy} onClick={() => void accountSession.signIn("google")}>
-                {accountState.status === "authenticating" ? "Opening Google…" : "Continue with Google"}
-              </button>
-              {accountState.status === "failed" && <small className="social-error">{accountState.message}</small>}
-            </>
-          )}
-          {(accountState.status === "failed" || accountState.status === "unavailable") && (
-            <button className="control auth-retry" onClick={() => void accountSession.retry()}>Try again</button>
-          )}
-          <small className="auth-gate-note">You must be signed in before MHTalk can open rooms or start a call.</small>
-        </section>
+        <AuthenticationGate state={accountState} />
         {updateActivity && (
           <div className="update-activity" aria-live="polite">
             <span>
@@ -2059,6 +2043,158 @@ export function App() {
       )}
       {dragging && <div className="global-drop-overlay">Drop to send</div>}
     </main>
+  );
+}
+
+function GoogleMark() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="google-mark">
+      <path fill="#4285F4" d="M21.6 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.4a4.6 4.6 0 0 1-2 3v2.6h3.3c1.9-1.8 2.9-4.4 2.9-7.5Z" />
+      <path fill="#34A853" d="M12 22c2.7 0 5-.9 6.7-2.3l-3.3-2.6c-.9.6-2.1 1-3.4 1-2.6 0-4.8-1.8-5.6-4.2H3v2.7A10 10 0 0 0 12 22Z" />
+      <path fill="#FBBC05" d="M6.4 13.9a6 6 0 0 1 0-3.8V7.4H3a10 10 0 0 0 0 9.2l3.4-2.7Z" />
+      <path fill="#EA4335" d="M12 5.9c1.5 0 2.8.5 3.9 1.5l2.9-2.9A9.7 9.7 0 0 0 12 2a10 10 0 0 0-9 5.4l3.4 2.7C7.2 7.7 9.4 5.9 12 5.9Z" />
+    </svg>
+  );
+}
+
+function AuthenticationGate({ state }: { state: AccountState }) {
+  type Mode = "login" | "register" | "forgot" | "verification" | "reset";
+  const [mode, setMode] = useState<Mode>(() =>
+    state.status === "password-recovery" ? "reset" : state.status === "awaiting-verification" ? "verification" : "login",
+  );
+  const [identifier, setIdentifier] = useState("");
+  const [username, setUsername] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [resendDelay, setResendDelay] = useState(0);
+
+  useEffect(() => {
+    if (state.status === "password-recovery") setMode("reset");
+    if (state.status === "awaiting-verification") {
+      setEmail(state.email);
+      setMode("verification");
+    }
+  }, [state]);
+  useEffect(() => {
+    if (resendDelay <= 0) return;
+    const timer = window.setInterval(() => setResendDelay((value) => Math.max(0, value - 1)), 1000);
+    return () => window.clearInterval(timer);
+  }, [resendDelay]);
+
+  const pending = busy || state.status === "checking" || state.status === "authenticating";
+  const changeMode = (next: Mode) => { setMode(next); setError(""); setNotice(""); };
+  const perform = async (action: () => Promise<void>) => {
+    setBusy(true); setError(""); setNotice("");
+    try { await action(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Something went wrong. Try again."); }
+    finally { setBusy(false); }
+  };
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (mode === "login") {
+      void perform(() => accountSession.login(identifier, password));
+      return;
+    }
+    if (mode === "forgot") {
+      void perform(async () => {
+        await accountSession.requestPasswordReset(identifier);
+        setNotice("If an account matches this information, password reset instructions have been sent.");
+      });
+      return;
+    }
+    if (mode === "register") {
+      void perform(async () => {
+        const invalidUsername = usernameError(username);
+        if (invalidUsername) throw new Error(invalidUsername);
+        const invalidPassword = passwordError(password);
+        if (invalidPassword) throw new Error(invalidPassword);
+        if (password !== confirmation) throw new Error("Passwords do not match");
+        if (!acceptedTerms) throw new Error("Accept the Terms and Privacy Policy to continue");
+        if (!(await accountSession.usernameAvailable(username))) throw new Error("Username is unavailable");
+        await accountSession.register(username, displayName, email, password);
+      });
+      return;
+    }
+    if (mode === "reset") {
+      void perform(async () => {
+        const invalidPassword = passwordError(password);
+        if (invalidPassword) throw new Error(invalidPassword);
+        if (password !== confirmation) throw new Error("Passwords do not match");
+        await accountSession.completePasswordRecovery(password);
+      });
+    }
+  };
+
+  return (
+    <section className="auth-gate-card auth-professional" aria-label="MHTalk account">
+      <div className="auth-brand">
+        <div className="auth-gate-logo" aria-hidden="true">M</div>
+        <div><h1>MHTalk</h1><small>Voice, video and rooms · v{appVersion}</small></div>
+      </div>
+
+      {state.status === "checking" ? (
+        <div className="auth-gate-progress"><i /> Restoring your secure session…</div>
+      ) : mode === "verification" ? (
+        <div className="auth-message-panel">
+          <div className="auth-message-icon">✉</div>
+          <h2>Verify your email</h2>
+          <p>We sent a confirmation link to <strong>{email}</strong>. Open it on this device to activate your MHTalk account.</p>
+          <button className="primary" disabled={pending || resendDelay > 0} onClick={() => void perform(async () => {
+            await accountSession.resendVerification(email); setResendDelay(60); setNotice("A new verification email was sent.");
+          })}>{resendDelay > 0 ? `Resend in ${resendDelay}s` : "Resend verification email"}</button>
+          <button className="auth-text-button" onClick={() => changeMode("login")}>Back to login</button>
+        </div>
+      ) : (
+        <form className="auth-form" onSubmit={submit}>
+          <header>
+            <h2>{mode === "login" ? "Welcome back" : mode === "register" ? "Create your account" : mode === "forgot" ? "Reset your password" : "Choose a new password"}</h2>
+            <p>{mode === "login" ? "Sign in to continue to MHTalk." : mode === "register" ? "One account works on phone and PC." : mode === "forgot" ? "Enter your username or email and we’ll send instructions." : "Use at least 10 characters for your new password."}</p>
+          </header>
+
+          {mode === "register" && <>
+            <label>Username<input value={username} onChange={(event) => setUsername(event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 32))} autoComplete="username" placeholder="your_username" required minLength={3} /></label>
+            <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value.slice(0, 60))} autoComplete="name" placeholder="How people will see you" required /></label>
+            <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="you@example.com" required /></label>
+          </>}
+
+          {(mode === "login" || mode === "forgot") &&
+            <label>Username or Email<input value={identifier} onChange={(event) => setIdentifier(event.target.value)} autoComplete="username" placeholder="Username or Email" required autoFocus /></label>}
+
+          {(mode === "login" || mode === "register" || mode === "reset") && <>
+            <label>Password<div className="password-field"><input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="Password" required minLength={mode === "login" ? undefined : 10} /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? "Hide" : "Show"}</button></div></label>
+            {(mode === "register" || mode === "reset") && <label>Confirm password<input type={showPassword ? "text" : "password"} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="new-password" placeholder="Confirm password" required minLength={10} /></label>}
+          </>}
+
+          {mode === "login" && <div className="auth-secondary-links"><button type="button" onClick={() => changeMode("register")}>Register new account</button><button type="button" onClick={() => changeMode("forgot")}>Forgot password?</button></div>}
+          {mode === "register" && <div className="auth-terms">
+            <input type="checkbox" aria-label="Accept Terms of Service and Privacy Policy" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} />
+            <span>I agree to the <button className="auth-inline-link" type="button" onClick={() => void openUrl(`${publicServiceUrl}/terms`)}>Terms of Service</button> and <button className="auth-inline-link" type="button" onClick={() => void openUrl(`${publicServiceUrl}/privacy`)}>Privacy Policy</button>.</span>
+          </div>}
+
+          {(error || (state.status === "failed" && !error)) && <div className="auth-alert" role="alert">{error || state.status === "failed" && state.message}</div>}
+          {notice && <div className="auth-notice" role="status">{notice}</div>}
+          {state.status === "unavailable" && <div className="auth-alert">Account service is unavailable. Check your connection and try again.</div>}
+
+          <button className="primary auth-submit" type="submit" disabled={pending}>{pending ? "Please wait…" : mode === "login" ? "Login" : mode === "register" ? "Create account" : mode === "forgot" ? "Send reset instructions" : "Save new password"}</button>
+
+          {mode === "login" && <>
+            <div className="auth-divider"><span>OR</span></div>
+            <button className="auth-google" type="button" disabled={pending} onClick={() => void perform(() => accountSession.signIn("google"))}><GoogleMark />Log in using Google</button>
+          </>}
+          {mode !== "login" && mode !== "reset" && <button className="auth-text-button" type="button" onClick={() => changeMode("login")}>Back to login</button>}
+          {mode === "reset" && <button className="auth-text-button" type="button" onClick={() => void accountSession.cancelPasswordRecovery()}>Cancel</button>}
+        </form>
+      )}
+      <footer className="auth-footer">Protected sign-in · Your password is never stored by MHTalk</footer>
+    </section>
   );
 }
 

@@ -1,5 +1,6 @@
 import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { moderateMainMessage } from "../../src/core/moderation";
+import { emailError, passwordError, usernameError } from "../../src/core/authRules";
 
 export interface Env {
   LIVEKIT_API_KEY: string;
@@ -35,11 +36,126 @@ const publicPage = (title: string, body: string) => new Response(`<!doctype html
 <body><main><div class="card"><h1>${title}</h1>${body}<p><a href="/">MHTalk home</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p><small>Contact: 3084346hlko@gmail.com</small></div></main></body></html>`, {
   headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff" },
 });
-const homePage = () => publicPage("MHTalk", `<p>MHTalk is a voice, video, screen-sharing and social rooms app for Android and Windows.</p><p>Sign in securely with Google to keep your profile and friends available across your devices.</p>`);
-const privacyPage = () => publicPage("Privacy Policy", `<p>Last updated: August 25, 2026.</p><h2>Data we use</h2><p>When you sign in, MHTalk stores the account identifier supplied by Google, your email address, profile name and picture, friend relationships, blocks, and notification device tokens. Supabase hosts this account data and Cloudflare routes authenticated requests.</p><h2>Calls and files</h2><p>LiveKit carries live voice, camera and screen sharing. Chat attachments and live media are not stored by the MHTalk account backend. Room invitations and presence data are temporary.</p><h2>Purpose and sharing</h2><p>We use this data only to provide accounts, profiles, friends, presence, room invitations and notifications. We do not sell personal data.</p><h2>Your choices</h2><p>You may sign out, disable notifications, edit your profile, or contact us to request deletion of your account data.</p>`);
+const homePage = () => publicPage("MHTalk", `<p>MHTalk is a voice, video, screen-sharing and social rooms app for Android and Windows.</p><p>Sign in securely with your username or email and password, or continue with Google, to keep your profile and friends available across your devices.</p>`);
+const privacyPage = () => publicPage("Privacy Policy", `<p>Last updated: August 26, 2026.</p><h2>Data we use</h2><p>When you create or use an account, MHTalk stores your account identifier, username, email address, profile name and picture, friend relationships, blocks, and notification device tokens. Supabase hosts this account data and Cloudflare routes authenticated requests. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk.</p><h2>Calls and files</h2><p>LiveKit carries live voice, camera and screen sharing. Chat attachments and live media are not stored by the MHTalk account backend. Room invitations and presence data are temporary.</p><h2>Purpose and sharing</h2><p>We use this data only to provide authentication, account recovery, profiles, friends, presence, room invitations and notifications. Google supplies basic account information only when you choose Google sign-in. We do not sell personal data.</p><h2>Your choices</h2><p>You may sign out, disable notifications, edit your profile, or contact us to request deletion of your account data.</p>`);
 const termsPage = () => publicPage("Terms of Service", `<p>Last updated: August 25, 2026.</p><p>Use MHTalk lawfully and respectfully. Do not abuse rooms, harass others, distribute illegal material, evade moderation, or attempt to compromise the service or other users.</p><p>You are responsible for content you transmit. Network, device and third-party service conditions can affect call quality and availability. The service is provided as available, without removing rights that cannot legally be waived.</p><p>Accounts or access may be limited when necessary to protect users or the service.</p>`);
 const configured = (env: Env) => Boolean(env.SUPABASE_URL && env.SUPABASE_PUBLISHABLE_KEY);
 const supabaseUrl = (env: Env, path: string) => `${env.SUPABASE_URL!.replace(/\/$/, "")}${path}`;
+
+async function digest(value: string) {
+  return b64(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
+}
+async function rateLimited(request: Request, env: Env, action: string, identifier: string, maximum: number, seconds: number) {
+  const ip = request.headers.get("cf-connecting-ip") || "local";
+  const key = `rate:${action}:${await digest(`${ip}:${identifier.toLowerCase()}`)}`;
+  const current = Number(await env.PRIVATE_ROOMS.get(key) || "0");
+  if (current >= maximum) return true;
+  await env.PRIVATE_ROOMS.put(key, String(current + 1), { expirationTtl: seconds });
+  return false;
+}
+async function publicAuthApi(env: Env, path: string, body: unknown) {
+  return fetch(supabaseUrl(env, path), {
+    method: "POST",
+    headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY!, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+async function resolveLoginEmail(env: Env, identifier: string) {
+  const normalized = identifier.trim().toLowerCase();
+  if (normalized.includes("@")) return normalized;
+  const response = await serviceApi(env, `/rest/v1/account_logins?username=eq.${encodeURIComponent(normalized)}&select=email&limit=1`);
+  if (!response?.ok) return null;
+  const values = (await response.json()) as { email?: string }[];
+  return values[0]?.email || null;
+}
+async function usernameAvailable(env: Env, username: string) {
+  if (usernameError(username)) return false;
+  const response = await serviceApi(env, `/rest/v1/account_logins?username=eq.${encodeURIComponent(username.trim())}&select=user_id&limit=1`);
+  if (!response?.ok) return false;
+  return ((await response.json()) as unknown[]).length === 0;
+}
+async function handleAuth(request: Request, env: Env, path: string) {
+  if (!configured(env) || !env.SUPABASE_SERVICE_ROLE_KEY)
+    return json({ error: "Account service is unavailable" }, 503);
+
+  if (path === "/auth/username-available" && request.method === "GET") {
+    const username = new URL(request.url).searchParams.get("username")?.trim() || "";
+    const validation = usernameError(username);
+    if (validation) return json({ available: false, error: validation }, 400);
+    if (await rateLimited(request, env, "username", username, 30, 300))
+      return json({ error: "Too many requests. Try again shortly." }, 429);
+    return json({ available: await usernameAvailable(env, username) });
+  }
+
+  if (request.method !== "POST") return json({ error: "Not found" }, 404);
+  const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!body) return json({ error: "Invalid request" }, 400);
+
+  if (path === "/auth/login") {
+    const identifier = typeof body.identifier === "string" ? body.identifier.trim() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    if (!identifier || !password) return json({ error: "Enter your username/email and password" }, 400);
+    if (await rateLimited(request, env, "login", identifier, 12, 600))
+      return json({ error: "Too many sign-in attempts. Try again in a few minutes." }, 429);
+    const resolved = await resolveLoginEmail(env, identifier);
+    const email = resolved || `missing-${await digest(identifier)}@invalid.mhtalk.local`;
+    const response = await publicAuthApi(env, "/auth/v1/token?grant_type=password", { email, password });
+    if (!response.ok) return json({ error: "Username/email or password is incorrect" }, 400);
+    return new Response(await response.text(), { status: 200, headers });
+  }
+
+  if (path === "/auth/register") {
+    const username = typeof body.username === "string" ? body.username.trim() : "";
+    const displayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    const password = typeof body.password === "string" ? body.password : "";
+    const validation = usernameError(username) || emailError(email) || passwordError(password) ||
+      (!displayName || displayName.length > 60 ? "Display name must be 1-60 characters" : null);
+    if (validation) return json({ error: validation }, 400);
+    if (await rateLimited(request, env, "register", email, 5, 3600))
+      return json({ error: "Too many registration attempts. Try again later." }, 429);
+    if (!(await usernameAvailable(env, username))) return json({ error: "Username is unavailable" }, 409);
+    const signup: Record<string, unknown> = {
+      email, password,
+      data: { preferred_username: username, full_name: displayName, mhtalk_registration: true },
+    };
+    if (typeof body.codeChallenge === "string" && body.codeChallenge.length <= 128) {
+      signup.code_challenge = body.codeChallenge;
+      signup.code_challenge_method = "s256";
+    }
+    const response = await publicAuthApi(
+      env,
+      `/auth/v1/signup?redirect_to=${encodeURIComponent("mhtalk://auth/callback")}`,
+      signup,
+    );
+    if (!response.ok) {
+      const value = (await response.json().catch(() => null)) as { msg?: string; error_description?: string } | null;
+      const detail = `${value?.msg || value?.error_description || ""}`.toLowerCase();
+      if (detail.includes("username")) return json({ error: "Username is unavailable" }, 409);
+      return json({ error: "An account may already exist. Try signing in or resetting your password." }, 400);
+    }
+    const value = (await response.json()) as { session?: unknown; access_token?: string };
+    return json({ verificationRequired: !value.session && !value.access_token });
+  }
+
+  if (path === "/auth/forgot-password") {
+    const identifier = typeof body.identifier === "string" ? body.identifier.trim() : "";
+    if (!identifier) return json({ error: "Enter your username or email" }, 400);
+    if (await rateLimited(request, env, "recover", identifier, 3, 3600))
+      return json({ accepted: true });
+    const resolved = await resolveLoginEmail(env, identifier);
+    const email = resolved || `missing-${await digest(identifier)}@invalid.mhtalk.local`;
+    const query = new URLSearchParams({ redirect_to: "mhtalk://auth/reset" });
+    if (typeof body.codeChallenge === "string" && body.codeChallenge.length <= 128) {
+      query.set("code_challenge", body.codeChallenge);
+      query.set("code_challenge_method", "s256");
+    }
+    await publicAuthApi(env, `/auth/v1/recover?${query}`, { email });
+    return json({ accepted: true });
+  }
+
+  return json({ error: "Not found" }, 404);
+}
 
 async function authenticate(request: Request, env: Env): Promise<AuthUser | Response> {
   if (!configured(env)) return json({ error: "Accounts are not configured yet" }, 503);
@@ -324,6 +440,7 @@ export default {
     if (request.method === "GET" && path === "/privacy") return privacyPage();
     if (request.method === "GET" && path === "/terms") return termsPage();
     if (request.method === "OPTIONS") return new Response(null, { headers });
+    if (path.startsWith("/auth/")) return handleAuth(request, env, path);
     if (path === "/presence" && request.method === "GET") {
       const ticket = url.searchParams.get("ticket") || "";
       const userId = await env.PRIVATE_ROOMS.get(`presence-ticket:${ticket}`);
