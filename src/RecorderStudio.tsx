@@ -19,6 +19,7 @@ const defaults: RecordingSettings = {
   includeMic: true,
   systemVolume: 1,
   micVolume: 1,
+  noiseCancellation: false,
 };
 const time = (seconds: number) =>
   `${Math.floor(seconds / 3600)
@@ -252,7 +253,7 @@ export function RecorderStudio() {
       setStatus("Choose a screen or window…");
       const selected = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: settings.fps, max: settings.fps } },
-        audio: settings.includeAudio,
+        audio: false,
       });
       const sceneId = scenes[targetIndex]?.id || crypto.randomUUID();
       const video = selected.getVideoTracks()[0];
@@ -303,7 +304,7 @@ export function RecorderStudio() {
       setStatus("Choose a screen or window for the new scene…");
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: settings.fps, max: settings.fps } },
-        audio: settings.includeAudio,
+        audio: false,
       });
       const index = scenes.length;
       const id = crypto.randomUUID();
@@ -721,6 +722,19 @@ export function RecorderStudio() {
                 }}
               />
               Show transparent recording timer
+            </label>
+            <label className="studio-check">
+              <input
+                type="checkbox"
+                checked={settings.noiseCancellation}
+                onChange={(event) =>
+                  changeSettings({
+                    ...settings,
+                    noiseCancellation: event.target.checked,
+                  })
+                }
+              />
+              Microphone noise cancellation (recording only)
             </label>
             <p>
               Final format: MP4 / H.264. Hardware encoding is preferred when

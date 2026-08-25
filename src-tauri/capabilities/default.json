@@ -12,6 +12,8 @@
     "core:window:allow-minimize",
     "core:window:allow-start-dragging",
     "core:window:allow-set-content-protected",
+    "deep-link:default",
+    "opener:default",
     "updater:default",
     "process:default"
   ]

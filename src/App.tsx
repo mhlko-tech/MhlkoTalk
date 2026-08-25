@@ -10,7 +10,12 @@ import type {
   UserProfile,
 } from "./core/types";
 import { roomSession } from "./services/roomSession";
-import { accountSession, type AccountState } from "./services/accountSession";
+import {
+  accountSession,
+  type AccountState,
+  type SearchProfile,
+  type SocialState,
+} from "./services/accountSession";
 import {
   startAutomaticUpdater,
   type UpdateActivity,
@@ -139,6 +144,13 @@ export function App() {
   const [accountState, setAccountState] = useState<AccountState>(() =>
     accountSession.getState(),
   );
+  const [socialState, setSocialState] = useState<SocialState>(() =>
+    accountSession.getSocialState(),
+  );
+  const [friendsOpen, setFriendsOpen] = useState(false);
+  const [friendSearch, setFriendSearch] = useState("");
+  const [friendResults, setFriendResults] = useState<SearchProfile[]>([]);
+  const [socialBusy, setSocialBusy] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
@@ -209,6 +221,18 @@ export function App() {
   useEffect(() => roomSession.subscribe(setSession), []);
   useEffect(() => roomSession.subscribeChat(setChat), []);
   useEffect(() => accountSession.subscribe(setAccountState), []);
+  useEffect(() => accountSession.subscribeSocial(setSocialState), []);
+  useEffect(() => { void accountSession.initialize(); }, []);
+  useEffect(() => {
+    if (accountState.status !== "signed-in") return;
+    const accountProfile = {
+      name: accountState.account.displayName,
+      bio: accountState.account.bio || "",
+      avatar: accountState.account.avatarUrl || accountState.account.displayName.slice(0, 1).toUpperCase(),
+    };
+    setProfile(accountProfile);
+    roomSession.setProfile(accountProfile);
+  }, [accountState]);
   useEffect(() => roomSession.setRemoteVolume(remoteVolume / 100), []);
   useEffect(() => startAutomaticUpdater(setUpdateActivity), []);
   useEffect(() => {
@@ -421,6 +445,39 @@ export function App() {
     await roomSession.join("Private room", code);
     setPrivateDialogOpen(false);
   };
+  const searchFriends = async () => {
+    if (friendSearch.trim().length < 2) return;
+    setSocialBusy("search");
+    try {
+      setFriendResults(await accountSession.searchProfiles(friendSearch.trim()));
+    } catch (error) {
+      setAppError(error instanceof Error ? error.message : "Could not search profiles");
+    } finally {
+      setSocialBusy("");
+    }
+  };
+  const inviteFriend = async (friendId: string) => {
+    setSocialBusy(friendId);
+    try {
+      const invite = await accountSession.inviteFriend(friendId, true);
+      setPrivateInvite(invite.inviteCode || null);
+      setRoom(invite.roomName);
+      await enterRoom(invite.roomName, invite.inviteCode);
+      setFriendsOpen(false);
+    } catch (error) {
+      setAppError(error instanceof Error ? error.message : "Could not send invitation");
+    } finally {
+      setSocialBusy("");
+    }
+  };
+  const acceptIncomingInvite = async () => {
+    const invite = socialState.incomingInvite;
+    if (!invite) return;
+    accountSession.clearInvite();
+    setPrivateInvite(invite.inviteCode || null);
+    setRoom(invite.roomName);
+    await enterRoom(invite.roomName, invite.inviteCode);
+  };
   const sendMessage = async () => {
     const message = draft;
     const attachment = pendingAttachment;
@@ -443,6 +500,13 @@ export function App() {
   };
   const saveProfile = async () => {
     await roomSession.setProfile(profile);
+    if (accountState.status === "signed-in") {
+      try {
+        await accountSession.updateProfile(profile.name, profile.bio, profile.avatar);
+      } catch (error) {
+        setAppError(error instanceof Error ? error.message : "Could not sync profile");
+      }
+    }
     setProfileOpen(false);
   };
   const resizeChat = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -875,6 +939,15 @@ export function App() {
                 }}
               >
                 <span>◉</span> Edit profile
+              </button>
+              <button
+                onClick={() => {
+                  setProfileMenuOpen(false);
+                  setFriendsOpen(true);
+                  if (accountState.status === "signed-in") void accountSession.refreshSocial();
+                }}
+              >
+                <span>♧</span> Friends
               </button>
               <button
                 onClick={() => {
@@ -1399,6 +1472,97 @@ export function App() {
           </section>
         </div>
       )}
+      {socialState.incomingInvite && (
+        <div className="modal-backdrop social-invite-backdrop">
+          <section className="private-modal social-invite-modal" role="dialog" aria-modal="true">
+            <h2>Room invitation</h2>
+            <p>A friend invited you to join an MHTalk room. Invitations expire after 10 minutes.</p>
+            <div className="social-row-actions">
+              <button className="primary" onClick={() => void acceptIncomingInvite()}>Join room</button>
+              <button className="control" onClick={() => accountSession.clearInvite()}>Not now</button>
+            </div>
+          </section>
+        </div>
+      )}
+      {friendsOpen && (
+        <div className="modal-backdrop">
+          <section className="private-modal friends-modal" role="dialog" aria-modal="true" aria-label="Friends">
+            <button className="modal-close" onClick={() => setFriendsOpen(false)}>×</button>
+            <h2>Friends</h2>
+            {accountState.status === "unavailable" ? (
+              <p>Accounts are ready in the application. Add the Supabase URL and publishable key to activate them.</p>
+            ) : accountState.status !== "signed-in" ? (
+              <div className="social-sign-in">
+                <p>Sign in to use the same profile and friend list on phone and PC.</p>
+                <button className="primary" disabled={accountState.status === "authenticating"} onClick={() => void accountSession.signIn("google")}>
+                  Continue with Google
+                </button>
+                <button className="control" disabled={accountState.status === "authenticating"} onClick={() => void accountSession.signIn("facebook")}>
+                  Continue with Facebook
+                </button>
+                {accountState.status === "failed" && <small className="social-error">{accountState.message}</small>}
+              </div>
+            ) : (
+              <div className="social-content">
+                <div className="social-account-card">
+                  <Avatar value={accountState.account.avatarUrl || accountState.account.displayName.slice(0, 1)} />
+                  <span><strong>{accountState.account.displayName}</strong><small>@{accountState.account.username}</small></span>
+                  <button className="control" onClick={() => void accountSession.refreshSocial()}>Refresh</button>
+                </div>
+                {socialState.requests.length > 0 && (
+                  <div className="social-section">
+                    <h3>Friend requests</h3>
+                    {socialState.requests.map((request) => (
+                      <div className="social-person" key={request.requestId}>
+                        <Avatar value={request.avatarUrl || request.displayName.slice(0, 1)} remote />
+                        <span><strong>{request.displayName}</strong><small>@{request.username}</small></span>
+                        <button className="social-accept" onClick={() => void accountSession.respondFriendRequest(request.requestId, true)}>Accept</button>
+                        <button className="social-icon-button" title="Decline" onClick={() => void accountSession.respondFriendRequest(request.requestId, false)}>×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="social-search">
+                  <input value={friendSearch} onChange={(event) => setFriendSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchFriends(); }} placeholder="Search name or @username" />
+                  <button className="control" disabled={socialBusy === "search" || friendSearch.trim().length < 2} onClick={() => void searchFriends()}>Search</button>
+                </div>
+                {friendResults.length > 0 && (
+                  <div className="social-results">
+                    {friendResults.map((result) => (
+                      <div className="social-person" key={result.id}>
+                        <Avatar value={result.avatarUrl || result.displayName.slice(0, 1)} remote />
+                        <span><strong>{result.displayName}</strong><small>@{result.username}</small></span>
+                        <button className="control" disabled={result.isFriend || socialBusy === result.id} onClick={async () => {
+                          setSocialBusy(result.id);
+                          try {
+                            await accountSession.sendFriendRequest(result.id);
+                            setFriendResults((items) => items.filter((item) => item.id !== result.id));
+                          } catch (error) {
+                            setAppError(error instanceof Error ? error.message : "Could not send friend request");
+                          } finally { setSocialBusy(""); }
+                        }}>{result.isFriend ? "Friends" : "Add"}</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="social-section social-friend-list">
+                  <h3>Your friends</h3>
+                  {socialState.loading && <p>Loading friends…</p>}
+                  {!socialState.loading && socialState.friends.length === 0 && <p>No friends yet. Search by name or username.</p>}
+                  {socialState.friends.map((friend) => (
+                    <div className="social-person" key={friend.id}>
+                      <div className="social-avatar"><Avatar value={friend.avatarUrl || friend.displayName.slice(0, 1)} remote /><i className={friend.online ? "online" : "offline"} /></div>
+                      <span><strong>{friend.displayName}</strong><small>{friend.online ? "Online" : "Offline"} · @{friend.username}</small></span>
+                      <button className="primary" disabled={socialBusy === friend.id} onClick={() => void inviteFriend(friend.id)}>Invite</button>
+                    </div>
+                  ))}
+                  {socialState.error && <small className="social-error">{socialState.error}</small>}
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
       {settingsOpen && (
         <div className="modal-backdrop">
           <section className="private-modal settings-modal compact-settings">
@@ -1534,14 +1698,24 @@ export function App() {
               </label>
             </div>
             <div className="settings-section account-foundation">
-              <h3>Mangatak account</h3>
+              <h3>MHTalk account</h3>
               <p>
                 {accountState.status === "signed-in"
-                  ? `Signed in as ${accountState.account.displayName}`
+                  ? `Signed in as ${accountState.account.displayName} (@${accountState.account.username})`
                   : accountState.status === "unavailable"
-                    ? "Account foundation is ready. Waiting for the official Mangatak login service."
-                    : "Mangatak sign-in service is configured."}
+                    ? "Add the Supabase project settings to enable accounts and friends."
+                    : accountState.status === "failed"
+                      ? accountState.message
+                      : "Sign in to keep your profile and friends on phone and PC."}
               </p>
+              {accountState.status === "signed-in" ? (
+                <button className="control" onClick={() => void accountSession.signOut()}>Sign out</button>
+              ) : accountState.status !== "unavailable" ? (
+                <div className="account-actions">
+                  <button className="control" onClick={() => void accountSession.signIn("google")}>Continue with Google</button>
+                  <button className="control" onClick={() => void accountSession.signIn("facebook")}>Continue with Facebook</button>
+                </div>
+              ) : null}
             </div>
           </section>
         </div>

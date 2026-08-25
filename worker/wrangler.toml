@@ -9,3 +9,11 @@ LIVEKIT_URL = "https://mhtalkremake-utuei6i7.livekit.cloud"
 [[kv_namespaces]]
 binding = "PRIVATE_ROOMS"
 id = "3ced063544014961bd3aa2b5af26db09"
+
+[[durable_objects.bindings]]
+name = "PRESENCE"
+class_name = "PresenceHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PresenceHub"]

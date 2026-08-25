@@ -8,6 +8,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 
+use crate::recording_audio::{AudioPipeline, AudioPipelineStatus};
+
 const FFMPEG_ZIP_URL: &str = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
 const FFMPEG_SHA_URL: &str =
     "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256";
@@ -19,7 +21,7 @@ static ENCODER: OnceLock<String> = OnceLock::new();
 
 struct NativeRecording {
     child: Child,
-    audio: Option<TcpStream>,
+    audio_pipeline: Option<AudioPipeline>,
     temporary_paths: Vec<PathBuf>,
     final_path: PathBuf,
     started: Instant,
@@ -52,11 +54,52 @@ pub struct NativeRecordingSettings {
     fps: u32,
     quality: String,
     has_audio: bool,
+    include_system_audio: bool,
+    include_microphone: bool,
+    system_volume: f32,
+    microphone_volume: f32,
+    noise_cancellation: bool,
     source_kind: String,
     source_label: String,
     output_index: u32,
     output_width: u32,
     output_height: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeRecordingMixSettings {
+    include_system_audio: bool,
+    include_microphone: bool,
+    system_volume: f32,
+    microphone_volume: f32,
+    noise_cancellation: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeRecordingAudioStatus {
+    system_level: f32,
+    microphone_level: f32,
+    system_discontinuities: u64,
+    microphone_discontinuities: u64,
+    system_underruns: u64,
+    microphone_underruns: u64,
+    writer_errors: u64,
+}
+
+impl From<AudioPipelineStatus> for NativeRecordingAudioStatus {
+    fn from(status: AudioPipelineStatus) -> Self {
+        Self {
+            system_level: status.system_level,
+            microphone_level: status.microphone_level,
+            system_discontinuities: status.system_discontinuities,
+            microphone_discontinuities: status.microphone_discontinuities,
+            system_underruns: status.system_underruns,
+            microphone_underruns: status.microphone_underruns,
+            writer_errors: status.writer_errors,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -516,7 +559,6 @@ fn stop_capture(session: &mut NativeRecording) -> Result<(), String> {
         let _ = stdin.write_all(b"q\n");
         let _ = stdin.flush();
     }
-    session.audio.take();
     let status = session.child.wait().map_err(|error| error.to_string())?;
     let current_path = session
         .temporary_paths
@@ -694,10 +736,10 @@ pub async fn recorder_capabilities(app: tauri::AppHandle) -> RecorderCapabilitie
 }
 
 fn recorder_capabilities_blocking(app: &tauri::AppHandle) -> RecorderCapabilities {
-    let folder = recordings_dir(&app).unwrap_or_default();
-    match install_ffmpeg(&app) {
+    let folder = recordings_dir(app).unwrap_or_default();
+    match install_ffmpeg(app) {
         Ok(()) => {
-            let ffmpeg = ffmpeg_path(&app).unwrap_or_default();
+            let ffmpeg = ffmpeg_path(app).unwrap_or_default();
             RecorderCapabilities {
                 ready: true,
                 encoder: preferred_encoder(&ffmpeg),
@@ -728,18 +770,38 @@ fn start_native_recording_blocking(
     app: &tauri::AppHandle,
     settings: NativeRecordingSettings,
 ) -> Result<NativeRecordingStatus, String> {
-    install_ffmpeg(&app)?;
+    install_ffmpeg(app)?;
     let mut guard = active()
         .lock()
         .map_err(|_| "recorder state unavailable".to_string())?;
     if guard.is_some() {
         return Err("a recording is already running".to_string());
     }
-    let ffmpeg = ffmpeg_path(&app)?;
+    let ffmpeg = ffmpeg_path(app)?;
     let encoder = preferred_encoder(&ffmpeg);
-    let final_path = next_output_path(&recordings_dir(&app)?);
+    let final_path = next_output_path(&recordings_dir(app)?);
     let temporary_path = final_path.with_extension("recording.mkv");
-    let (child, audio) = spawn_capture_resilient(&ffmpeg, &settings, &encoder, &temporary_path)?;
+    let (mut child, audio) =
+        spawn_capture_resilient(&ffmpeg, &settings, &encoder, &temporary_path)?;
+    let audio_pipeline = match audio {
+        Some(stream) => match AudioPipeline::start(
+            stream,
+            settings.include_system_audio,
+            settings.include_microphone,
+            settings.system_volume,
+            settings.microphone_volume,
+            settings.noise_cancellation,
+        ) {
+            Ok(pipeline) => Some(pipeline),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                fs::remove_file(&temporary_path).ok();
+                return Err(format!("recording audio could not start: {error}"));
+            }
+        },
+        None => None,
+    };
     let status = NativeRecordingStatus {
         active: true,
         elapsed_ms: 0,
@@ -749,7 +811,7 @@ fn start_native_recording_blocking(
     };
     *guard = Some(NativeRecording {
         child,
-        audio,
+        audio_pipeline,
         temporary_paths: vec![temporary_path],
         final_path,
         started: Instant::now(),
@@ -785,19 +847,33 @@ fn switch_native_recording_source_blocking(
         .ok_or_else(|| "recording is not active".to_string())?;
     settings.output_width = session.output_width;
     settings.output_height = session.output_height;
+    settings.has_audio = session.audio_pipeline.is_some();
     let segment_number = session.temporary_paths.len() + 1;
     let temporary_path = session
         .final_path
         .with_extension(format!("scene-{segment_number}.recording.mkv"));
     let (mut new_child, new_audio) =
         spawn_capture_resilient(&ffmpeg, &settings, &session.encoder, &temporary_path)?;
+    if let Some(pipeline) = session.audio_pipeline.as_ref() {
+        let Some(stream) = new_audio else {
+            let _ = new_child.kill();
+            let _ = new_child.wait();
+            fs::remove_file(&temporary_path).ok();
+            return Err("new recording scene has no audio input".into());
+        };
+        if let Err(error) = pipeline.replace_output(stream) {
+            let _ = new_child.kill();
+            let _ = new_child.wait();
+            fs::remove_file(&temporary_path).ok();
+            return Err(error);
+        }
+    }
     if let Err(error) = stop_capture(session) {
         let _ = new_child.kill();
         fs::remove_file(&temporary_path).ok();
         return Err(error);
     }
     session.child = new_child;
-    session.audio = new_audio;
     session.temporary_paths.push(temporary_path);
     Ok(NativeRecordingStatus {
         active: true,
@@ -814,23 +890,49 @@ fn switch_native_recording_source_blocking(
 }
 
 #[tauri::command]
-pub fn append_native_recording_audio(samples: Vec<i16>) -> Result<(), String> {
-    let mut guard = active()
+pub fn update_native_recording_mix(settings: NativeRecordingMixSettings) -> Result<(), String> {
+    let guard = active()
         .lock()
         .map_err(|_| "recorder state unavailable".to_string())?;
     let session = guard
-        .as_mut()
+        .as_ref()
         .ok_or_else(|| "recording is not active".to_string())?;
-    let Some(stream) = session.audio.as_mut() else {
+    let Some(pipeline) = session.audio_pipeline.as_ref() else {
         return Ok(());
     };
-    let mut bytes = Vec::with_capacity(samples.len() * 2);
-    for sample in samples {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    stream
-        .write_all(&bytes)
-        .map_err(|error| format!("could not write recording audio: {error}"))
+    pipeline.update_mix(
+        settings.include_system_audio,
+        settings.include_microphone,
+        settings.system_volume,
+        settings.microphone_volume,
+        settings.noise_cancellation,
+    );
+    Ok(())
+}
+
+#[tauri::command]
+pub fn native_recording_audio_status() -> NativeRecordingAudioStatus {
+    let status = active()
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard.as_ref().and_then(|session| {
+                session
+                    .audio_pipeline
+                    .as_ref()
+                    .map(|pipeline| pipeline.status())
+            })
+        })
+        .unwrap_or(AudioPipelineStatus {
+            system_level: 0.0,
+            microphone_level: 0.0,
+            system_discontinuities: 0,
+            microphone_discontinuities: 0,
+            system_underruns: 0,
+            microphone_underruns: 0,
+            writer_errors: 0,
+        });
+    status.into()
 }
 
 #[tauri::command]
@@ -921,6 +1023,9 @@ fn finalize_session(
     mut session: NativeRecording,
     progress_duration_ms: Option<u64>,
 ) -> Result<NativeRecordingResult, String> {
+    if let Some(audio_pipeline) = session.audio_pipeline.take() {
+        audio_pipeline.stop();
+    }
     stop_capture(&mut session)?;
     let ffmpeg = ffmpeg_path(app)?;
     if let Some(duration_ms) = progress_duration_ms {

@@ -128,6 +128,9 @@ export class RoomSession {
       throw new Error("Private rooms require the secure token service");
     const response = await fetch(new URL("/private-room", endpoint), {
       method: "POST",
+      headers: accountSession.getAccessToken()
+        ? { authorization: `Bearer ${accountSession.getAccessToken()}` }
+        : undefined,
     });
     const payload = (await response.json()) as {
       roomName?: string;

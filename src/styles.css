@@ -234,6 +234,89 @@ button {
   font-size: 12px;
   line-height: 1.5;
 }
+.account-actions,
+.social-sign-in,
+.social-content {
+  display: grid;
+  gap: 10px;
+}
+.friends-modal {
+  max-height: min(720px, calc(100vh - 40px));
+  overflow: auto;
+  width: min(560px, calc(100vw - 40px));
+}
+.social-account-card,
+.social-person {
+  align-items: center;
+  background: #23263a;
+  border: 1px solid #353a55;
+  border-radius: 12px;
+  display: flex;
+  gap: 10px;
+  padding: 10px;
+}
+.social-account-card > span,
+.social-person > span {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+.social-account-card small,
+.social-person small {
+  color: #9ca5c3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.social-account-card button,
+.social-person button,
+.social-search button,
+.social-row-actions button {
+  width: auto;
+}
+.social-section {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+}
+.social-section h3 {
+  font-size: 13px;
+  margin: 4px 2px 0;
+}
+.social-search {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.social-search input {
+  margin: 0;
+}
+.social-results {
+  display: grid;
+  gap: 7px;
+  max-height: 190px;
+  overflow: auto;
+}
+.social-avatar {
+  position: relative;
+}
+.social-avatar i {
+  border: 2px solid #23263a;
+  border-radius: 50%;
+  bottom: 0;
+  height: 11px;
+  position: absolute;
+  right: 0;
+  width: 11px;
+}
+.social-avatar i.online { background: #37d67a; }
+.social-avatar i.offline { background: #737b96; }
+.social-accept { background: #4f8dff; }
+.social-icon-button { background: #34384d; padding: 7px 11px !important; }
+.social-error { color: #ff8e9c !important; }
+.social-row-actions { display: flex; gap: 9px; }
+.social-invite-backdrop { z-index: 30; }
+.social-invite-modal { width: min(420px, calc(100vw - 40px)); }
 .share-options-modal {
   display: grid;
   gap: 14px;

@@ -79,6 +79,9 @@ fn open_report_bug() -> Result<(), String> {
 pub fn run() {
     migrate_previous_windows_identity();
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {}))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -98,7 +101,8 @@ pub fn run() {
             native_recorder::recorder_capabilities,
             native_recorder::start_native_recording,
             native_recorder::switch_native_recording_source,
-            native_recorder::append_native_recording_audio,
+            native_recorder::update_native_recording_mix,
+            native_recorder::native_recording_audio_status,
             native_recorder::native_recording_status,
             native_recorder::native_recording_processing_status,
             native_recorder::stop_native_recording,
@@ -113,3 +117,4 @@ pub fn run() {
     });
 }
 mod native_recorder;
+mod recording_audio;
