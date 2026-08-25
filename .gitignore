@@ -5,6 +5,7 @@ src-tauri/target/
 worker/.dev.vars
 worker/firebase-service-account.json
 supabase-bootstrap.txt
+updater-recovery-password.txt
 .env.production.local
 
 # wrangler files
