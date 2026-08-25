@@ -3,6 +3,9 @@ dist/
 src-tauri/target/
 .env
 worker/.dev.vars
+worker/firebase-service-account.json
+supabase-bootstrap.txt
+.env.production.local
 
 # wrangler files
 .wrangler
