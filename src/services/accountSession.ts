@@ -46,8 +46,8 @@ type ApiProfile = {
 };
 
 const initialSocial: SocialState = { friends: [], requests: [], incomingInvite: null, loading: false, error: "" };
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "https://fcadjrqrrzcvbyqrgnnm.supabase.co";
+const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_3Azp3R7eFE8YI81Eg_Bekw_D353_Efc";
 const apiEndpoint = import.meta.env.VITE_SOCIAL_API_ENDPOINT || import.meta.env.VITE_LIVEKIT_TOKEN_ENDPOINT;
 
 class AccountSession {

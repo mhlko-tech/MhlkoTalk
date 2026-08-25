@@ -11,6 +11,7 @@ export interface Env {
   SUPABASE_URL?: string;
   SUPABASE_PUBLISHABLE_KEY?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
+  AUTH_REQUIRED?: string;
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_CLIENT_EMAIL?: string;
   FIREBASE_PRIVATE_KEY?: string;
@@ -28,6 +29,15 @@ const headers = {
   "access-control-allow-headers": "authorization, content-type",
 };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers });
+const publicPage = (title: string, body: string) => new Response(`<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title} · MHTalk</title><style>body{margin:0;background:#0c111b;color:#e8edf7;font:16px/1.65 system-ui,sans-serif}main{max-width:780px;margin:auto;padding:56px 24px}h1,h2{color:#fff}a{color:#73b7ff}.card{background:#151d2b;border:1px solid #263348;border-radius:18px;padding:28px}small{color:#9aa8bc}</style></head>
+<body><main><div class="card"><h1>${title}</h1>${body}<p><a href="/">MHTalk home</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p><small>Contact: 3084346hlko@gmail.com</small></div></main></body></html>`, {
+  headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff" },
+});
+const homePage = () => publicPage("MHTalk", `<p>MHTalk is a voice, video, screen-sharing and social rooms app for Android and Windows.</p><p>Sign in securely with Google to keep your profile and friends available across your devices.</p>`);
+const privacyPage = () => publicPage("Privacy Policy", `<p>Last updated: August 25, 2026.</p><h2>Data we use</h2><p>When you sign in, MHTalk stores the account identifier supplied by Google, your email address, profile name and picture, friend relationships, blocks, and notification device tokens. Supabase hosts this account data and Cloudflare routes authenticated requests.</p><h2>Calls and files</h2><p>LiveKit carries live voice, camera and screen sharing. Chat attachments and live media are not stored by the MHTalk account backend. Room invitations and presence data are temporary.</p><h2>Purpose and sharing</h2><p>We use this data only to provide accounts, profiles, friends, presence, room invitations and notifications. We do not sell personal data.</p><h2>Your choices</h2><p>You may sign out, disable notifications, edit your profile, or contact us to request deletion of your account data.</p>`);
+const termsPage = () => publicPage("Terms of Service", `<p>Last updated: August 25, 2026.</p><p>Use MHTalk lawfully and respectfully. Do not abuse rooms, harass others, distribute illegal material, evade moderation, or attempt to compromise the service or other users.</p><p>You are responsible for content you transmit. Network, device and third-party service conditions can affect call quality and availability. The service is provided as available, without removing rights that cannot legally be waived.</p><p>Accounts or access may be limited when necessary to protect users or the service.</p>`);
 const configured = (env: Env) => Boolean(env.SUPABASE_URL && env.SUPABASE_PUBLISHABLE_KEY);
 const supabaseUrl = (env: Env, path: string) => `${env.SUPABASE_URL!.replace(/\/$/, "")}${path}`;
 
@@ -43,7 +53,9 @@ async function authenticate(request: Request, env: Env): Promise<AuthUser | Resp
   return user.id ? { id: user.id, email: user.email, accessToken: authorization.slice(7) } : json({ error: "Invalid account" }, 401);
 }
 async function optionalAuth(request: Request, env: Env): Promise<AuthUser | Response | null> {
-  return configured(env) ? authenticate(request, env) : null;
+  if (!configured(env)) return null;
+  if (!request.headers.get("authorization") && env.AUTH_REQUIRED !== "true") return null;
+  return authenticate(request, env);
 }
 async function userApi(env: Env, user: AuthUser, path: string, init: RequestInit = {}) {
   return fetch(supabaseUrl(env, path), {
@@ -295,9 +307,12 @@ export class PresenceHub implements DurableObject {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method === "OPTIONS") return new Response(null, { headers });
     const url = new URL(request.url);
     const path = url.pathname;
+    if (request.method === "GET" && path === "/") return homePage();
+    if (request.method === "GET" && path === "/privacy") return privacyPage();
+    if (request.method === "GET" && path === "/terms") return termsPage();
+    if (request.method === "OPTIONS") return new Response(null, { headers });
     if (path === "/presence" && request.method === "GET") {
       const ticket = url.searchParams.get("ticket") || "";
       const userId = await env.PRIVATE_ROOMS.get(`presence-ticket:${ticket}`);
