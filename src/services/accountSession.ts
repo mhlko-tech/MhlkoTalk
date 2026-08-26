@@ -96,6 +96,8 @@ class AccountSession {
   private oauthTimer: number | undefined;
   private initialized = false;
   private handlingPasswordRecovery = false;
+  private hydrationRevision = 0;
+  private processedAuthCallbacks = new Set<string>();
 
   subscribe(listener: (state: AccountState) => void) {
     this.listeners.add(listener); listener(this.state);
@@ -428,6 +430,13 @@ class AccountSession {
         const accessToken = fragment.get("access_token");
         const refreshToken = fragment.get("refresh_token");
         const code = url.searchParams.get("code");
+        const callbackKey = `${url.pathname}:${code || accessToken || url.search}`;
+        if (this.processedAuthCallbacks.has(callbackKey)) return;
+        this.processedAuthCallbacks.add(callbackKey);
+        if (this.processedAuthCallbacks.size > 12) {
+          const oldest = this.processedAuthCallbacks.values().next().value;
+          if (oldest) this.processedAuthCallbacks.delete(oldest);
+        }
         if (!this.client) return;
         const result = accessToken && refreshToken
           ? await this.client.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
@@ -465,6 +474,7 @@ class AccountSession {
   }
 
   private async applySession(session: Session | null) {
+    const revision = ++this.hydrationRevision;
     if (session) window.clearTimeout(this.oauthTimer);
     this.session = session;
     if (!session) {
@@ -472,7 +482,8 @@ class AccountSession {
       return;
     }
     try {
-      const onboarding = await this.api<ApiOnboarding>("/auth/onboarding");
+      const onboarding = await this.apiWithSession<ApiOnboarding>(session, "/auth/onboarding");
+      if (revision !== this.hydrationRevision) return;
       if (onboarding.required) {
         this.setState({
           status: "onboarding", email: onboarding.email, username: onboarding.profile.username,
@@ -481,10 +492,12 @@ class AccountSession {
         });
         return;
       }
-      const profile = await this.api<ApiProfile>("/social/me");
+      const profile = await this.apiWithSession<ApiProfile>(session, "/social/me");
+      if (revision !== this.hydrationRevision) return;
       this.setState({ status: "signed-in", account: this.mapProfile(profile) });
       await this.refreshSocial();
     } catch (error) {
+      if (revision !== this.hydrationRevision) return;
       this.setState({ status: "failed", message: error instanceof Error ? error.message : "Profile could not be loaded" });
     }
   }
@@ -531,11 +544,37 @@ class AccountSession {
       avatarUrl: profile.avatar_url || undefined, bio: profile.bio || undefined };
   }
   private async api<T = unknown>(path: string, init: RequestInit = {}) {
-    if (!apiEndpoint || !this.session) throw new Error("Sign in is required");
-    const response = await fetch(new URL(path, apiEndpoint), {
-      ...init,
-      headers: { authorization: `Bearer ${this.session.access_token}`, "content-type": "application/json", ...(init.headers || {}) },
-    });
+    if (!apiEndpoint || !this.client) throw new Error("Account service is unavailable");
+    let session = this.session;
+    if (!session) {
+      const current = await this.client.auth.getSession();
+      session = current.data.session;
+      this.session = session;
+    }
+    if (!session) throw new Error("Your session expired. Please sign in again.");
+    return this.apiWithSession<T>(session, path, init);
+  }
+
+  private async apiWithSession<T = unknown>(session: Session, path: string, init: RequestInit = {}) {
+    if (!apiEndpoint) throw new Error("Account service is unavailable");
+    const send = (activeSession: Session) => {
+      const requestHeaders = new Headers(init.headers);
+      requestHeaders.set("authorization", `Bearer ${activeSession.access_token}`);
+      if (!requestHeaders.has("content-type")) requestHeaders.set("content-type", "application/json");
+      return fetch(new URL(path, apiEndpoint), {
+        ...init,
+        headers: requestHeaders,
+      });
+    };
+    let response = await send(session);
+    if (response.status === 401 && this.client) {
+      const refreshed = await this.client.auth.refreshSession({ refresh_token: session.refresh_token });
+      if (refreshed.data.session) {
+        session = refreshed.data.session;
+        this.session = session;
+        response = await send(session);
+      }
+    }
     if (!response.ok) {
       const value = (await response.json().catch(() => null)) as { error?: string; message?: string } | null;
       throw new Error(value?.error || value?.message || "Social service request failed");
