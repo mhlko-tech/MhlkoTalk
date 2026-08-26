@@ -2058,7 +2058,7 @@ function GoogleMark() {
 }
 
 function AuthenticationGate({ state }: { state: AccountState }) {
-  type Mode = "login" | "register" | "forgot" | "verification" | "reset";
+  type Mode = "login" | "register" | "forgot" | "verification" | "recovery-code" | "reset";
   const [mode, setMode] = useState<Mode>(() =>
     state.status === "password-recovery" ? "reset" : state.status === "awaiting-verification" ? "verification" : "login",
   );
@@ -2068,6 +2068,7 @@ function AuthenticationGate({ state }: { state: AccountState }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
+  const [verificationCode, setVerificationCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -2089,7 +2090,10 @@ function AuthenticationGate({ state }: { state: AccountState }) {
   }, [resendDelay]);
 
   const pending = busy || state.status === "checking" || state.status === "authenticating";
-  const changeMode = (next: Mode) => { setMode(next); setError(""); setNotice(""); };
+  const changeMode = (next: Mode) => {
+    accountSession.clearAuthError();
+    setMode(next); setError(""); setNotice(""); setVerificationCode("");
+  };
   const perform = async (action: () => Promise<void>) => {
     setBusy(true); setError(""); setNotice("");
     try { await action(); }
@@ -2106,8 +2110,15 @@ function AuthenticationGate({ state }: { state: AccountState }) {
     if (mode === "forgot") {
       void perform(async () => {
         await accountSession.requestPasswordReset(identifier);
-        setNotice("If an account matches this information, password reset instructions have been sent.");
+        setEmail(identifier.trim());
+        setVerificationCode("");
+        setMode("recovery-code");
+        setNotice("If an account matches this information, a recovery code has been sent.");
       });
+      return;
+    }
+    if (mode === "recovery-code") {
+      void perform(() => accountSession.verifyPasswordRecoveryCode(email, verificationCode));
       return;
     }
     if (mode === "register") {
@@ -2154,17 +2165,20 @@ function AuthenticationGate({ state }: { state: AccountState }) {
         <div className="auth-message-panel">
           <div className="auth-message-icon">✉</div>
           <h2>Verify your email</h2>
-          <p>We sent a confirmation link to <strong>{email}</strong>. Open it on this device to activate your MHTalk account.</p>
+          <p>Enter the verification code sent to <strong>{email}</strong>. You can also use the link in the same email.</p>
+          <label>Verification code<input inputMode="numeric" autoComplete="one-time-code" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 8))} placeholder="Verification code" required minLength={6} maxLength={8} /></label>
+          <button className="primary" disabled={pending || verificationCode.length < 6} onClick={() => void perform(() => accountSession.verifyEmailCode(email, verificationCode))}>Verify and continue</button>
           <button className="primary" disabled={pending || resendDelay > 0} onClick={() => void perform(async () => {
-            await accountSession.resendVerification(email); setResendDelay(60); setNotice("A new verification email was sent.");
-          })}>{resendDelay > 0 ? `Resend in ${resendDelay}s` : "Resend verification email"}</button>
+            await accountSession.resendVerification(email); setResendDelay(60); setNotice("A new verification code was sent.");
+          })}>{resendDelay > 0 ? `Resend in ${resendDelay}s` : "Resend verification code"}</button>
+          <button className="auth-text-button" onClick={() => { setIdentifier(email); changeMode("forgot"); }}>Already use this email? Set a password</button>
           <button className="auth-text-button" onClick={() => changeMode("login")}>Back to login</button>
         </div>
       ) : (
         <form className="auth-form" onSubmit={submit}>
           <header>
-            <h2>{mode === "login" ? "Welcome back" : mode === "register" ? "Create your account" : mode === "forgot" ? "Reset your password" : "Choose a new password"}</h2>
-            <p>{mode === "login" ? "Sign in to continue to MHTalk." : mode === "register" ? "One account works on phone and PC." : mode === "forgot" ? "Enter your username or email and we’ll send instructions." : "Use at least 10 characters for your new password."}</p>
+            <h2>{mode === "login" ? "Welcome back" : mode === "register" ? "Create your account" : mode === "forgot" ? "Reset your password" : mode === "recovery-code" ? "Enter recovery code" : "Choose a new password"}</h2>
+            <p>{mode === "login" ? "Sign in to continue to MHTalk." : mode === "register" ? "One account works on phone and PC." : mode === "forgot" ? "Enter your username or email and we’ll send a recovery code." : mode === "recovery-code" ? `Enter the code sent to ${email}.` : "Use at least 10 characters for your new password."}</p>
           </header>
 
           {mode === "register" && <>
@@ -2175,6 +2189,9 @@ function AuthenticationGate({ state }: { state: AccountState }) {
 
           {(mode === "login" || mode === "forgot") &&
             <label>Username or Email<input value={identifier} onChange={(event) => setIdentifier(event.target.value)} autoComplete="username" placeholder="Username or Email" required autoFocus /></label>}
+
+          {mode === "recovery-code" &&
+            <label>Recovery code<input inputMode="numeric" autoComplete="one-time-code" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 8))} placeholder="Recovery code" required minLength={6} maxLength={8} autoFocus /></label>}
 
           {(mode === "login" || mode === "register" || mode === "reset") && <>
             <label>Password<div className="password-field"><input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder="Password" required minLength={mode === "login" ? undefined : 10} /><button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "Hide password" : "Show password"}>{showPassword ? "Hide" : "Show"}</button></div></label>
@@ -2191,13 +2208,13 @@ function AuthenticationGate({ state }: { state: AccountState }) {
           {notice && <div className="auth-notice" role="status">{notice}</div>}
           {state.status === "unavailable" && <div className="auth-alert">Account service is unavailable. Check your connection and try again.</div>}
 
-          <button className="primary auth-submit" type="submit" disabled={pending}>{pending ? "Please wait…" : mode === "login" ? "Login" : mode === "register" ? "Create account" : mode === "forgot" ? "Send reset instructions" : "Save new password"}</button>
+          <button className="primary auth-submit" type="submit" disabled={pending || mode === "recovery-code" && verificationCode.length < 6}>{pending ? "Please wait…" : mode === "login" ? "Login" : mode === "register" ? "Create account" : mode === "forgot" ? "Send recovery code" : mode === "recovery-code" ? "Verify code" : "Save new password"}</button>
 
           {mode === "login" && <>
             <div className="auth-divider"><span>OR</span></div>
             <button className="auth-google" type="button" disabled={pending} onClick={() => void perform(() => accountSession.signIn("google"))}><GoogleMark />Log in using Google</button>
           </>}
-          {mode !== "login" && mode !== "reset" && <button className="auth-text-button" type="button" onClick={() => changeMode("login")}>Back to login</button>}
+          {mode !== "login" && mode !== "reset" && <button className="auth-text-button" type="button" onClick={() => changeMode(mode === "recovery-code" ? "forgot" : "login")}>{mode === "recovery-code" ? "Use another email" : "Back to login"}</button>}
           {mode === "reset" && <button className="auth-text-button" type="button" onClick={() => void accountSession.cancelPasswordRecovery()}>Cancel</button>}
         </form>
       )}

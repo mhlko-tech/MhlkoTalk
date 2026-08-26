@@ -208,6 +208,33 @@ class AccountSession {
     if (error) throw error;
   }
 
+  async verifyEmailCode(email: string, token: string) {
+    if (!this.client) throw new Error("Account service is unavailable");
+    const { data, error } = await this.client.auth.verifyOtp({
+      email: email.trim(), token: token.trim(), type: "signup",
+    });
+    if (error || !data.session) throw error || new Error("The verification code is invalid or expired");
+    await this.applySession(data.session);
+  }
+
+  async verifyPasswordRecoveryCode(email: string, token: string) {
+    if (!this.client) throw new Error("Account service is unavailable");
+    this.handlingPasswordRecovery = true;
+    const { data, error } = await this.client.auth.verifyOtp({
+      email: email.trim(), token: token.trim(), type: "recovery",
+    });
+    if (error || !data.session) {
+      this.handlingPasswordRecovery = false;
+      throw error || new Error("The recovery code is invalid or expired");
+    }
+    this.session = data.session;
+    this.setState({ status: "password-recovery" });
+  }
+
+  clearAuthError() {
+    if (this.state.status === "failed") this.setState(this.client ? { status: "signed-out" } : { status: "unavailable" });
+  }
+
   async completePasswordRecovery(password: string) {
     if (!this.client || !this.session) throw new Error("The recovery link is invalid or expired");
     const { error } = await this.client.auth.updateUser({ password });
