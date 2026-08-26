@@ -416,14 +416,7 @@ button {
 }
 .auth-message-panel input:focus { border-color: #8173f4; box-shadow: 0 0 0 3px #8173f426; }
 .auth-message-panel input:read-only { color: #9299b7; }
-.multilingual-name-input { position: relative; display: block; }
-.multilingual-name-input input { padding-inline-end: 66px !important; text-align: start; unicode-bidi: plaintext; }
-.multilingual-name-input .keyboard-language-button {
-  position: absolute; inset-inline-end: 5px; top: 5px; width: 54px !important; height: 36px;
-  padding: 0 6px; border: 1px solid #484f71; background: #292d46; color: #ddd9ff;
-  font-size: 11px; font-weight: 800;
-}
-.multilingual-name-input .keyboard-language-button:hover { background: #343953; }
+.multilingual-name-field > input { text-align: start; unicode-bidi: plaintext; }
 .multilingual-name-help { color: #8f98b8; font-size: 10px; font-weight: 500; }
 .auth-avatar-picker { display: flex; align-items: center; justify-content: center; gap: 14px; }
 .auth-avatar-picker .avatar { width: 62px; height: 62px; flex: 0 0 auto; }
@@ -1302,7 +1295,6 @@ button {
 .private-modal label input[type="range"] {
   padding: 0;
 }
-.private-modal .multilingual-name-input input { margin-top: 6px; }
 .private-modal .multilingual-name-help { display: block; margin-top: 5px; }
 .big-avatar {
   width: 70px;
@@ -1592,31 +1584,28 @@ button {
   font-size: 11px;
   font-weight: 800;
 }
-.crop-modal {
-  width: 420px;
-}
-.crop-preview {
-  position: relative;
-  width: 210px;
-  height: 210px;
-  margin: 18px auto;
-  overflow: hidden;
-  border: 4px solid #8d7dff;
-  border-radius: 50%;
-  background: #0b0d17;
-  box-shadow: 0 0 0 12px #111427;
-}
-.crop-preview img {
-  position: absolute;
-  max-width: none;
-  max-height: none;
-  object-fit: fill;
-}
-.crop-modal label input[type="range"] {
-  margin: 7px 0 0;
-  padding: 0;
-  accent-color: #8d7dff;
-}
+.crop-backdrop { padding: 0; background: #08090ddd; }
+.crop-workspace { width: min(760px, calc(100vw - 40px)); overflow: hidden; border-radius: 18px; background: #111214; box-shadow: 0 30px 100px #000d; }
+.crop-workspace header { height: 62px; padding: 0 18px; display: grid; grid-template-columns: 42px 1fr 42px; align-items: center; border-bottom: 1px solid #26272b; }
+.crop-workspace header h2 { margin: 0; text-align: center; font-size: 20px; }
+.crop-workspace header > span { color: #b9bbc2; font-size: 24px; text-align: right; }
+.crop-back { width: 40px; height: 40px; padding: 0; background: transparent; color: #d9dae0; font-size: 27px; }
+.crop-stage { position: relative; height: 430px; display: grid; place-items: center; overflow: hidden; background: #0c0d0f; }
+.crop-stage-backdrop { position: absolute; inset: 28px; width: calc(100% - 56px); height: calc(100% - 56px); object-fit: contain; opacity: .22; filter: brightness(.45); }
+.crop-frame { position: relative; width: 280px; height: 280px; overflow: hidden; border: 2px solid #f6f6f7; background: #08090b; cursor: grab; touch-action: none; box-shadow: 0 0 0 999px #08090b73; }
+.crop-frame:active { cursor: grabbing; }
+.crop-frame > img { position: absolute; max-width: none; max-height: none; user-select: none; pointer-events: none; transform-origin: center; }
+.crop-frame .corner { position: absolute; z-index: 2; width: 20px; height: 20px; border-color: #fff; border-style: solid; pointer-events: none; }
+.crop-frame .top-left { left: -2px; top: -2px; border-width: 5px 0 0 5px; }
+.crop-frame .top-right { right: -2px; top: -2px; border-width: 5px 5px 0 0; }
+.crop-frame .bottom-left { left: -2px; bottom: -2px; border-width: 0 0 5px 5px; }
+.crop-frame .bottom-right { right: -2px; bottom: -2px; border-width: 0 5px 5px 0; }
+.crop-actions { min-height: 120px; padding: 18px 24px; display: grid; grid-template-columns: 92px minmax(170px, 1fr) 92px; align-items: center; gap: 20px; }
+.crop-rotate { height: 66px; display: grid; place-items: center; gap: 2px; background: #1c1d20; color: #d7d8dd; }
+.crop-rotate span { font-size: 21px; }
+.crop-zoom { display: flex; align-items: center; gap: 10px; color: #aaaeb8; }
+.crop-zoom input { width: 100%; accent-color: #a99cff; }
+.crop-next { min-height: 44px; border-radius: 22px; background: #b9d4ff; color: #18345d; font-weight: 800; }
 .remove-avatar {
   display: block !important;
   width: auto !important;

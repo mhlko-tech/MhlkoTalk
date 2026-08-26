@@ -1,5 +1,4 @@
 import type { InputHTMLAttributes } from "react";
-import { switchKeyboardLanguage } from "../services/inputLanguage";
 
 interface DisplayNameFieldProps
   extends Omit<InputHTMLAttributes<HTMLInputElement>, "onChange" | "value"> {
@@ -19,27 +18,14 @@ export function DisplayNameField({
   return (
     <label className="multilingual-name-field">
       {label}
-      <span className="multilingual-name-input">
-        <input
-          {...inputProps}
-          dir="auto"
-          value={value}
-          maxLength={maxLength}
-          onChange={(event) => onValueChange(event.currentTarget.value)}
-        />
-        <button
-          type="button"
-          className="keyboard-language-button"
-          title="Switch keyboard language"
-          aria-label="Switch keyboard language"
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => void switchKeyboardLanguage()}
-        >
-          ع / A
-        </button>
-      </span>
+      <input
+        {...inputProps}
+        dir="auto"
+        value={value}
+        maxLength={maxLength}
+        onChange={(event) => onValueChange(event.currentTarget.value)}
+      />
       <small className="multilingual-name-help">يدعم الأسماء العربية والإنجليزية</small>
     </label>
   );
 }
-

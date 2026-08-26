@@ -212,6 +212,7 @@ export function App() {
   const [cropZoom, setCropZoom] = useState(1);
   const [cropX, setCropX] = useState(0);
   const [cropY, setCropY] = useState(0);
+  const [cropRotation, setCropRotation] = useState(0);
   const [cropImageSize, setCropImageSize] = useState({ width: 1, height: 1 });
   const avatarInput = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -223,6 +224,9 @@ export function App() {
   const recorder = useRef<MediaRecorder | null>(null);
   const recordingChunks = useRef<Blob[]>([]);
   const recorderStudioOpening = useRef(false);
+  const profileSaveTimer = useRef<number | null>(null);
+  const profileSaveChain = useRef<Promise<void>>(Promise.resolve());
+  const lastPersistedProfile = useRef(JSON.stringify(profile));
 
   useEffect(() => roomSession.subscribe(setSession), []);
   useEffect(() => roomSession.subscribeChat(setChat), []);
@@ -245,14 +249,16 @@ export function App() {
   }, [accountState.status, session.state]);
   useEffect(() => {
     if (accountState.status !== "signed-in") return;
+    if (profileOpen) return;
     const accountProfile = {
       name: accountState.account.displayName,
       bio: accountState.account.bio || "",
       avatar: accountState.account.avatarUrl || accountState.account.displayName.slice(0, 1).toUpperCase(),
     };
+    lastPersistedProfile.current = JSON.stringify(accountProfile);
     setProfile(accountProfile);
     roomSession.setProfile(accountProfile);
-  }, [accountState]);
+  }, [accountState, profileOpen]);
   useEffect(() => roomSession.setRemoteVolume(remoteVolume / 100), []);
   useEffect(() => startAutomaticUpdater(setUpdateActivity), []);
   useEffect(() => {
@@ -514,15 +520,53 @@ export function App() {
     setReply(null);
     roomSession.setTyping(false);
   };
-  const saveProfile = async () => {
-    await roomSession.setProfile(profile);
-    if (accountState.status === "signed-in") {
-      try {
-        await accountSession.updateProfile(profile.name, profile.bio, profile.avatar);
-      } catch (error) {
-        setAppError(error instanceof Error ? error.message : "Could not sync profile");
+  const persistProfile = (draft: UserProfile) => {
+    const normalized = { ...draft, name: draft.name.trim(), bio: draft.bio.trim() };
+    if (!normalized.name) return profileSaveChain.current;
+    const signature = JSON.stringify(normalized);
+    const persist = async () => {
+      if (lastPersistedProfile.current === signature) return;
+      await roomSession.setProfile(normalized);
+      let storedProfile = normalized;
+      if (accountState.status === "signed-in") {
+        await accountSession.updateProfile(normalized.name, normalized.bio, normalized.avatar);
+        const refreshed = accountSession.getState();
+        if (refreshed.status === "signed-in") {
+          storedProfile = {
+            name: refreshed.account.displayName,
+            bio: refreshed.account.bio || "",
+            avatar: refreshed.account.avatarUrl || normalized.avatar,
+          };
+          await roomSession.setProfile(storedProfile);
+          setProfile((current) =>
+            current.avatar === normalized.avatar && current.name.trim() === normalized.name
+              ? storedProfile
+              : current,
+          );
+        }
       }
-    }
+      lastPersistedProfile.current = JSON.stringify(storedProfile);
+    };
+    profileSaveChain.current = profileSaveChain.current.then(persist, persist).catch((error) => {
+      setAppError(error instanceof Error ? error.message : "Could not sync profile");
+    });
+    return profileSaveChain.current;
+  };
+  useEffect(() => {
+    if (!profileOpen) return;
+    if (profileSaveTimer.current !== null) window.clearTimeout(profileSaveTimer.current);
+    profileSaveTimer.current = window.setTimeout(() => {
+      profileSaveTimer.current = null;
+      void persistProfile(profile);
+    }, 350);
+    return () => {
+      if (profileSaveTimer.current !== null) window.clearTimeout(profileSaveTimer.current);
+    };
+  }, [profile, profileOpen]);
+  const closeProfile = async () => {
+    if (profileSaveTimer.current !== null) window.clearTimeout(profileSaveTimer.current);
+    profileSaveTimer.current = null;
+    await persistProfile(profile);
     setProfileOpen(false);
   };
   const resizeChat = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -599,6 +643,7 @@ export function App() {
       setCropZoom(1);
       setCropX(0);
       setCropY(0);
+      setCropRotation(0);
     };
     image.src = url;
   };
@@ -609,11 +654,12 @@ export function App() {
       cropZoom,
       cropX,
       cropY,
+      cropRotation,
       cropImageSize,
     );
     URL.revokeObjectURL(cropSource);
     setCropSource(null);
-    setProfile({ ...profile, avatar });
+    setProfile((current) => ({ ...current, avatar }));
   };
   const sendAttachment = async (file?: File) => {
     if (!file) return;
@@ -1797,7 +1843,7 @@ export function App() {
           <section className="private-modal">
             <button
               className="modal-close"
-              onClick={() => setProfileOpen(false)}
+              onClick={() => void closeProfile()}
             >
               ×
             </button>
@@ -1825,10 +1871,10 @@ export function App() {
               <button
                 className="remove-avatar"
                 onClick={() =>
-                  setProfile({
-                    ...profile,
+                  setProfile((current) => ({
+                    ...current,
                     avatar: (profile.name.trim()[0] || "M").toUpperCase(),
-                  })
+                  }))
                 }
               >
                 Remove photo
@@ -1845,17 +1891,9 @@ export function App() {
               <input
                 maxLength={120}
                 value={profile.bio}
-                onChange={(event) =>
-                  setProfile({ ...profile, bio: event.target.value })
-                }
+                onChange={(event) => setProfile((current) => ({ ...current, bio: event.target.value }))}
               />
             </label>
-            <button
-              className="primary modal-create"
-              onClick={() => void saveProfile()}
-            >
-              Save profile
-            </button>
           </section>
         </div>
       )}
@@ -1886,13 +1924,14 @@ export function App() {
           zoom={cropZoom}
           moveX={cropX}
           moveY={cropY}
-          onZoom={(value) => {
-            setCropZoom(value);
+          rotation={cropRotation}
+          onZoom={setCropZoom}
+          onMove={(x, y) => { setCropX(x); setCropY(y); }}
+          onRotate={() => {
+            setCropRotation((value) => (value + 90) % 360);
             setCropX(0);
             setCropY(0);
           }}
-          onMoveX={setCropX}
-          onMoveY={setCropY}
           onCancel={() => {
             URL.revokeObjectURL(cropSource);
             setCropSource(null);
