@@ -555,6 +555,67 @@ button {
   border-radius: 9px;
   font-weight: 700;
 }
+.private-modal.friends-modal {
+  width: min(560px, calc(100vw - 32px));
+}
+.friends-modal .social-account-card,
+.friends-modal .social-person {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-width: 0;
+}
+.friends-modal .social-account-card > span,
+.friends-modal .social-person > span {
+  overflow: hidden;
+}
+.friends-modal .social-account-card strong,
+.friends-modal .social-person strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.friends-modal .social-action,
+.friends-modal .social-row-actions button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  width: auto;
+  padding: 8px 13px;
+  white-space: nowrap;
+}
+.friends-modal .social-icon-button {
+  min-width: 36px;
+  padding-inline: 10px !important;
+}
+.friends-modal .social-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+}
+.friends-modal .social-search input {
+  min-width: 0;
+  margin: 0;
+}
+.friends-modal .social-search button {
+  min-width: 88px;
+}
+.friends-modal .social-row-actions {
+  justify-content: end;
+}
+@media (max-width: 480px) {
+  .private-modal.friends-modal {
+    padding: 20px;
+    width: calc(100vw - 24px);
+  }
+  .friends-modal .social-account-card,
+  .friends-modal .social-person {
+    gap: 8px;
+    padding: 9px;
+  }
+  .friends-modal .social-action,
+  .friends-modal .social-row-actions button {
+    padding-inline: 10px;
+  }
+}
 .modal-create {
   margin-bottom: 15px;
 }

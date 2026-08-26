@@ -1519,7 +1519,7 @@ export function App() {
                 <div className="social-account-card">
                   <Avatar value={accountState.account.avatarUrl || accountState.account.displayName.slice(0, 1)} />
                   <span><strong>{accountState.account.displayName}</strong><small>@{accountState.account.username}</small></span>
-                  <button className="control" onClick={() => void accountSession.refreshSocial()}>Refresh</button>
+                  <button className="control social-action" onClick={() => void accountSession.refreshSocial()}>Refresh</button>
                 </div>
                 {socialState.requests.length > 0 && (
                   <div className="social-section">
@@ -1528,15 +1528,17 @@ export function App() {
                       <div className="social-person" key={request.requestId}>
                         <Avatar value={request.avatarUrl || request.displayName.slice(0, 1)} remote />
                         <span><strong>{request.displayName}</strong><small>@{request.username}</small></span>
-                        <button className="social-accept" onClick={() => void accountSession.respondFriendRequest(request.requestId, true)}>Accept</button>
-                        <button className="social-icon-button" title="Decline" onClick={() => void accountSession.respondFriendRequest(request.requestId, false)}>×</button>
+                        <div className="social-row-actions">
+                          <button className="social-accept social-action" onClick={() => void accountSession.respondFriendRequest(request.requestId, true)}>Accept</button>
+                          <button className="social-icon-button social-action" title="Decline" aria-label={`Decline ${request.displayName}'s friend request`} onClick={() => void accountSession.respondFriendRequest(request.requestId, false)}>×</button>
+                        </div>
                       </div>
                     ))}
                   </div>
                 )}
                 <div className="social-search">
                   <input value={friendSearch} onChange={(event) => setFriendSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchFriends(); }} placeholder="Search name or @username" />
-                  <button className="control" disabled={socialBusy === "search" || friendSearch.trim().length < 2} onClick={() => void searchFriends()}>Search</button>
+                  <button className="control social-action" disabled={socialBusy === "search" || friendSearch.trim().length < 2} onClick={() => void searchFriends()}>Search</button>
                 </div>
                 {friendResults.length > 0 && (
                   <div className="social-results">
@@ -1544,7 +1546,7 @@ export function App() {
                       <div className="social-person" key={result.id}>
                         <Avatar value={result.avatarUrl || result.displayName.slice(0, 1)} remote />
                         <span><strong>{result.displayName}</strong><small>@{result.username}</small></span>
-                        <button className="control" disabled={result.isFriend || socialBusy === result.id} onClick={async () => {
+                        <button className="control social-action" disabled={result.isFriend || socialBusy === result.id} onClick={async () => {
                           setSocialBusy(result.id);
                           try {
                             await accountSession.sendFriendRequest(result.id);
@@ -1565,7 +1567,7 @@ export function App() {
                     <div className="social-person" key={friend.id}>
                       <div className="social-avatar"><Avatar value={friend.avatarUrl || friend.displayName.slice(0, 1)} remote /><i className={friend.online ? "online" : "offline"} /></div>
                       <span><strong>{friend.displayName}</strong><small>{friend.online ? "Online" : "Offline"} · @{friend.username}</small></span>
-                      <button className="primary" disabled={socialBusy === friend.id} onClick={() => void inviteFriend(friend.id)}>Invite</button>
+                      <button className="primary social-action" disabled={socialBusy === friend.id} onClick={() => void inviteFriend(friend.id)}>Invite</button>
                     </div>
                   ))}
                   {socialState.error && <small className="social-error">{socialState.error}</small>}
