@@ -1,6 +1,83 @@
 use tauri::Manager;
 
 const AUTH_VAULT_SERVICE: &str = "MHTalk";
+const AUTH_CHUNK_MANIFEST_PREFIX: &str = "mhtalk-chunks:v1:";
+// Windows Credential Manager allows a maximum 2560-byte credential blob.
+// keyring stores passwords as UTF-16, so stay comfortably below that limit.
+const AUTH_CHUNK_UTF16_LIMIT: usize = 1000;
+
+#[derive(Clone)]
+struct AuthChunkManifest {
+    generation: String,
+    count: usize,
+}
+
+fn auth_entry(key: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(AUTH_VAULT_SERVICE, key).map_err(|error| error.to_string())
+}
+
+fn auth_raw_get(key: &str) -> Result<Option<String>, String> {
+    match auth_entry(key)?.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn auth_raw_delete(key: &str) -> Result<(), String> {
+    match auth_entry(key)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn auth_chunk_key(key: &str, generation: &str, index: usize) -> String {
+    format!("{key}--mhtalk-chunk--{generation}--{index}")
+}
+
+fn parse_auth_chunk_manifest(value: &str) -> Option<AuthChunkManifest> {
+    let remainder = value.strip_prefix(AUTH_CHUNK_MANIFEST_PREFIX)?;
+    let (generation, count) = remainder.rsplit_once(':')?;
+    let count = count.parse::<usize>().ok()?;
+    if generation.is_empty()
+        || generation.len() > 64
+        || !generation
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || value == '-')
+        || !(1..=128).contains(&count)
+    {
+        return None;
+    }
+    Some(AuthChunkManifest {
+        generation: generation.to_string(),
+        count,
+    })
+}
+
+fn split_auth_secret(value: &str) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_utf16 = 0;
+    for character in value.chars() {
+        let character_utf16 = character.len_utf16();
+        if current_utf16 + character_utf16 > AUTH_CHUNK_UTF16_LIMIT && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+            current_utf16 = 0;
+        }
+        current.push(character);
+        current_utf16 += character_utf16;
+    }
+    if !current.is_empty() || chunks.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+fn delete_auth_chunks(key: &str, manifest: &AuthChunkManifest) {
+    for index in 0..manifest.count {
+        auth_raw_delete(&auth_chunk_key(key, &manifest.generation, index)).ok();
+    }
+}
 
 #[cfg(target_os = "windows")]
 fn copy_missing_tree(source: &std::path::Path, destination: &std::path::Path) {
@@ -79,28 +156,129 @@ fn open_report_bug() -> Result<(), String> {
 
 #[tauri::command]
 fn auth_secret_get(key: String) -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(AUTH_VAULT_SERVICE, &key).map_err(|error| error.to_string())?;
-    match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(error) => Err(error.to_string()),
+    let Some(value) = auth_raw_get(&key)? else {
+        return Ok(None);
+    };
+    let Some(manifest) = parse_auth_chunk_manifest(&value) else {
+        return Ok(Some(value));
+    };
+    let mut secret = String::new();
+    for index in 0..manifest.count {
+        let chunk_key = auth_chunk_key(&key, &manifest.generation, index);
+        let chunk = auth_raw_get(&chunk_key)?.ok_or_else(|| {
+            "Secure session storage is incomplete. Please sign in again.".to_string()
+        })?;
+        secret.push_str(&chunk);
     }
+    Ok(Some(secret))
 }
 
 #[tauri::command]
 fn auth_secret_set(key: String, value: String) -> Result<(), String> {
-    keyring::Entry::new(AUTH_VAULT_SERVICE, &key)
-        .map_err(|error| error.to_string())?
-        .set_password(&value)
-        .map_err(|error| error.to_string())
+    let previous_manifest = auth_raw_get(&key)?
+        .as_deref()
+        .and_then(parse_auth_chunk_manifest);
+    let chunks = split_auth_secret(&value);
+    if chunks.len() == 1 {
+        auth_entry(&key)?
+            .set_password(&value)
+            .map_err(|error| error.to_string())?;
+    } else {
+        let generation = format!(
+            "{:x}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_nanos(),
+            std::process::id(),
+        );
+        let manifest = AuthChunkManifest {
+            generation,
+            count: chunks.len(),
+        };
+        for (index, chunk) in chunks.iter().enumerate() {
+            if let Err(error) = auth_entry(&auth_chunk_key(&key, &manifest.generation, index))
+                .and_then(|entry| entry.set_password(chunk).map_err(|error| error.to_string()))
+            {
+                delete_auth_chunks(&key, &manifest);
+                return Err(error);
+            }
+        }
+        let manifest_value = format!(
+            "{}{}:{}",
+            AUTH_CHUNK_MANIFEST_PREFIX, manifest.generation, manifest.count
+        );
+        if let Err(error) = auth_entry(&key)?
+            .set_password(&manifest_value)
+            .map_err(|error| error.to_string())
+        {
+            delete_auth_chunks(&key, &manifest);
+            return Err(error);
+        }
+    }
+    if let Some(previous) = previous_manifest {
+        delete_auth_chunks(&key, &previous);
+    }
+    Ok(())
 }
 
 #[tauri::command]
 fn auth_secret_delete(key: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(AUTH_VAULT_SERVICE, &key).map_err(|error| error.to_string())?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(error.to_string()),
+    let manifest = auth_raw_get(&key)?
+        .as_deref()
+        .and_then(parse_auth_chunk_manifest);
+    if let Some(manifest) = manifest {
+        delete_auth_chunks(&key, &manifest);
+    }
+    auth_raw_delete(&key)
+}
+
+#[cfg(test)]
+mod auth_storage_tests {
+    use super::*;
+
+    #[test]
+    fn chunks_large_unicode_sessions_below_the_windows_limit() {
+        let value = format!("{}{}", "a".repeat(2200), "𐍈".repeat(250));
+        let chunks = split_auth_secret(&value);
+        assert!(chunks.len() >= 3);
+        assert_eq!(chunks.concat(), value);
+        assert!(chunks
+            .iter()
+            .all(|chunk| chunk.encode_utf16().count() <= AUTH_CHUNK_UTF16_LIMIT));
+    }
+
+    #[test]
+    fn parses_only_valid_chunk_manifests() {
+        let value = format!("{}abc-123:4", AUTH_CHUNK_MANIFEST_PREFIX);
+        let manifest = parse_auth_chunk_manifest(&value).expect("valid manifest");
+        assert_eq!(manifest.generation, "abc-123");
+        assert_eq!(manifest.count, 4);
+        assert!(parse_auth_chunk_manifest("mhtalk-chunks:v1:bad/path:2").is_none());
+        assert!(parse_auth_chunk_manifest("mhtalk-chunks:v1:abc:0").is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    #[ignore = "requires the Windows Credential Manager"]
+    fn round_trips_a_large_session_through_windows_credentials() {
+        let key = format!("mhtalk-auth-storage-test-{}", std::process::id());
+        let value = format!(
+            "{{\"access_token\":\"{}\",\"name\":\"{}\"}}",
+            "x".repeat(6000),
+            "محمد".repeat(200)
+        );
+        let result = (|| -> Result<(), String> {
+            auth_secret_set(key.clone(), value.clone())?;
+            let stored = auth_secret_get(key.clone())?
+                .ok_or_else(|| "stored test session is missing".to_string())?;
+            if stored != value {
+                return Err("stored test session did not round-trip".to_string());
+            }
+            Ok(())
+        })();
+        auth_secret_delete(key).ok();
+        result.expect("large secure session round-trip");
     }
 }
 

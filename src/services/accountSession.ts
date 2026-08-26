@@ -400,38 +400,49 @@ class AccountSession {
   clearInvite() { this.setSocial({ ...this.social, incomingInvite: null }); }
 
   private async handleDeepLink(value: string) {
-    const url = new URL(value);
-    if (url.hostname === "auth" && (url.pathname === "/callback" || url.pathname === "/reset")) {
-      window.clearTimeout(this.oauthTimer);
-      const recovery = url.pathname === "/reset";
-      this.handlingPasswordRecovery = recovery;
-      const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
-      const accessToken = fragment.get("access_token");
-      const refreshToken = fragment.get("refresh_token");
-      const code = url.searchParams.get("code");
-      if (!this.client) return;
-      const result = accessToken && refreshToken
-        ? await this.client.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
-        : code
-          ? await this.client.auth.exchangeCodeForSession(code)
-          : { data: { session: null }, error: new Error(url.searchParams.get("error_description") || "The sign-in link is invalid or expired") };
-      if (result.error || !result.data.session) {
-        this.handlingPasswordRecovery = false;
-        this.setState({ status: "failed", message: result.error?.message || "The sign-in link is invalid or expired" });
-      } else if (recovery) {
-        this.session = result.data.session;
-        this.setState({ status: "password-recovery" });
-      } else {
-        this.handlingPasswordRecovery = false;
-        await this.applySession(result.data.session);
+    try {
+      const url = new URL(value);
+      if (url.hostname === "auth" && (url.pathname === "/callback" || url.pathname === "/reset")) {
+        window.clearTimeout(this.oauthTimer);
+        const recovery = url.pathname === "/reset";
+        this.handlingPasswordRecovery = recovery;
+        const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
+        const accessToken = fragment.get("access_token");
+        const refreshToken = fragment.get("refresh_token");
+        const code = url.searchParams.get("code");
+        if (!this.client) return;
+        const result = accessToken && refreshToken
+          ? await this.client.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
+          : code
+            ? await this.client.auth.exchangeCodeForSession(code)
+            : { data: { session: null }, error: new Error(url.searchParams.get("error_description") || "The sign-in link is invalid or expired") };
+        if (result.error || !result.data.session) {
+          this.handlingPasswordRecovery = false;
+          this.setState({ status: "failed", message: result.error?.message || "The sign-in link is invalid or expired" });
+        } else if (recovery) {
+          this.session = result.data.session;
+          this.setState({ status: "password-recovery" });
+        } else {
+          this.handlingPasswordRecovery = false;
+          await this.applySession(result.data.session);
+        }
+        return;
       }
-      return;
-    }
-    if (url.hostname === "invite" && url.pathname.length > 1 && this.session) {
-      try {
-        const invite = await this.api<RoomInvite>(`/social/invite/${encodeURIComponent(url.pathname.slice(1))}`);
-        this.setSocial({ ...this.social, incomingInvite: invite });
-      } catch { /* Expired invitations are intentionally ignored. */ }
+      if (url.hostname === "invite" && url.pathname.length > 1 && this.session) {
+        try {
+          const invite = await this.api<RoomInvite>(`/social/invite/${encodeURIComponent(url.pathname.slice(1))}`);
+          this.setSocial({ ...this.social, incomingInvite: invite });
+        } catch { /* Expired invitations are intentionally ignored. */ }
+      }
+    } catch (error) {
+      if (value.startsWith("mhtalk://auth/")) {
+        this.handlingPasswordRecovery = false;
+        window.clearTimeout(this.oauthTimer);
+        this.setState({
+          status: "failed",
+          message: error instanceof Error ? error.message : "Could not securely save the sign-in session",
+        });
+      }
     }
   }
 
