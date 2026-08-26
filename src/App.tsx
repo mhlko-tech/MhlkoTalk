@@ -33,7 +33,8 @@ import {
   type SocialState,
 } from "./services/accountSession";
 import {
-  startAutomaticUpdater,
+  retryStartupUpdater,
+  subscribeStartupUpdater,
   type UpdateActivity,
 } from "./services/appUpdater";
 import { isKeyboardLanguageShortcut, switchKeyboardLanguage } from "./services/inputLanguage";
@@ -122,6 +123,52 @@ function statusLabel(state: SessionSnapshot["state"]) {
   return "Not connected";
 }
 
+function StartupUpdateGate({
+  activity,
+  onRetry,
+}: {
+  activity: UpdateActivity | null;
+  onRetry: () => void;
+}) {
+  const phase = activity?.phase || "checking";
+  const label =
+    phase === "downloading"
+      ? "Downloading update"
+      : phase === "installing"
+        ? "Installing update"
+        : phase === "error"
+          ? "Update check failed"
+          : "Checking for updates";
+  const progress = activity?.progress;
+  return (
+    <main className="startup-update-gate" aria-live="polite">
+      <img src="/mhtalk-icon.png" alt="MHTalk" />
+      <h1>MHTalk</h1>
+      <strong>{label}</strong>
+      <div
+        className={`startup-progress ${progress === null || progress === undefined ? "indeterminate" : ""}`}
+        role="progressbar"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progress ?? undefined}
+      >
+        <i style={progress === null || progress === undefined ? undefined : { width: `${progress}%` }} />
+      </div>
+      {phase === "downloading" && progress !== null && (
+        <small>{progress}%</small>
+      )}
+      {phase === "installing" && <small>Restarting MHTalk…</small>}
+      {activity?.phase === "error" && (
+        <>
+          <p>{activity.message}</p>
+          <button onClick={onRetry}>Retry</button>
+        </>
+      )}
+    </main>
+  );
+}
+
 export function App() {
   const [session, setSession] = useState(initial);
   const [privateInvite, setPrivateInvite] = useState<string | null>(null);
@@ -129,7 +176,11 @@ export function App() {
   const [privateDialogOpen, setPrivateDialogOpen] = useState(false);
   const [privateCode, setPrivateCode] = useState("");
   const [appError, setAppError] = useState("");
-  const [updateActivity, setUpdateActivity] = useState<UpdateActivity | null>(null);
+  const [updateActivity, setUpdateActivity] = useState<UpdateActivity | null>({
+    phase: "checking",
+    progress: null,
+  });
+  const [startupReady, setStartupReady] = useState(false);
   const [chat, setChat] = useState(emptyChat);
   const [draft, setDraft] = useState("");
   const [recording, setRecording] = useState(false);
@@ -260,7 +311,10 @@ export function App() {
     roomSession.setProfile(accountProfile);
   }, [accountState, profileOpen]);
   useEffect(() => roomSession.setRemoteVolume(remoteVolume / 100), []);
-  useEffect(() => startAutomaticUpdater(setUpdateActivity), []);
+  useEffect(
+    () => subscribeStartupUpdater(setUpdateActivity, () => setStartupReady(true)),
+    [],
+  );
   useEffect(() => {
     if (!viewImage) return;
     const close = (event: KeyboardEvent) => {
@@ -849,20 +903,19 @@ export function App() {
     }
   };
 
+  if (!startupReady) {
+    return (
+      <StartupUpdateGate
+        activity={updateActivity}
+        onRetry={retryStartupUpdater}
+      />
+    );
+  }
+
   if (accountState.status !== "signed-in") {
     return (
       <main className="auth-gate-shell" onContextMenu={(event) => event.preventDefault()}>
         <AuthenticationGate state={accountState} />
-        {updateActivity && (
-          <div className="update-activity" aria-live="polite">
-            <span>
-              {updateActivity.phase === "installing"
-                ? "Installing update…"
-                : `Updating MHTalk${updateActivity.progress === null ? "" : ` · ${updateActivity.progress}%`}`}
-            </span>
-            <i style={{ width: `${updateActivity.progress ?? 8}%` }} />
-          </div>
-        )}
       </main>
     );
   }
@@ -898,18 +951,6 @@ export function App() {
         setHelpMenuOpen(false);
       }}
     >
-      {updateActivity && (
-        <div className="update-activity" aria-live="polite">
-          <span>
-            {updateActivity.phase === "installing"
-              ? "Installing update…"
-              : `Updating MHTalk${updateActivity.progress === null ? "" : ` · ${updateActivity.progress}%`}`}
-          </span>
-          {updateActivity.progress !== null && (
-            <i style={{ width: `${updateActivity.progress}%` }} />
-          )}
-        </div>
-      )}
       <aside className="sidebar">
         <div className="brand">
           <span><img src="/mhtalk-icon.png" alt="" /></span>

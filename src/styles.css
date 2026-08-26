@@ -2024,28 +2024,75 @@ body:has(.native-recording-overlay) #root {
   font-size: 11px;
   line-height: 1.45;
 }
-.update-activity {
+.startup-update-gate {
   position: fixed;
-  z-index: 5000;
-  right: 18px;
-  bottom: 18px;
-  width: 210px;
+  inset: 0;
+  z-index: 6000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 50% 35%, #302765 0, #171a31 28%, #0d1020 70%),
+    #0d1020;
+  color: #f7f7ff;
+  text-align: center;
+}
+.startup-update-gate img {
+  width: 108px;
+  height: 108px;
+  border-radius: 28px;
+  filter: drop-shadow(0 16px 34px #6f5cf54d);
+}
+.startup-update-gate h1,
+.startup-update-gate > strong {
+  margin: 18px 0 0;
+}
+.startup-update-gate h1 {
+  font-size: 30px;
+  line-height: 1;
+}
+.startup-update-gate > strong {
+  color: #c7c9e5;
+  font-size: 13px;
+}
+.startup-progress {
+  width: min(340px, 76vw);
+  height: 7px;
+  margin-top: 16px;
   overflow: hidden;
-  border: 1px solid #4b4f70;
-  border-radius: 9px;
-  background: #171a2af2;
-  box-shadow: 0 10px 32px #0008;
-  color: #e9eaff;
+  border-radius: 999px;
+  background: #313650;
+}
+.startup-progress i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6554e8, #9d90ff);
+  transition: width 180ms ease;
+}
+.startup-progress.indeterminate i {
+  width: 38%;
+  animation: startup-progress 1.15s ease-in-out infinite;
+}
+.startup-update-gate small {
+  margin-top: 9px;
+  color: #9299bb;
+}
+.startup-update-gate p {
+  max-width: 390px;
+  margin: 13px 0 0;
+  color: #ffb5be;
   font-size: 12px;
-  pointer-events: none;
+  line-height: 1.5;
 }
-.update-activity span {
-  display: block;
-  padding: 10px 12px;
+.startup-update-gate button {
+  margin-top: 14px;
+  min-width: 130px;
+  background: #7060eb;
 }
-.update-activity i {
-  display: block;
-  height: 3px;
-  background: linear-gradient(90deg, #6f5cf5, #a396ff);
-  transition: width 160ms ease;
+@keyframes startup-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(300%); }
 }

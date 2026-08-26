@@ -24,7 +24,13 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <Suspense fallback={<div className="app-loading">Loading MHTalk…</div>}>
+    <Suspense fallback={
+      <div className="startup-update-gate">
+        <img src="/mhtalk-icon.png" alt="MHTalk" />
+        <strong>MHTalk</strong>
+        <span>Starting…</span>
+      </div>
+    }>
       <RootView />
     </Suspense>
   </StrictMode>,
