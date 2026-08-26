@@ -26,6 +26,7 @@ export type AccountState =
   | { status: "checking" }
   | { status: "signed-out" }
   | { status: "authenticating" }
+  | { status: "awaiting-oauth" }
   | { status: "awaiting-verification"; email: string }
   | { status: "password-recovery" }
   | { status: "signed-in"; account: MHTalkAccount }
@@ -82,6 +83,7 @@ class AccountSession {
   private socialListeners = new Set<(state: SocialState) => void>();
   private presence: WebSocket | null = null;
   private reconnectTimer: number | undefined;
+  private oauthTimer: number | undefined;
   private initialized = false;
   private handlingPasswordRecovery = false;
 
@@ -231,12 +233,32 @@ class AccountSession {
       this.setState({ status: "failed", message });
       throw new Error(message);
     }
-    if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) await openUrl(data.url);
-    else window.location.assign(data.url);
+    try {
+      this.setState({ status: "awaiting-oauth" });
+      window.clearTimeout(this.oauthTimer);
+      this.oauthTimer = window.setTimeout(() => {
+        if (this.state.status === "awaiting-oauth") {
+          this.setState({ status: "failed", message: "Google sign-in timed out. Try again and finish the steps in your browser." });
+        }
+      }, 5 * 60 * 1000);
+      if ((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) await openUrl(data.url);
+      else window.location.assign(data.url);
+    } catch (cause) {
+      window.clearTimeout(this.oauthTimer);
+      const message = cause instanceof Error ? cause.message : "Could not open Google sign-in";
+      this.setState({ status: "failed", message });
+      throw new Error(message);
+    }
+  }
+
+  cancelOAuthSignIn() {
+    window.clearTimeout(this.oauthTimer);
+    this.setState(this.client ? { status: "signed-out" } : { status: "unavailable" });
   }
 
   async signOut() {
     window.clearTimeout(this.reconnectTimer);
+    window.clearTimeout(this.oauthTimer);
     this.presence?.close(); this.presence = null;
     await this.client?.auth.signOut();
     this.session = null;
@@ -307,6 +329,7 @@ class AccountSession {
   private async handleDeepLink(value: string) {
     const url = new URL(value);
     if (url.hostname === "auth" && (url.pathname === "/callback" || url.pathname === "/reset")) {
+      window.clearTimeout(this.oauthTimer);
       const recovery = url.pathname === "/reset";
       this.handlingPasswordRecovery = recovery;
       const fragment = new URLSearchParams(url.hash.replace(/^#/, ""));
@@ -340,6 +363,7 @@ class AccountSession {
   }
 
   private async applySession(session: Session | null) {
+    if (session) window.clearTimeout(this.oauthTimer);
     this.session = session;
     if (!session) {
       this.setState(this.client ? { status: "signed-out" } : { status: "unavailable" });

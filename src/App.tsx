@@ -2142,6 +2142,14 @@ function AuthenticationGate({ state }: { state: AccountState }) {
 
       {state.status === "checking" ? (
         <div className="auth-gate-progress"><i /> Restoring your secure session…</div>
+      ) : state.status === "awaiting-oauth" ? (
+        <div className="auth-message-panel">
+          <GoogleMark />
+          <h2>Finish signing in with Google</h2>
+          <p>Choose your Google account in the browser window. MHTalk will continue automatically when Google sends you back.</p>
+          <div className="auth-gate-progress"><i /> Waiting for Google…</div>
+          <button className="auth-text-button" type="button" onClick={() => accountSession.cancelOAuthSignIn()}>Cancel and return to login</button>
+        </div>
       ) : mode === "verification" ? (
         <div className="auth-message-panel">
           <div className="auth-message-icon">✉</div>
