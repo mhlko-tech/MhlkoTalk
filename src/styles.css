@@ -416,6 +416,15 @@ button {
 }
 .auth-message-panel input:focus { border-color: #8173f4; box-shadow: 0 0 0 3px #8173f426; }
 .auth-message-panel input:read-only { color: #9299b7; }
+.multilingual-name-input { position: relative; display: block; }
+.multilingual-name-input input { padding-inline-end: 66px !important; text-align: start; unicode-bidi: plaintext; }
+.multilingual-name-input .keyboard-language-button {
+  position: absolute; inset-inline-end: 5px; top: 5px; width: 54px !important; height: 36px;
+  padding: 0 6px; border: 1px solid #484f71; background: #292d46; color: #ddd9ff;
+  font-size: 11px; font-weight: 800;
+}
+.multilingual-name-input .keyboard-language-button:hover { background: #343953; }
+.multilingual-name-help { color: #8f98b8; font-size: 10px; font-weight: 500; }
 .auth-avatar-picker { display: flex; align-items: center; justify-content: center; gap: 14px; }
 .auth-avatar-picker .avatar { width: 62px; height: 62px; flex: 0 0 auto; }
 .auth-avatar-picker > div:last-of-type { display: grid; gap: 5px; text-align: left; }
@@ -1293,6 +1302,8 @@ button {
 .private-modal label input[type="range"] {
   padding: 0;
 }
+.private-modal .multilingual-name-input input { margin-top: 6px; }
+.private-modal .multilingual-name-help { display: block; margin-top: 5px; }
 .big-avatar {
   width: 70px;
   height: 70px;
@@ -1426,6 +1437,7 @@ button {
   height: 100%;
   object-fit: cover;
 }
+.avatar-upload .avatar { width: 100%; height: 100%; font-size: 24px; }
 .avatar-upload small {
   position: absolute;
   margin-top: 102px;

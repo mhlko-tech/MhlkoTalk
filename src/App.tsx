@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import appPackage from "../package.json";
 import { Avatar } from "./components/Avatar";
+import { DisplayNameField } from "./components/DisplayNameField";
 import { AuthenticationGate } from "./features/auth/AuthenticationGate";
 import { ParticipantMediaCard } from "./features/room/ParticipantMediaCard";
 import {
@@ -23,6 +24,7 @@ import type {
   UserProfile,
 } from "./core/types";
 import { mediaQualityLabels, mediaQualityOrder } from "./core/mediaQuality";
+import { profileAvatarImageSource } from "./core/profileAvatar";
 import { roomSession } from "./services/roomSession";
 import {
   accountSession,
@@ -34,6 +36,7 @@ import {
   startAutomaticUpdater,
   type UpdateActivity,
 } from "./services/appUpdater";
+import { isKeyboardLanguageShortcut, switchKeyboardLanguage } from "./services/inputLanguage";
 
 const initial: SessionSnapshot = {
   state: "idle",
@@ -226,6 +229,17 @@ export function App() {
   useEffect(() => accountSession.subscribe(setAccountState), []);
   useEffect(() => accountSession.subscribeSocial(setSocialState), []);
   useEffect(() => { void accountSession.initialize(); }, []);
+  useEffect(() => {
+    const handleKeyboardLanguage = (event: KeyboardEvent) => {
+      if (!isKeyboardLanguageShortcut(event)) return;
+      const target = event.target;
+      if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) return;
+      event.preventDefault();
+      void switchKeyboardLanguage();
+    };
+    window.addEventListener("keydown", handleKeyboardLanguage, true);
+    return () => window.removeEventListener("keydown", handleKeyboardLanguage, true);
+  }, []);
   useEffect(() => {
     if (accountState.status !== "signed-in" && session.state !== "idle") void roomSession.leave();
   }, [accountState.status, session.state]);
@@ -1802,14 +1816,12 @@ export function App() {
               className="avatar-upload"
               onClick={() => avatarInput.current?.click()}
             >
-              {profile.avatar.startsWith("data:") ? (
-                <img src={profile.avatar} alt="Avatar preview" />
-              ) : (
-                profile.avatar
-              )}
+              {profileAvatarImageSource(profile.avatar) ? (
+                <img src={profileAvatarImageSource(profile.avatar) || ""} alt="Avatar preview" />
+              ) : <Avatar value={profile.avatar || profile.name.slice(0, 1) || "M"} />}
               <small>Choose photo</small>
             </button>
-            {profile.avatar.startsWith("data:") && (
+            {profileAvatarImageSource(profile.avatar) && (
               <button
                 className="remove-avatar"
                 onClick={() =>
@@ -1822,16 +1834,12 @@ export function App() {
                 Remove photo
               </button>
             )}
-            <label>
-              Name
-              <input
-                maxLength={32}
-                value={profile.name}
-                onChange={(event) =>
-                  setProfile({ ...profile, name: event.target.value })
-                }
-              />
-            </label>
+            <DisplayNameField
+              label="Name"
+              value={profile.name}
+              onValueChange={(name) => setProfile((current) => ({ ...current, name }))}
+              autoComplete="name"
+            />
             <label>
               Bio
               <input

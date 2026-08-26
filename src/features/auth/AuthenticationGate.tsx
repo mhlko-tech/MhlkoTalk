@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "r
 import { openUrl } from "@tauri-apps/plugin-opener";
 import appPackage from "../../../package.json";
 import { Avatar } from "../../components/Avatar";
+import { DisplayNameField } from "../../components/DisplayNameField";
 import { passwordError, usernameError } from "../../core/authRules";
 import {
   accountSession,
@@ -163,7 +164,7 @@ export function AuthenticationGate({ state }: { state: AccountState }) {
             <p>Google verified <strong>{state.email}</strong>. Choose how your MHTalk profile will appear.</p>
             {avatarPicker}
             <label>Email<input value={state.email} readOnly /></label>
-            <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value.slice(0, 60))} placeholder="Your display name" /></label>
+            <DisplayNameField label="Display name" value={displayName} onValueChange={setDisplayName} placeholder="Your display name" />
             <label>Username<input value={username} onChange={(event) => setUsername(event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 32))} placeholder="your_username" /></label>
             {error && <div className="auth-alert" role="alert">{error}</div>}
             <button className="primary" disabled={pending} onClick={() => void perform(async () => {
@@ -235,7 +236,7 @@ export function AuthenticationGate({ state }: { state: AccountState }) {
           {mode === "register" && <>
             {avatarPicker}
             <label>Username<input value={username} onChange={(event) => setUsername(event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 32))} autoComplete="username" placeholder="your_username" required minLength={3} /></label>
-            <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value.slice(0, 60))} autoComplete="name" placeholder="How people will see you" required /></label>
+            <DisplayNameField label="Display name" value={displayName} onValueChange={setDisplayName} autoComplete="name" placeholder="How people will see you" required />
             <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="you@example.com" required /></label>
           </>}
 
@@ -274,4 +275,3 @@ export function AuthenticationGate({ state }: { state: AccountState }) {
     </section>
   );
 }
-

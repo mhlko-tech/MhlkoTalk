@@ -1,3 +1,5 @@
+import { normalizeProfileAvatar, profileAvatarImageSource } from "../core/profileAvatar";
+
 export interface AvatarProps {
   value: string;
   remote?: boolean;
@@ -10,14 +12,12 @@ export interface AvatarProps {
  * drifting into slightly different avatar rules.
  */
 export function Avatar({ value, remote = false }: AvatarProps) {
-  const isImage =
-    value.startsWith("data:image/") ||
-    value.startsWith("https://") ||
-    value.startsWith("http://");
+  const normalized = normalizeProfileAvatar(value);
+  const imageSource = profileAvatarImageSource(normalized);
 
   return (
     <div className={`avatar ${remote ? "remote" : ""}`}>
-      {isImage ? <img src={value} alt="" /> : value.slice(0, 2)}
+      {imageSource ? <img src={imageSource} alt="" /> : (normalized || "M").slice(0, 2)}
     </div>
   );
 }

@@ -140,6 +140,34 @@ fn apply_window_icon(app: tauri::AppHandle, label: String) -> Result<(), String>
     window.set_icon(icon).map_err(|error| error.to_string())
 }
 
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn switch_input_language(window: tauri::WebviewWindow) -> Result<(), String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        PostMessageW, INPUTLANGCHANGE_FORWARD, WM_INPUTLANGCHANGEREQUEST,
+    };
+
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+    let posted = unsafe {
+        PostMessageW(
+            hwnd.0 as *mut _,
+            WM_INPUTLANGCHANGEREQUEST,
+            INPUTLANGCHANGE_FORWARD as usize,
+            1,
+        )
+    };
+    if posted == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn switch_input_language() -> Result<(), String> {
+    Ok(())
+}
+
 #[tauri::command]
 fn read_dropped_file(path: String) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|error| error.to_string())
@@ -311,6 +339,7 @@ pub fn run() {
             read_dropped_file,
             open_report_bug,
             apply_window_icon,
+            switch_input_language,
             auth_secret_get,
             auth_secret_set,
             auth_secret_delete,

@@ -16,6 +16,7 @@ import type {
   MediaQuality,
   UserProfile,
 } from "../core/types";
+import { normalizeProfileAvatar } from "../core/profileAvatar";
 import { moderateMainMessage } from "../core/moderation";
 import { accountSession } from "./accountSession";
 
@@ -876,14 +877,9 @@ export class RoomSession {
   private async publishProfile() {
     if (!this.room) return;
     const safe = sanitizeProfile(this.profile);
-    const avatar =
-      safe.avatar.startsWith("data:image/") &&
-      new TextEncoder().encode(safe.avatar).byteLength <= 11_000
-        ? safe.avatar
-        : "";
     await this.room.localParticipant.publishData(
       new TextEncoder().encode(
-        JSON.stringify({ type: "profile", profile: { ...safe, avatar } }),
+        JSON.stringify({ type: "profile", profile: safe }),
       ),
       { reliable: true, topic: "mhtalk.chat" },
     );
@@ -1223,19 +1219,11 @@ function sanitizeProfile(
 ): UserProfile {
   const name =
     typeof profile?.name === "string"
-      ? profile.name.trim().slice(0, 48)
+      ? profile.name.trim().slice(0, 60)
       : "";
   const bio =
     typeof profile?.bio === "string" ? profile.bio.trim().slice(0, 240) : "";
-  let avatar = typeof profile?.avatar === "string" ? profile.avatar : "";
-  if (
-    avatar &&
-    !avatar.startsWith("data:image/") &&
-    !/^[\p{L}\p{N}]{1,3}$/u.test(avatar)
-  ) {
-    avatar = "";
-  }
-  if (new TextEncoder().encode(avatar).byteLength > 11_000) avatar = "";
+  const avatar = normalizeProfileAvatar(profile?.avatar);
   return {
     name: name || fallbackIdentity.slice(0, 16) || "Member",
     bio,
