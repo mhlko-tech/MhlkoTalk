@@ -46,16 +46,18 @@ export function ParticipantMediaCard({
 
   useEffect(() => {
     if (!cameraEnabled && watchingCamera) {
-      roomSession.stopWatchingParticipantMedia(identity, "camera");
+      if (local) roomSession.hideLocalMedia("camera");
+      else roomSession.stopWatchingParticipantMedia(identity, "camera");
       setWatchingCamera(false);
     }
-  }, [cameraEnabled, identity, watchingCamera]);
+  }, [cameraEnabled, identity, local, watchingCamera]);
   useEffect(() => {
     if (!screenShareEnabled && watchingScreen) {
-      roomSession.stopWatchingParticipantMedia(identity, "screen");
+      if (local) roomSession.hideLocalMedia("screen");
+      else roomSession.stopWatchingParticipantMedia(identity, "screen");
       setWatchingScreen(false);
     }
-  }, [identity, screenShareEnabled, watchingScreen]);
+  }, [identity, local, screenShareEnabled, watchingScreen]);
   useEffect(() => {
     if (!availableQualities(cameraQuality).includes(selectedCameraQuality))
       setSelectedCameraQuality(cameraQuality);
@@ -66,7 +68,10 @@ export function ParticipantMediaCard({
   }, [screenShareQuality, selectedScreenQuality]);
   useEffect(
     () => () => {
-      if (!local) {
+      if (local) {
+        roomSession.hideLocalMedia("camera");
+        roomSession.hideLocalMedia("screen");
+      } else {
         roomSession.stopWatchingParticipantMedia(identity, "camera");
         roomSession.stopWatchingParticipantMedia(identity, "screen");
       }
@@ -79,16 +84,15 @@ export function ParticipantMediaCard({
     const quality =
       source === "camera" ? selectedCameraQuality : selectedScreenQuality;
     if (watching) {
-      roomSession.stopWatchingParticipantMedia(identity, source);
+      if (local) roomSession.hideLocalMedia(source);
+      else roomSession.stopWatchingParticipantMedia(identity, source);
       if (source === "camera") setWatchingCamera(false);
       else setWatchingScreen(false);
       return;
     }
-    const opened = await roomSession.watchParticipantMedia(
-      identity,
-      source,
-      quality,
-    );
+    const opened = local
+      ? roomSession.showLocalMedia(source)
+      : await roomSession.watchParticipantMedia(identity, source, quality);
     if (opened) {
       if (source === "camera") setWatchingCamera(true);
       else setWatchingScreen(true);
@@ -111,14 +115,20 @@ export function ParticipantMediaCard({
           {microphoneEnabled ? "🎙️" : "🔇"}
         </i>
       </button>
-      {!local && (cameraEnabled || screenShareEnabled) && (
+      {(cameraEnabled || screenShareEnabled) && (
         <div className="participant-media-controls">
           {cameraEnabled && (
             <div>
               <button onClick={() => void toggleMedia("camera")}>
-                {watchingCamera ? "Hide camera" : "Watch camera"}
+                {watchingCamera
+                  ? local
+                    ? "Hide my camera"
+                    : "Hide camera"
+                  : local
+                    ? "Show my camera"
+                    : "Watch camera"}
               </button>
-              {watchingCamera && (
+              {!local && watchingCamera && (
                 <select
                   aria-label="Camera quality"
                   value={selectedCameraQuality}
@@ -144,9 +154,15 @@ export function ParticipantMediaCard({
           {screenShareEnabled && (
             <div>
               <button onClick={() => void toggleMedia("screen")}>
-                {watchingScreen ? "Stop watching" : "Watch stream"}
+                {watchingScreen
+                  ? local
+                    ? "Hide my stream"
+                    : "Stop watching"
+                  : local
+                    ? "Show my stream"
+                    : "Watch stream"}
               </button>
-              {watchingScreen && (
+              {!local && watchingScreen && (
                 <select
                   aria-label="Stream quality"
                   value={selectedScreenQuality}
@@ -182,4 +198,3 @@ export function ParticipantMediaCard({
     </article>
   );
 }
-

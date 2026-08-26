@@ -239,10 +239,25 @@ class AccountSession {
   }
 
   async verifyPasswordRecoveryCode(email: string, token: string) {
-    if (!this.client) throw new Error("Account service is unavailable");
+    if (!this.client || !apiEndpoint) throw new Error("Account service is unavailable");
     this.handlingPasswordRecovery = true;
-    const { data, error } = await this.client.auth.verifyOtp({
-      email: email.trim(), token: token.trim(), type: "recovery",
+    const response = await fetch(new URL("/auth/verify-recovery", apiEndpoint), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ identifier: email.trim(), code: token.trim() }),
+    });
+    const value = (await response.json().catch(() => null)) as {
+      access_token?: string;
+      refresh_token?: string;
+      error?: string;
+    } | null;
+    if (!response.ok || !value?.access_token || !value.refresh_token) {
+      this.handlingPasswordRecovery = false;
+      throw new Error(value?.error || "The recovery code is invalid or expired");
+    }
+    const { data, error } = await this.client.auth.setSession({
+      access_token: value.access_token,
+      refresh_token: value.refresh_token,
     });
     if (error || !data.session) {
       this.handlingPasswordRecovery = false;
@@ -297,9 +312,12 @@ class AccountSession {
   async signIn(provider: "google" | "facebook") {
     if (!this.client) throw new Error("Supabase sign-in is not configured");
     this.setState({ status: "authenticating" });
+    const redirectTo = apiEndpoint
+      ? new URL("/auth/complete", apiEndpoint).toString()
+      : "mhtalk://auth/callback";
     const { data, error } = await this.client.auth.signInWithOAuth({
       provider,
-      options: { redirectTo: "mhtalk://auth/callback", skipBrowserRedirect: true },
+      options: { redirectTo, skipBrowserRedirect: true },
     });
     if (error || !data.url) {
       const message = error?.message || "Could not open sign-in";

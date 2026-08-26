@@ -194,7 +194,9 @@ export function App() {
     const stored = localStorage.getItem("mhtalk.share-quality");
     return stored === "low" || stored === "high" ? stored : "medium";
   });
-  const [shareSystemAudio, setShareSystemAudio] = useState(true);
+  const [noiseCancellation, setNoiseCancellation] = useState(() =>
+    roomSession.getNoiseCancellationEnabled(),
+  );
   const [eventSounds, setEventSounds] = useState(() =>
     roomSession.getEventSoundSettings(),
   );
@@ -1724,6 +1726,24 @@ export function App() {
                 <i style={{ width: `${microphoneLevel}%` }} />
               </div>
             </div>
+            <div className="settings-section">
+              <h3>Voice processing</h3>
+              <label className="settings-check event-sound-row">
+                <input
+                  type="checkbox"
+                  checked={noiseCancellation}
+                  onChange={(event) => {
+                    const enabled = event.target.checked;
+                    setNoiseCancellation(enabled);
+                    void roomSession.setNoiseCancellationEnabled(enabled);
+                  }}
+                />
+                <span>
+                  <strong>Noise cancellation</strong>
+                  <small>Remove background noise from your microphone only.</small>
+                </span>
+              </label>
+            </div>
             <label>
               Camera
               <select
@@ -1852,29 +1872,11 @@ export function App() {
                 ))}
               </select>
             </label>
-            <label className="settings-check">
-              <input
-                type="checkbox"
-                checked={shareSystemAudio}
-                onChange={(event) => setShareSystemAudio(event.target.checked)}
-              />
-              Share computer audio
-            </label>
-            <div className={`network-advice ${session.connectionQuality}`}>
-              <strong>Network: {session.connectionQuality}</strong>
-              <span>
-                Estimated drops: {session.estimatedDropPercent ?? "calculating"}%
-              </span>
-              {session.connectionQuality === "poor" && (
-                <small>Low or Medium quality is recommended.</small>
-              )}
-            </div>
             <button
               className="primary modal-create"
               onClick={async () => {
                 await roomSession.setScreenShareEnabled(
                   true,
-                  shareSystemAudio,
                   shareQuality,
                 );
                 setShareDialogOpen(false);
@@ -1995,9 +1997,23 @@ export function App() {
             >
               ×
             </button>
-            <div className="big-avatar">
-              <Avatar value={viewProfile.avatar} />
-            </div>
+            {profileAvatarImageSource(viewProfile.avatar) ? (
+              <button
+                className="big-avatar profile-avatar-preview"
+                type="button"
+                aria-label={`Open ${viewProfile.name}'s profile photo`}
+                onClick={() => {
+                  const source = profileAvatarImageSource(viewProfile.avatar);
+                  if (source) setViewImage({ url: source, name: `${viewProfile.name}'s profile photo` });
+                }}
+              >
+                <Avatar value={viewProfile.avatar} />
+              </button>
+            ) : (
+              <div className="big-avatar">
+                <Avatar value={viewProfile.avatar} />
+              </div>
+            )}
             <h2>{viewProfile.name}</h2>
             <p>{viewProfile.bio || "No bio yet."}</p>
           </section>

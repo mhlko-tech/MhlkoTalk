@@ -1,5 +1,6 @@
 import {
   ConnectionQuality,
+  LocalAudioTrack,
   RemoteTrackPublication,
   Room,
   RoomEvent,
@@ -79,8 +80,14 @@ export class RoomSession {
   >();
   private selectedRemoteQuality = new Map<string, MediaQuality>();
   private watchedMedia = new Set<string>();
+  private remoteMediaState = new Map<
+    string,
+    { camera: boolean; screen: boolean }
+  >();
   private outputVolume = 1;
   private toneContext: AudioContext | null = null;
+  private noiseCancellationEnabled =
+    localStorage.getItem("mhtalk.audio.noise-cancellation") !== "false";
   private inviteCode: string | undefined;
   private preferredDevices: Partial<Record<MediaDeviceKind, string>> = {
     audioinput: localStorage.getItem("mhtalk.device.audioinput") || "",
@@ -155,6 +162,7 @@ export class RoomSession {
     this.inviteCode = undefined;
     this.remoteProfiles.clear();
     this.remoteMediaQuality.clear();
+    this.remoteMediaState.clear();
     this.selectedRemoteQuality.clear();
     this.watchedMedia.clear();
     this.detachMedia();
@@ -164,8 +172,28 @@ export class RoomSession {
 
   async setMicrophoneEnabled(microphoneEnabled: boolean) {
     this.update({ microphoneEnabled });
-    if (this.room)
-      await this.room.localParticipant.setMicrophoneEnabled(microphoneEnabled);
+    if (this.room) {
+      await this.room.localParticipant.setMicrophoneEnabled(
+        microphoneEnabled,
+        microphoneEnabled ? this.microphoneCaptureOptions() : undefined,
+      );
+    }
+  }
+
+  getNoiseCancellationEnabled() {
+    return this.noiseCancellationEnabled;
+  }
+
+  async setNoiseCancellationEnabled(enabled: boolean) {
+    this.noiseCancellationEnabled = enabled;
+    localStorage.setItem("mhtalk.audio.noise-cancellation", String(enabled));
+    if (!this.room || !this.snapshot.microphoneEnabled) return;
+    const track = this.room.localParticipant.getTrackPublication(
+      Track.Source.Microphone,
+    )?.track;
+    if (track instanceof LocalAudioTrack) {
+      await track.restartTrack(this.microphoneCaptureOptions());
+    }
   }
 
   async setCameraEnabled(cameraEnabled: boolean) {
@@ -186,7 +214,6 @@ export class RoomSession {
         deviceId ? { deviceId: { exact: deviceId } } : undefined,
       );
       this.update({ cameraEnabled: true });
-      this.attachLocalVideo(Track.Source.Camera, "Camera");
     } catch {
       this.detachMedia("local-camera");
       this.update({ cameraEnabled: false });
@@ -195,7 +222,6 @@ export class RoomSession {
 
   async setScreenShareEnabled(
     enabled: boolean,
-    includeSystemAudio = false,
     quality: MediaQuality = "medium",
   ) {
     if (!this.room) return;
@@ -226,14 +252,15 @@ export class RoomSession {
         {
           video: true,
           resolution: preset.resolution,
-          audio: includeSystemAudio
-            ? {
-                restrictOwnAudio: true,
-                echoCancellation: true,
-                noiseSuppression: true,
-              }
-            : false,
-          systemAudio: includeSystemAudio ? "include" : "exclude",
+          // The operating-system picker remains the source of truth for whether
+          // computer audio is shared. Never run voice processing over media.
+          audio: {
+            restrictOwnAudio: true,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+          systemAudio: "include",
           selfBrowserSurface: "exclude",
           suppressLocalAudioPlayback: true,
           contentHint: "detail",
@@ -245,12 +272,14 @@ export class RoomSession {
           degradationPreference: "maintain-resolution",
         },
       );
-      this.attachLocalVideo(Track.Source.ScreenShare, "Screen share");
       localStorage.setItem("mhtalk.share-quality", quality);
       await this.publishMediaQuality("screen", quality);
+      const screenAudio = this.room.localParticipant.getTrackPublication(
+        Track.Source.ScreenShareAudio,
+      );
       this.update({
         screenShareEnabled: true,
-        screenShareAudioEnabled: includeSystemAudio,
+        screenShareAudioEnabled: Boolean(screenAudio && !screenAudio.isMuted),
       });
     } catch {
       this.update({
@@ -325,6 +354,22 @@ export class RoomSession {
     if (enabled) {
       void this.playEventTone(kind === "presence" ? "join" : "media-start");
     }
+  }
+
+  showLocalMedia(source: "camera" | "screen") {
+    const trackSource =
+      source === "camera" ? Track.Source.Camera : Track.Source.ScreenShare;
+    const publication = this.room?.localParticipant.getTrackPublication(trackSource);
+    if (!publication?.track || publication.isMuted) return false;
+    this.attachLocalVideo(
+      trackSource,
+      source === "camera" ? "Your camera" : "Your stream",
+    );
+    return true;
+  }
+
+  hideLocalMedia(source: "camera" | "screen") {
+    this.detachMedia(source === "camera" ? "local-camera" : "local-screen");
   }
 
   async watchParticipantMedia(
@@ -422,6 +467,14 @@ export class RoomSession {
         deviceId || "default",
         Boolean(deviceId) || kind !== "videoinput",
       );
+    if (kind === "audioinput" && this.room && this.snapshot.microphoneEnabled) {
+      const track = this.room.localParticipant.getTrackPublication(
+        Track.Source.Microphone,
+      )?.track;
+      if (track instanceof LocalAudioTrack) {
+        await track.restartTrack(this.microphoneCaptureOptions());
+      }
+    }
   }
 
   setRemoteVolume(volume: number) {
@@ -541,53 +594,83 @@ export class RoomSession {
     const room = new Room({ adaptiveStream: true, dynacast: true });
     this.room = room;
     const syncParticipants = () => {
+      const participants = [...room.remoteParticipants.values()].map(
+        (participant) => {
+          const camera = participant.getTrackPublication(Track.Source.Camera);
+          const screen = participant.getTrackPublication(
+            Track.Source.ScreenShare,
+          );
+          const media = {
+            camera: Boolean(camera && !camera.isMuted),
+            screen: Boolean(screen && !screen.isMuted),
+          };
+          const previous = this.remoteMediaState.get(participant.identity);
+          if (previous) {
+            if (
+              (!previous.camera && media.camera) ||
+              (!previous.screen && media.screen)
+            ) {
+              void this.playEventTone("media-start");
+            } else if (
+              (previous.camera && !media.camera) ||
+              (previous.screen && !media.screen)
+            ) {
+              void this.playEventTone("media-stop");
+            }
+          }
+          this.remoteMediaState.set(participant.identity, media);
+          const dataProfile = this.remoteProfiles.get(participant.identity);
+          const metadataProfile = parseParticipantProfile(
+            participant.metadata,
+            participant.name || participant.identity,
+          );
+          const dataAvatar = normalizeProfileAvatar(dataProfile?.avatar);
+          const metadataAvatar = normalizeProfileAvatar(metadataProfile.avatar);
+          const avatar =
+            profileAvatarImageSource(dataAvatar) !== null
+              ? dataAvatar
+              : profileAvatarImageSource(metadataAvatar) !== null
+                ? metadataAvatar
+                : dataAvatar ||
+                  metadataAvatar ||
+                  profileInitial(
+                    dataProfile?.name ||
+                      metadataProfile.name ||
+                      participant.identity,
+                  );
+          return {
+            identity: participant.identity,
+            speaking: participant.isSpeaking,
+            microphoneEnabled: participant.isMicrophoneEnabled,
+            cameraEnabled: media.camera,
+            screenShareEnabled: media.screen,
+            cameraQuality: this.getParticipantMaximumQuality(
+              participant.identity,
+              "camera",
+            ),
+            screenShareQuality: this.getParticipantMaximumQuality(
+              participant.identity,
+              "screen",
+            ),
+            name:
+              dataProfile?.name ||
+              metadataProfile.name ||
+              participant.name ||
+              participant.identity,
+            bio: dataProfile?.bio || metadataProfile.bio || "",
+            avatar,
+          };
+        },
+      );
+      const activeIdentities = new Set(
+        participants.map((participant) => participant.identity),
+      );
+      [...this.remoteMediaState.keys()].forEach((identity) => {
+        if (!activeIdentities.has(identity)) this.remoteMediaState.delete(identity);
+      });
       this.update({
         localSpeaking: room.localParticipant.isSpeaking,
-        participants: [...room.remoteParticipants.values()].map(
-          (participant) => {
-            const dataProfile = this.remoteProfiles.get(participant.identity);
-            const metadataProfile = parseParticipantProfile(
-              participant.metadata,
-              participant.name || participant.identity,
-            );
-            const dataAvatar = normalizeProfileAvatar(dataProfile?.avatar);
-            const metadataAvatar = normalizeProfileAvatar(metadataProfile.avatar);
-            const avatar =
-              profileAvatarImageSource(dataAvatar) !== null
-                ? dataAvatar
-                : profileAvatarImageSource(metadataAvatar) !== null
-                  ? metadataAvatar
-                  : dataAvatar || metadataAvatar || profileInitial(
-                      dataProfile?.name || metadataProfile.name || participant.identity,
-                    );
-            const camera = participant.getTrackPublication(Track.Source.Camera);
-            const screen = participant.getTrackPublication(
-              Track.Source.ScreenShare,
-            );
-            return {
-              identity: participant.identity,
-              speaking: participant.isSpeaking,
-              microphoneEnabled: participant.isMicrophoneEnabled,
-              cameraEnabled: Boolean(camera && !camera.isMuted),
-              screenShareEnabled: Boolean(screen && !screen.isMuted),
-              cameraQuality: this.getParticipantMaximumQuality(
-                participant.identity,
-                "camera",
-              ),
-              screenShareQuality: this.getParticipantMaximumQuality(
-                participant.identity,
-                "screen",
-              ),
-              name:
-                dataProfile?.name ||
-                metadataProfile.name ||
-                participant.name ||
-                participant.identity,
-              bio: dataProfile?.bio || metadataProfile.bio || "",
-              avatar,
-            };
-          },
-        ),
+        participants,
       });
     };
     room.on(RoomEvent.ParticipantConnected, () => {
@@ -606,6 +689,7 @@ export class RoomSession {
       this.remoteStreamAudio.delete(participant.identity);
       this.remoteProfiles.delete(participant.identity);
       this.remoteMediaQuality.delete(participant.identity);
+      this.remoteMediaState.delete(participant.identity);
       syncParticipants();
     });
     room.on(RoomEvent.ParticipantMetadataChanged, syncParticipants);
@@ -624,12 +708,6 @@ export class RoomSession {
         publication.setSubscribed(true);
       } else {
         publication.setSubscribed(false);
-      }
-      if (
-        publication.source === Track.Source.Camera ||
-        publication.source === Track.Source.ScreenShare
-      ) {
-        void this.playEventTone("media-start");
       }
       syncParticipants();
     });
@@ -710,7 +788,6 @@ export class RoomSession {
     room.on(RoomEvent.TrackUnpublished, (publication) => {
       if (publication.kind === Track.Kind.Video) {
         this.detachMedia(`remote-${publication.trackSid}`);
-        void this.playEventTone("media-stop");
       }
       syncParticipants();
     });
@@ -879,6 +956,9 @@ export class RoomSession {
     }
     await room.localParticipant.setMicrophoneEnabled(
       this.snapshot.microphoneEnabled,
+      this.snapshot.microphoneEnabled
+        ? this.microphoneCaptureOptions()
+        : undefined,
     );
     if (this.snapshot.cameraEnabled) {
       const cameraId = this.preferredDevices.videoinput;
@@ -889,8 +969,6 @@ export class RoomSession {
     }
     this.update({ state: "connected", roomName });
     this.subscribeToRemoteVoice();
-    if (this.snapshot.cameraEnabled)
-      this.attachLocalVideo(Track.Source.Camera, "Camera");
     void this.publishProfile();
     void this.requestProfiles();
     syncParticipants();
@@ -959,6 +1037,16 @@ export class RoomSession {
     return context;
   }
 
+  private microphoneCaptureOptions() {
+    const deviceId = this.preferredDevices.audioinput;
+    return {
+      deviceId: deviceId ? { exact: deviceId } : undefined,
+      echoCancellation: true,
+      noiseSuppression: this.noiseCancellationEnabled,
+      autoGainControl: true,
+    };
+  }
+
   private async playEventTone(
     kind: "join" | "leave" | "media-start" | "media-stop",
   ) {
@@ -971,17 +1059,20 @@ export class RoomSession {
       const start = context.currentTime + 0.01;
       const [from, to, duration] =
         kind === "join"
-          ? [480, 720, 0.14]
+          ? [460, 760, 0.22]
           : kind === "leave"
-            ? [620, 390, 0.16]
+            ? [660, 360, 0.24]
             : kind === "media-start"
-              ? [720, 980, 0.11]
-              : [520, 340, 0.13];
+              ? [700, 1020, 0.18]
+              : [560, 320, 0.2];
       oscillator.type = "sine";
       oscillator.frequency.setValueAtTime(from, start);
       oscillator.frequency.exponentialRampToValueAtTime(to, start + duration);
       gain.gain.setValueAtTime(0.0001, start);
-      gain.gain.exponentialRampToValueAtTime(0.045, start + 0.018);
+      gain.gain.exponentialRampToValueAtTime(
+        Math.max(0.0001, 0.1 * this.outputVolume),
+        start + 0.024,
+      );
       gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
       oscillator.connect(gain).connect(context.destination);
       oscillator.start(start);

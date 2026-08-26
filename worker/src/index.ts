@@ -44,6 +44,21 @@ const publicPage = (title: string, body: string) => new Response(`<!doctype html
 const homePage = () => publicPage("MHTalk", `<p>MHTalk is a voice, video, screen-sharing and social rooms app for Android and Windows.</p><p>Sign in securely with your username or email and password, or continue with Google, to keep your profile and friends available across your devices.</p>`);
 const privacyPage = () => publicPage("Privacy Policy", `<p>Last updated: August 26, 2026.</p><h2>Data we use</h2><p>When you create or use an account, MHTalk stores your account identifier, username, email address, profile name and picture, friend relationships, blocks, and notification device tokens. Supabase hosts this account data and Cloudflare routes authenticated requests. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk.</p><h2>Calls and files</h2><p>LiveKit carries live voice, camera and screen sharing. Chat attachments and live media are not stored by the MHTalk account backend. Room invitations and presence data are temporary.</p><h2>Purpose and sharing</h2><p>We use this data only to provide authentication, account recovery, profiles, friends, presence, room invitations and notifications. Google supplies basic account information only when you choose Google sign-in. We do not sell personal data.</p><h2>Your choices</h2><p>You may sign out, disable notifications, edit your profile, or contact us to request deletion of your account data.</p>`);
 const termsPage = () => publicPage("Terms of Service", `<p>Last updated: August 25, 2026.</p><p>Use MHTalk lawfully and respectfully. Do not abuse rooms, harass others, distribute illegal material, evade moderation, or attempt to compromise the service or other users.</p><p>You are responsible for content you transmit. Network, device and third-party service conditions can affect call quality and availability. The service is provided as available, without removing rights that cannot legally be waived.</p><p>Accounts or access may be limited when necessary to protect users or the service.</p>`);
+const oauthCompletePage = (request: Request) => {
+  const incoming = new URL(request.url);
+  const callback = new URL("mhtalk://auth/callback");
+  for (const key of ["code", "error", "error_code", "error_description"]) {
+    const value = incoming.searchParams.get(key);
+    if (value) callback.searchParams.set(key, value);
+  }
+  const deepLink = JSON.stringify(callback.toString()).replace(/</g, "\\u003c");
+  return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign-in complete · MHTalk</title>
+  <style>body{margin:0;background:#0c111b;color:#e8edf7;font:16px/1.6 system-ui,sans-serif;display:grid;min-height:100vh;place-items:center}.card{max-width:520px;margin:24px;padding:36px;text-align:center;background:#151d2b;border:1px solid #34435d;border-radius:22px}.logo{width:64px;height:64px;margin:auto;display:grid;place-items:center;border-radius:18px;background:#715ce8;color:#fff;font-size:38px;font-weight:900}h1{color:#fff}p{color:#aab6c8}a,button{display:inline-block;border:0;border-radius:12px;padding:12px 18px;background:#715ce8;color:#fff;text-decoration:none;font-weight:700;cursor:pointer}</style></head>
+  <body><main class="card"><div class="logo">M</div><h1>Sign-in complete</h1><p id="status">Returning you to MHTalk…</p><a id="open" href=${deepLink}>Open MHTalk</a><p><small>You can safely close this browser tab after MHTalk opens.</small></p></main>
+  <script>const target=${deepLink};const status=document.getElementById('status');window.setTimeout(()=>{window.location.href=target},80);window.setTimeout(()=>{status.textContent='MHTalk has received your sign-in. You can close this tab.';window.close()},1400);</script></body></html>`, {
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" },
+  });
+};
 const configured = (env: Env) => Boolean(env.SUPABASE_URL && env.SUPABASE_PUBLISHABLE_KEY);
 const supabaseUrl = (env: Env, path: string) => `${env.SUPABASE_URL!.replace(/\/$/, "")}${path}`;
 
@@ -265,6 +280,22 @@ async function handleAuth(request: Request, env: Env, path: string) {
     }
     await publicAuthApi(env, `/auth/v1/recover?${query}`, { email });
     return json({ accepted: true });
+  }
+
+  if (path === "/auth/verify-recovery" && request.method === "POST") {
+    const body = (await request.json().catch(() => null)) as { identifier?: string; code?: string } | null;
+    const identifier = body?.identifier?.trim() || "";
+    const code = body?.code?.trim() || "";
+    if (!identifier || !/^\d{6,8}$/.test(code)) return json({ error: "The recovery code is invalid or expired" }, 400);
+    if (await rateLimited(request, env, "verify-recovery", identifier, 8, 900))
+      return json({ error: "Too many attempts. Try again shortly." }, 429);
+    const resolved = await resolveLoginEmail(env, identifier);
+    const email = resolved || `missing-${await digest(identifier)}@invalid.mhtalk.local`;
+    const response = await publicAuthApi(env, "/auth/v1/verify", { email, token: code, type: "recovery" });
+    const value = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+    if (!response.ok || typeof value.access_token !== "string" || typeof value.refresh_token !== "string")
+      return json({ error: "The recovery code is invalid or expired" }, 400);
+    return json(value);
   }
 
   return json({ error: "Not found" }, 404);
@@ -561,6 +592,7 @@ export default {
     if (request.method === "GET" && path === "/") return homePage();
     if (request.method === "GET" && path === "/privacy") return privacyPage();
     if (request.method === "GET" && path === "/terms") return termsPage();
+    if (request.method === "GET" && path === "/auth/complete") return oauthCompletePage(request);
     if (request.method === "OPTIONS") return new Response(null, { headers });
     if (path.startsWith("/auth/")) return handleAuth(request, env, path);
     if (path === "/presence" && request.method === "GET") {
