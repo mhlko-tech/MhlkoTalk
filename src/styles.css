@@ -175,6 +175,15 @@ button {
 .help-submenu button:hover {
   background: #34384c;
 }
+.profile-menu .profile-menu-signout {
+  color: #ffabb8;
+}
+.profile-menu .profile-menu-signout span {
+  color: #ff8798;
+}
+.profile-menu .profile-menu-signout:hover {
+  background: #4a2935;
+}
 .profile-menu button span {
   color: #c5c9dc;
   display: inline-grid;

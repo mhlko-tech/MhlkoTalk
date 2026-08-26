@@ -983,6 +983,16 @@ export function App() {
               >
                 <span>⚙</span> Settings
               </button>
+              <button
+                className="profile-menu-signout"
+                onClick={() => {
+                  setProfileMenuOpen(false);
+                  setHelpMenuOpen(false);
+                  void accountSession.signOut();
+                }}
+              >
+                <span>↪</span> Sign out
+              </button>
               <div className="menu-separator" />
               <button
                 onClick={() => setHelpMenuOpen((open) => !open)}
@@ -1713,7 +1723,6 @@ export function App() {
             <div className="settings-section account-foundation">
               <h3>MHTalk account</h3>
               <p>{`Signed in as ${accountState.account.displayName} (@${accountState.account.username})`}</p>
-              <button className="control" onClick={() => void accountSession.signOut()}>Sign out</button>
             </div>
           </section>
         </div>
