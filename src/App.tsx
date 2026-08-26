@@ -1748,7 +1748,7 @@ export function App() {
             </button>
             <div className="settings-section">
               <h3>Event sounds</h3>
-              <label className="settings-check">
+              <label className="settings-check event-sound-row">
                 <input
                   type="checkbox"
                   checked={eventSounds.presence}
@@ -1758,9 +1758,12 @@ export function App() {
                     roomSession.setEventSoundEnabled("presence", presence);
                   }}
                 />
-                Join and leave sounds
+                <span>
+                  <strong>Join and leave sounds</strong>
+                  <small>Play a sound when a member enters or leaves.</small>
+                </span>
               </label>
-              <label className="settings-check">
+              <label className="settings-check event-sound-row">
                 <input
                   type="checkbox"
                   checked={eventSounds.media}
@@ -1770,7 +1773,10 @@ export function App() {
                     roomSession.setEventSoundEnabled("media", media);
                   }}
                 />
-                Camera and stream sounds
+                <span>
+                  <strong>Camera and stream sounds</strong>
+                  <small>Play a sound when shared media starts or stops.</small>
+                </span>
               </label>
             </div>
             <div className="settings-section account-foundation">

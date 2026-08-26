@@ -16,7 +16,10 @@ import type {
   MediaQuality,
   UserProfile,
 } from "../core/types";
-import { normalizeProfileAvatar } from "../core/profileAvatar";
+import {
+  normalizeProfileAvatar,
+  profileAvatarImageSource,
+} from "../core/profileAvatar";
 import { moderateMainMessage } from "../core/moderation";
 import { accountSession } from "./accountSession";
 
@@ -108,6 +111,9 @@ export class RoomSession {
       this.snapshot.state === "recovering"
     )
       return;
+    // Creating/resuming the context while handling the user's click keeps
+    // later participant events audible in WebViews with autoplay policies.
+    void this.unlockEventAudio().catch(() => undefined);
     this.update({
       state: "connecting",
       roomName,
@@ -316,6 +322,9 @@ export class RoomSession {
 
   setEventSoundEnabled(kind: EventSoundKind, enabled: boolean) {
     localStorage.setItem(`mhtalk.sound.${kind}`, String(enabled));
+    if (enabled) {
+      void this.playEventTone(kind === "presence" ? "join" : "media-start");
+    }
   }
 
   async watchParticipantMedia(
@@ -536,32 +545,53 @@ export class RoomSession {
         localSpeaking: room.localParticipant.isSpeaking,
         participants: [...room.remoteParticipants.values()].map(
           (participant) => {
+            const dataProfile = this.remoteProfiles.get(participant.identity);
+            const metadataProfile = parseParticipantProfile(
+              participant.metadata,
+              participant.name || participant.identity,
+            );
+            const dataAvatar = normalizeProfileAvatar(dataProfile?.avatar);
+            const metadataAvatar = normalizeProfileAvatar(metadataProfile.avatar);
+            const avatar =
+              profileAvatarImageSource(dataAvatar) !== null
+                ? dataAvatar
+                : profileAvatarImageSource(metadataAvatar) !== null
+                  ? metadataAvatar
+                  : dataAvatar || metadataAvatar || profileInitial(
+                      dataProfile?.name || metadataProfile.name || participant.identity,
+                    );
             const camera = participant.getTrackPublication(Track.Source.Camera);
             const screen = participant.getTrackPublication(
               Track.Source.ScreenShare,
             );
             return {
-            identity: participant.identity,
-            speaking: participant.isSpeaking,
-            microphoneEnabled: participant.isMicrophoneEnabled,
-            cameraEnabled: Boolean(camera && !camera.isMuted),
-            screenShareEnabled: Boolean(screen && !screen.isMuted),
-            cameraQuality: this.getParticipantMaximumQuality(
-              participant.identity,
-              "camera",
-            ),
-            screenShareQuality: this.getParticipantMaximumQuality(
-              participant.identity,
-              "screen",
-            ),
-            ...this.remoteProfiles.get(participant.identity),
+              identity: participant.identity,
+              speaking: participant.isSpeaking,
+              microphoneEnabled: participant.isMicrophoneEnabled,
+              cameraEnabled: Boolean(camera && !camera.isMuted),
+              screenShareEnabled: Boolean(screen && !screen.isMuted),
+              cameraQuality: this.getParticipantMaximumQuality(
+                participant.identity,
+                "camera",
+              ),
+              screenShareQuality: this.getParticipantMaximumQuality(
+                participant.identity,
+                "screen",
+              ),
+              name:
+                dataProfile?.name ||
+                metadataProfile.name ||
+                participant.name ||
+                participant.identity,
+              bio: dataProfile?.bio || metadataProfile.bio || "",
+              avatar,
             };
           },
         ),
       });
     };
     room.on(RoomEvent.ParticipantConnected, () => {
-      this.playEventTone("join");
+      void this.playEventTone("join");
       syncParticipants();
       // A newcomer did not receive profile packets sent before they joined.
       // Re-announce the local profile so names, avatars and bios converge.
@@ -569,7 +599,7 @@ export class RoomSession {
       void this.requestProfiles();
     });
     room.on(RoomEvent.ParticipantDisconnected, (participant) => {
-      this.playEventTone("leave");
+      void this.playEventTone("leave");
       this.detachParticipantSource(participant.identity, "camera");
       this.detachParticipantSource(participant.identity, "screen");
       this.remoteVoiceAudio.delete(participant.identity);
@@ -578,6 +608,7 @@ export class RoomSession {
       this.remoteMediaQuality.delete(participant.identity);
       syncParticipants();
     });
+    room.on(RoomEvent.ParticipantMetadataChanged, syncParticipants);
     room.on(RoomEvent.TrackPublished, (publication, participant) => {
       const source =
         publication.source === Track.Source.Camera
@@ -598,7 +629,7 @@ export class RoomSession {
         publication.source === Track.Source.Camera ||
         publication.source === Track.Source.ScreenShare
       ) {
-        this.playEventTone("media-start");
+        void this.playEventTone("media-start");
       }
       syncParticipants();
     });
@@ -679,7 +710,7 @@ export class RoomSession {
     room.on(RoomEvent.TrackUnpublished, (publication) => {
       if (publication.kind === Track.Kind.Video) {
         this.detachMedia(`remote-${publication.trackSid}`);
-        this.playEventTone("media-stop");
+        void this.playEventTone("media-stop");
       }
       syncParticipants();
     });
@@ -877,12 +908,16 @@ export class RoomSession {
   private async publishProfile() {
     if (!this.room) return;
     const safe = sanitizeProfile(this.profile);
-    await this.room.localParticipant.publishData(
-      new TextEncoder().encode(
-        JSON.stringify({ type: "profile", profile: safe }),
+    const metadata = JSON.stringify(safe);
+    await Promise.allSettled([
+      this.room.localParticipant.publishData(
+        new TextEncoder().encode(
+          JSON.stringify({ type: "profile", profile: safe }),
+        ),
+        { reliable: true, topic: "mhtalk.chat" },
       ),
-      { reliable: true, topic: "mhtalk.chat" },
-    );
+      this.room.localParticipant.setMetadata(metadata),
+    ]);
   }
 
   private async requestProfiles() {
@@ -906,13 +941,31 @@ export class RoomSession {
     );
   }
 
-  private playEventTone(kind: "join" | "leave" | "media-start" | "media-stop") {
+  private async unlockEventAudio() {
+    const context = this.toneContext || new AudioContext();
+    this.toneContext = context;
+    const outputDevice = this.preferredDevices.audiooutput;
+    const sinkContext = context as AudioContext & {
+      setSinkId?: (deviceId: string) => Promise<void>;
+    };
+    if (outputDevice && typeof sinkContext.setSinkId === "function") {
+      try {
+        await sinkContext.setSinkId(outputDevice);
+      } catch {
+        // Fall back to the operating system's default speaker.
+      }
+    }
+    if (context.state === "suspended") await context.resume();
+    return context;
+  }
+
+  private async playEventTone(
+    kind: "join" | "leave" | "media-start" | "media-stop",
+  ) {
     const setting = kind === "join" || kind === "leave" ? "presence" : "media";
     if (!this.getEventSoundSettings()[setting]) return;
     try {
-      const context = this.toneContext || new AudioContext();
-      this.toneContext = context;
-      void context.resume();
+      const context = await this.unlockEventAudio();
       const oscillator = context.createOscillator();
       const gain = context.createGain();
       const start = context.currentTime + 0.01;
@@ -1211,6 +1264,46 @@ function estimatedDropPercent(quality: ConnectionQuality) {
   if (quality === ConnectionQuality.Poor) return 24;
   if (quality === ConnectionQuality.Lost) return 100;
   return null;
+}
+
+function parseParticipantProfile(
+  metadata: string | undefined,
+  fallbackIdentity: string,
+): UserProfile {
+  try {
+    const value = JSON.parse(metadata || "{}") as Partial<UserProfile> & {
+      username?: unknown;
+      avatar_url?: unknown;
+    };
+    const rawName =
+      typeof value.name === "string"
+        ? value.name
+        : typeof value.username === "string"
+          ? value.username
+          : fallbackIdentity;
+    return sanitizeProfile(
+      {
+        name: rawName,
+        bio: typeof value.bio === "string" ? value.bio : "",
+        avatar:
+          typeof value.avatar === "string"
+            ? value.avatar
+            : typeof value.avatar_url === "string"
+              ? value.avatar_url
+              : "",
+      },
+      fallbackIdentity,
+    );
+  } catch {
+    return sanitizeProfile(
+      { name: fallbackIdentity, bio: "", avatar: "" },
+      fallbackIdentity,
+    );
+  }
+}
+
+function profileInitial(value: string) {
+  return Array.from(value.trim())[0]?.toUpperCase() || "M";
 }
 
 function sanitizeProfile(

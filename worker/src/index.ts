@@ -371,7 +371,13 @@ async function issueToken(roomName: string, env: Env, user: AuthUser | null) {
     identity: user?.id || crypto.randomUUID(), name: profile?.display_name || profile?.username,
     metadata: profile ? JSON.stringify({ avatar: profile.avatar_url, username: profile.username }) : undefined, ttl: "10m",
   });
-  token.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true });
+  token.addGrant({
+    roomJoin: true,
+    room: roomName,
+    canPublish: true,
+    canSubscribe: true,
+    canUpdateOwnMetadata: true,
+  });
   return token.toJwt();
 }
 
