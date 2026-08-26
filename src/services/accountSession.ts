@@ -28,6 +28,8 @@ export type AccountState =
   | { status: "authenticating" }
   | { status: "awaiting-oauth" }
   | { status: "awaiting-verification"; email: string }
+  | { status: "account-exists"; email: string; googleLinked: boolean; passwordEnabled: boolean; message: string }
+  | { status: "onboarding"; email: string; username: string; displayName: string; avatarUrl?: string; creationVerified: boolean }
   | { status: "password-recovery" }
   | { status: "signed-in"; account: MHTalkAccount }
   | { status: "failed"; message: string };
@@ -48,6 +50,14 @@ type ApiProfile = {
   friend_since?: string;
   request_id?: string;
   created_at?: string;
+};
+type ApiOnboarding = {
+  required: boolean;
+  email: string;
+  googleLinked: boolean;
+  passwordEnabled: boolean;
+  creationVerified: boolean;
+  profile: ApiProfile;
 };
 
 const initialSocial: SocialState = { friends: [], requests: [], incomingInvite: null, loading: false, error: "" };
@@ -179,7 +189,16 @@ class AccountSession {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ username: username.trim(), displayName: displayName.trim(), email: email.trim(), password }),
       });
-      const value = (await response.json().catch(() => null)) as { error?: string } | null;
+      const value = (await response.json().catch(() => null)) as {
+        error?: string; code?: string; email?: string; googleLinked?: boolean; passwordEnabled?: boolean;
+      } | null;
+      if (!response.ok && value?.code === "ACCOUNT_EXISTS") {
+        this.setState({
+          status: "account-exists", email: value.email || email.trim(), googleLinked: value.googleLinked === true,
+          passwordEnabled: value.passwordEnabled === true, message: value.error || "This email is already used by an MHTalk account.",
+        });
+        return;
+      }
       if (!response.ok) throw new Error(value?.error || "Could not create account");
       this.setState({ status: "awaiting-verification", email: email.trim() });
     } catch (error) {
@@ -208,13 +227,15 @@ class AccountSession {
     if (error) throw error;
   }
 
-  async verifyEmailCode(email: string, token: string) {
+  async verifyEmailCode(email: string, token: string, displayName?: string, avatar?: string) {
     if (!this.client) throw new Error("Account service is unavailable");
     const { data, error } = await this.client.auth.verifyOtp({
       email: email.trim(), token: token.trim(), type: "signup",
     });
     if (error || !data.session) throw error || new Error("The verification code is invalid or expired");
     await this.applySession(data.session);
+    if (avatar?.startsWith("data:image/") && this.state.status === "signed-in")
+      await this.updateProfile(displayName || this.state.account.displayName, "", avatar);
   }
 
   async verifyPasswordRecoveryCode(email: string, token: string) {
@@ -235,10 +256,35 @@ class AccountSession {
     if (this.state.status === "failed") this.setState(this.client ? { status: "signed-out" } : { status: "unavailable" });
   }
 
+  dismissAccountNotice() {
+    if (this.state.status === "account-exists") this.setState(this.client ? { status: "signed-out" } : { status: "unavailable" });
+  }
+
+  async startGoogleOnboarding() {
+    await this.api("/auth/onboarding/start", { method: "POST", body: "{}" });
+  }
+
+  async completeGoogleOnboarding(username: string, displayName: string, avatar: string | undefined, token: string) {
+    if (!this.client || this.state.status !== "onboarding") throw new Error("Google onboarding is unavailable");
+    const email = this.state.email;
+    const { data, error } = await this.client.auth.verifyOtp({ email, token: token.trim(), type: "email" });
+    if (error || !data.session) throw error || new Error("The account creation code is invalid or expired");
+    this.session = data.session;
+    await this.api("/auth/onboarding/complete", {
+      method: "POST",
+      body: JSON.stringify({ username: username.trim(), displayName: displayName.trim(), avatarUrl: avatar?.startsWith("data:") ? null : avatar || null }),
+    });
+    await this.applySession(data.session);
+    const completedState = this.getState();
+    if (avatar?.startsWith("data:image/") && completedState.status === "signed-in")
+      await this.updateProfile(displayName, "", avatar);
+  }
+
   async completePasswordRecovery(password: string) {
     if (!this.client || !this.session) throw new Error("The recovery link is invalid or expired");
     const { error } = await this.client.auth.updateUser({ password });
     if (error) throw error;
+    await this.api("/auth/password-enabled", { method: "POST", body: "{}" });
     this.handlingPasswordRecovery = false;
     await this.applySession(this.session);
   }
@@ -397,6 +443,15 @@ class AccountSession {
       return;
     }
     try {
+      const onboarding = await this.api<ApiOnboarding>("/auth/onboarding");
+      if (onboarding.required) {
+        this.setState({
+          status: "onboarding", email: onboarding.email, username: onboarding.profile.username,
+          displayName: onboarding.profile.display_name, avatarUrl: onboarding.profile.avatar_url || undefined,
+          creationVerified: onboarding.creationVerified,
+        });
+        return;
+      }
       const profile = await this.api<ApiProfile>("/social/me");
       this.setState({ status: "signed-in", account: this.mapProfile(profile) });
       await this.refreshSocial();

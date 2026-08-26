@@ -392,6 +392,18 @@ button {
 .auth-alert { border: 1px solid #713849; background: #331d28; color: #ffabb8; }
 .auth-notice { border: 1px solid #315c4b; background: #173128; color: #8ee5bd; }
 .auth-message-panel { display: grid; gap: 14px; text-align: center; }
+.auth-message-panel label { display: grid; gap: 7px; color: #dfe3f6; font-size: 12px; font-weight: 700; text-align: left; }
+.auth-message-panel input:not([type="checkbox"]) {
+  width: 100%; min-height: 46px; padding: 0 13px; box-sizing: border-box;
+  border: 1px solid #3b4262; border-radius: 10px; outline: none;
+  background: #101426; color: #f6f7ff; font: inherit; font-size: 14px;
+}
+.auth-message-panel input:focus { border-color: #8173f4; box-shadow: 0 0 0 3px #8173f426; }
+.auth-message-panel input:read-only { color: #9299b7; }
+.auth-avatar-picker { display: flex; align-items: center; justify-content: center; gap: 14px; }
+.auth-avatar-picker .avatar { width: 62px; height: 62px; flex: 0 0 auto; }
+.auth-avatar-picker > div:last-of-type { display: grid; gap: 5px; text-align: left; }
+.auth-onboarding > .google-mark { width: 30px; height: 30px; margin: auto; }
 .auth-message-icon { width: 56px; height: 56px; display: grid; place-items: center; margin: auto; border-radius: 50%; background: #29264c; color: #a99cff; font-size: 28px; }
 .auth-footer { padding-top: 14px; border-top: 1px solid #303650; color: #757d9b; font-size: 10px; text-align: center; }
 .auth-retry { margin-top: -3px; }

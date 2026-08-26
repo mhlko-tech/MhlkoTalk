@@ -27,4 +27,17 @@ const login = await request("/auth/login", {
 assert.equal(login.response.status, 400);
 assert.equal(login.body.error, "Username/email or password is incorrect");
 
-console.log("Authentication gateway tests passed: 4");
+for (const [path, method] of [
+  ["/auth/onboarding", "GET"],
+  ["/auth/onboarding/start", "POST"],
+  ["/auth/onboarding/complete", "POST"],
+  ["/auth/password-enabled", "POST"],
+]) {
+  const result = await request(path, method === "POST" ? {
+    method, headers: { "content-type": "application/json" }, body: "{}",
+  } : undefined);
+  assert.equal(result.response.status, 401);
+  assert.equal(result.body.error, "Sign in is required");
+}
+
+console.log("Authentication gateway tests passed: 8");

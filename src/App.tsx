@@ -2069,6 +2069,9 @@ function AuthenticationGate({ state }: { state: AccountState }) {
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [verificationCode, setVerificationCode] = useState("");
+  const [authAvatar, setAuthAvatar] = useState("");
+  const [onboardingCodeSent, setOnboardingCodeSent] = useState(false);
+  const authAvatarInput = useRef<HTMLInputElement>(null);
   const [showPassword, setShowPassword] = useState(false);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -2081,6 +2084,14 @@ function AuthenticationGate({ state }: { state: AccountState }) {
     if (state.status === "awaiting-verification") {
       setEmail(state.email);
       setMode("verification");
+    }
+    if (state.status === "onboarding") {
+      setEmail(state.email);
+      setUsername(state.username);
+      setDisplayName(state.displayName);
+      setAuthAvatar(state.avatarUrl || "");
+      setVerificationCode("");
+      setOnboardingCodeSent(false);
     }
   }, [state]);
   useEffect(() => {
@@ -2100,6 +2111,29 @@ function AuthenticationGate({ state }: { state: AccountState }) {
     catch (cause) { setError(cause instanceof Error ? cause.message : "Something went wrong. Try again."); }
     finally { setBusy(false); }
   };
+  const selectAuthAvatar = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    if (!file.type.startsWith("image/") || file.size > 5 * 1024 * 1024) {
+      setError("Choose an image that is 5 MB or smaller");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setAuthAvatar(String(reader.result || ""));
+    reader.onerror = () => setError("Could not read this image");
+    reader.readAsDataURL(file);
+  };
+  const avatarPicker = (
+    <div className="auth-avatar-picker">
+      <Avatar value={authAvatar || displayName.slice(0, 1) || "M"} />
+      <div>
+        <button type="button" className="auth-text-button" onClick={() => authAvatarInput.current?.click()}>Choose profile photo</button>
+        {authAvatar && <button type="button" className="auth-text-button" onClick={() => setAuthAvatar("")}>Remove photo</button>}
+      </div>
+      <input ref={authAvatarInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden onChange={selectAuthAvatar} />
+    </div>
+  );
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -2153,6 +2187,37 @@ function AuthenticationGate({ state }: { state: AccountState }) {
 
       {state.status === "checking" ? (
         <div className="auth-gate-progress"><i /> Restoring your secure session…</div>
+      ) : state.status === "onboarding" ? (
+        <div className="auth-message-panel auth-onboarding">
+          <GoogleMark />
+          <h2>{onboardingCodeSent ? "Verify account creation" : "Finish your MHTalk account"}</h2>
+          {!onboardingCodeSent ? <>
+            <p>Google verified <strong>{state.email}</strong>. Choose how your MHTalk profile will appear.</p>
+            {avatarPicker}
+            <label>Email<input value={state.email} readOnly /></label>
+            <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value.slice(0, 60))} placeholder="Your display name" /></label>
+            <label>Username<input value={username} onChange={(event) => setUsername(event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 32))} placeholder="your_username" /></label>
+            {error && <div className="auth-alert" role="alert">{error}</div>}
+            <button className="primary" disabled={pending} onClick={() => void perform(async () => {
+              const invalidUsername = usernameError(username);
+              if (invalidUsername) throw new Error(invalidUsername);
+              if (!displayName.trim()) throw new Error("Enter a display name");
+              await accountSession.startGoogleOnboarding();
+              setVerificationCode(""); setOnboardingCodeSent(true); setResendDelay(60);
+            })}>{pending ? "Please wait…" : "Send account creation code"}</button>
+          </> : <>
+            <p>Enter the account creation code sent to <strong>{state.email}</strong>.</p>
+            <label>Account creation code<input inputMode="numeric" autoComplete="one-time-code" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 8))} placeholder="Account creation code" minLength={6} maxLength={8} /></label>
+            {error && <div className="auth-alert" role="alert">{error}</div>}
+            {notice && <div className="auth-notice" role="status">{notice}</div>}
+            <button className="primary" disabled={pending || verificationCode.length < 6} onClick={() => void perform(() => accountSession.completeGoogleOnboarding(username, displayName, authAvatar || undefined, verificationCode))}>Verify and enter MHTalk</button>
+            <button className="auth-text-button" disabled={pending || resendDelay > 0} onClick={() => void perform(async () => {
+              await accountSession.startGoogleOnboarding(); setResendDelay(60); setNotice("A new account creation code was sent.");
+            })}>{resendDelay > 0 ? `Resend in ${resendDelay}s` : "Resend account creation code"}</button>
+            <button className="auth-text-button" onClick={() => { setOnboardingCodeSent(false); setError(""); setNotice(""); }}>Edit profile details</button>
+          </>}
+          <button className="auth-text-button" onClick={() => void accountSession.signOut()}>Cancel and sign out</button>
+        </div>
       ) : state.status === "awaiting-oauth" ? (
         <div className="auth-message-panel">
           <GoogleMark />
@@ -2161,13 +2226,31 @@ function AuthenticationGate({ state }: { state: AccountState }) {
           <div className="auth-gate-progress"><i /> Waiting for Google…</div>
           <button className="auth-text-button" type="button" onClick={() => accountSession.cancelOAuthSignIn()}>Cancel and return to login</button>
         </div>
+      ) : state.status === "account-exists" ? (
+        <div className="auth-message-panel">
+          <div className="auth-message-icon">!</div>
+          <h2>Account already exists</h2>
+          <p>{state.message}</p>
+          <strong>{state.email}</strong>
+          {error && <div className="auth-alert" role="alert">{error}</div>}
+          <button className="primary" disabled={pending} onClick={() => void perform(async () => {
+            await accountSession.requestPasswordReset(state.email);
+            accountSession.dismissAccountNotice();
+            setEmail(state.email); setVerificationCode(""); setMode("recovery-code");
+            setNotice("A password setup code was sent.");
+          })}>{state.passwordEnabled ? "Reset password" : "Set a password"}</button>
+          {state.googleLinked && <button className="auth-google" type="button" disabled={pending} onClick={() => void perform(() => accountSession.signIn("google"))}><GoogleMark />Log in using Google</button>}
+          <button className="auth-text-button" onClick={() => { accountSession.dismissAccountNotice(); changeMode("login"); }}>Back to login</button>
+        </div>
       ) : mode === "verification" ? (
         <div className="auth-message-panel">
           <div className="auth-message-icon">✉</div>
           <h2>Verify your email</h2>
           <p>Enter the verification code sent to <strong>{email}</strong>. You can also use the link in the same email.</p>
           <label>Verification code<input inputMode="numeric" autoComplete="one-time-code" value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, "").slice(0, 8))} placeholder="Verification code" required minLength={6} maxLength={8} /></label>
-          <button className="primary" disabled={pending || verificationCode.length < 6} onClick={() => void perform(() => accountSession.verifyEmailCode(email, verificationCode))}>Verify and continue</button>
+          {error && <div className="auth-alert" role="alert">{error}</div>}
+          {notice && <div className="auth-notice" role="status">{notice}</div>}
+          <button className="primary" disabled={pending || verificationCode.length < 6} onClick={() => void perform(() => accountSession.verifyEmailCode(email, verificationCode, displayName, authAvatar || undefined))}>Verify and continue</button>
           <button className="primary" disabled={pending || resendDelay > 0} onClick={() => void perform(async () => {
             await accountSession.resendVerification(email); setResendDelay(60); setNotice("A new verification code was sent.");
           })}>{resendDelay > 0 ? `Resend in ${resendDelay}s` : "Resend verification code"}</button>
@@ -2182,6 +2265,7 @@ function AuthenticationGate({ state }: { state: AccountState }) {
           </header>
 
           {mode === "register" && <>
+            {avatarPicker}
             <label>Username<input value={username} onChange={(event) => setUsername(event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 32))} autoComplete="username" placeholder="your_username" required minLength={3} /></label>
             <label>Display name<input value={displayName} onChange={(event) => setDisplayName(event.target.value.slice(0, 60))} autoComplete="name" placeholder="How people will see you" required /></label>
             <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" placeholder="you@example.com" required /></label>

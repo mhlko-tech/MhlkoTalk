@@ -18,8 +18,13 @@ export interface Env {
   FIREBASE_PRIVATE_KEY?: string;
 }
 
-type AuthUser = { id: string; accessToken: string; email?: string };
+type AuthUser = { id: string; accessToken: string; email?: string; userMetadata?: Record<string, unknown>; appMetadata?: Record<string, unknown> };
 type Profile = { id: string; username: string; display_name: string; avatar_url: string | null; bio?: string | null };
+type AccountLogin = {
+  user_id: string; username: string; email: string;
+  google_linked_at?: string | null; password_enabled_at?: string | null;
+  creation_verified_at?: string | null; onboarding_completed_at?: string | null;
+};
 const encoder = new TextEncoder();
 const allowedRoom = /^[a-zA-Z0-9 _-]{1,100}$/;
 const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
@@ -74,6 +79,35 @@ async function usernameAvailable(env: Env, username: string) {
   if (!response?.ok) return false;
   return ((await response.json()) as unknown[]).length === 0;
 }
+async function accountLoginByEmail(env: Env, email: string) {
+  const response = await serviceApi(env, `/rest/v1/account_logins?email=eq.${encodeURIComponent(email.trim().toLowerCase())}&select=*&limit=1`);
+  if (!response?.ok) return null;
+  return ((await response.json()) as AccountLogin[])[0] || null;
+}
+async function accountLoginByUser(env: Env, userId: string) {
+  const response = await serviceApi(env, `/rest/v1/account_logins?user_id=eq.${encodeURIComponent(userId)}&select=*&limit=1`);
+  if (!response?.ok) return null;
+  return ((await response.json()) as AccountLogin[])[0] || null;
+}
+async function requireCompletedOnboarding(env: Env, user: AuthUser) {
+  const login = await accountLoginByUser(env, user.id);
+  if (!login) return json({ error: "Account profile is unavailable" }, 403);
+  if (login.google_linked_at && (!login.creation_verified_at || !login.onboarding_completed_at))
+    return json({ error: "Complete MHTalk account creation before continuing", code: "ONBOARDING_REQUIRED" }, 403);
+  return null;
+}
+function jwtClaims(token: string) {
+  try {
+    const payload = token.split(".")[1];
+    return JSON.parse(new TextDecoder().decode(unb64(payload))) as { amr?: { method?: string; timestamp?: number }[] };
+  } catch { return null; }
+}
+function hasRecentEmailOtp(token: string) {
+  const cutoff = Math.floor(Date.now() / 1000) - 15 * 60;
+  return jwtClaims(token)?.amr?.some((entry) =>
+    (entry.method === "otp" || entry.method === "magiclink") && Number(entry.timestamp || 0) >= cutoff,
+  ) === true;
+}
 async function handleAuth(request: Request, env: Env, path: string) {
   if (!configured(env) || !env.SUPABASE_SERVICE_ROLE_KEY)
     return json({ error: "Account service is unavailable" }, 503);
@@ -87,9 +121,74 @@ async function handleAuth(request: Request, env: Env, path: string) {
     return json({ available: await usernameAvailable(env, username) });
   }
 
+  if (path === "/auth/onboarding" && request.method === "GET") {
+    const auth = await authenticate(request, env);
+    if (auth instanceof Response) return auth;
+    const [login, profile] = await Promise.all([accountLoginByUser(env, auth.id), profileFor(env, auth)]);
+    if (!login || !profile) return json({ error: "Account profile is unavailable" }, 404);
+    const required = Boolean(login.google_linked_at && (!login.creation_verified_at || !login.onboarding_completed_at));
+    return json({
+      required, email: auth.email || login.email, googleLinked: Boolean(login.google_linked_at),
+      passwordEnabled: Boolean(login.password_enabled_at), creationVerified: Boolean(login.creation_verified_at),
+      profile,
+    });
+  }
+
   if (request.method !== "POST") return json({ error: "Not found" }, 404);
   const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
   if (!body) return json({ error: "Invalid request" }, 400);
+
+  if (path === "/auth/onboarding/start") {
+    const auth = await authenticate(request, env);
+    if (auth instanceof Response) return auth;
+    const login = await accountLoginByUser(env, auth.id);
+    if (!login?.google_linked_at || !auth.email) return json({ error: "Google onboarding is not required" }, 409);
+    if (login.creation_verified_at && login.onboarding_completed_at) return json({ complete: true });
+    if (await rateLimited(request, env, "onboarding", auth.email, 5, 3600))
+      return json({ error: "Too many codes requested. Try again later." }, 429);
+    const response = await publicAuthApi(
+      env,
+      `/auth/v1/otp?redirect_to=${encodeURIComponent("mhtalk://auth/callback")}`,
+      { email: auth.email, create_user: false },
+    );
+    if (!response.ok) return json({ error: "Could not send the account creation code" }, 502);
+    return json({ sent: true });
+  }
+
+  if (path === "/auth/onboarding/complete") {
+    const auth = await authenticate(request, env);
+    if (auth instanceof Response) return auth;
+    if (!hasRecentEmailOtp(auth.accessToken)) return json({ error: "Verify the account creation code before continuing" }, 403);
+    const username = typeof body.username === "string" ? body.username.trim() : "";
+    const displayName = typeof body.displayName === "string" ? body.displayName.trim() : "";
+    const avatarUrl = typeof body.avatarUrl === "string" ? body.avatarUrl.trim().slice(0, 1000) : null;
+    const validation = usernameError(username) || (!displayName || displayName.length > 60 ? "Display name must be 1-60 characters" : null);
+    if (validation) return json({ error: validation }, 400);
+    const current = await accountLoginByUser(env, auth.id);
+    if (!current?.google_linked_at) return json({ error: "Google account is not linked" }, 409);
+    if (username.toLowerCase() !== current.username.toLowerCase() && !(await usernameAvailable(env, username)))
+      return json({ error: "Username is unavailable" }, 409);
+    const profileUpdate = await serviceApi(env, `/rest/v1/profiles?id=eq.${encodeURIComponent(auth.id)}`, {
+      method: "PATCH", headers: { prefer: "return=minimal" },
+      body: JSON.stringify({ username, display_name: displayName, avatar_url: avatarUrl, updated_at: new Date().toISOString() }),
+    });
+    if (!profileUpdate?.ok) return json({ error: "Could not save the account profile" }, 409);
+    const loginUpdate = await serviceApi(env, `/rest/v1/account_logins?user_id=eq.${encodeURIComponent(auth.id)}`, {
+      method: "PATCH", headers: { prefer: "return=minimal" },
+      body: JSON.stringify({ username, creation_verified_at: new Date().toISOString(), onboarding_completed_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
+    });
+    return loginUpdate?.ok ? json({ complete: true }) : json({ error: "Could not complete account creation" }, 500);
+  }
+
+  if (path === "/auth/password-enabled") {
+    const auth = await authenticate(request, env);
+    if (auth instanceof Response) return auth;
+    const response = await serviceApi(env, `/rest/v1/account_logins?user_id=eq.${encodeURIComponent(auth.id)}`, {
+      method: "PATCH", headers: { prefer: "return=minimal" },
+      body: JSON.stringify({ password_enabled_at: new Date().toISOString(), updated_at: new Date().toISOString() }),
+    });
+    return response?.ok ? json({ enabled: true }) : json({ error: "Could not enable password sign-in" }, 500);
+  }
 
   if (path === "/auth/login") {
     const identifier = typeof body.identifier === "string" ? body.identifier.trim() : "";
@@ -114,6 +213,20 @@ async function handleAuth(request: Request, env: Env, path: string) {
     if (validation) return json({ error: validation }, 400);
     if (await rateLimited(request, env, "register", email, 5, 3600))
       return json({ error: "Too many registration attempts. Try again later." }, 429);
+    const existing = await accountLoginByEmail(env, email);
+    if (existing) {
+      if (!existing.google_linked_at && !existing.creation_verified_at) {
+        await publicAuthApi(env, `/auth/v1/resend?redirect_to=${encodeURIComponent("mhtalk://auth/callback")}`, { type: "signup", email });
+        return json({ verificationRequired: true, resumed: true });
+      }
+      return json({
+        error: existing.google_linked_at && !existing.password_enabled_at
+          ? "This email already belongs to an MHTalk account created with Google. Set a password to enable email login."
+          : "This email is already used by an MHTalk account. Sign in or reset your password.",
+        code: "ACCOUNT_EXISTS", googleLinked: Boolean(existing.google_linked_at),
+        passwordEnabled: Boolean(existing.password_enabled_at), email,
+      }, 409);
+    }
     if (!(await usernameAvailable(env, username))) return json({ error: "Username is unavailable" }, 409);
     const signup: Record<string, unknown> = {
       email, password,
@@ -165,8 +278,11 @@ async function authenticate(request: Request, env: Env): Promise<AuthUser | Resp
     headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY!, authorization },
   });
   if (!response.ok) return json({ error: "Session is invalid or expired" }, 401);
-  const user = (await response.json()) as { id?: string; email?: string };
-  return user.id ? { id: user.id, email: user.email, accessToken: authorization.slice(7) } : json({ error: "Invalid account" }, 401);
+  const user = (await response.json()) as { id?: string; email?: string; user_metadata?: Record<string, unknown>; app_metadata?: Record<string, unknown> };
+  return user.id ? {
+    id: user.id, email: user.email, userMetadata: user.user_metadata, appMetadata: user.app_metadata,
+    accessToken: authorization.slice(7),
+  } : json({ error: "Invalid account" }, 401);
 }
 async function optionalAuth(request: Request, env: Env): Promise<AuthUser | Response | null> {
   if (!configured(env)) return null;
@@ -453,7 +569,9 @@ export default {
     }
     if (path.startsWith("/social/") || path === "/presence/ticket") {
       const auth = await authenticate(request, env);
-      return auth instanceof Response ? auth : handleSocial(request, env, path, auth);
+      if (auth instanceof Response) return auth;
+      const onboarding = await requireCompletedOnboarding(env, auth);
+      return onboarding || handleSocial(request, env, path, auth);
     }
     if (request.method !== "POST") return json({ error: "Not found" }, 404);
     if (path === "/moderate") {
@@ -484,11 +602,20 @@ export default {
     }
     if (path === "/private-room") {
       const auth = await optionalAuth(request, env);
-      return auth instanceof Response ? auth : json(await createPrivateRoom(env));
+      if (auth instanceof Response) return auth;
+      if (auth) {
+        const onboarding = await requireCompletedOnboarding(env, auth);
+        if (onboarding) return onboarding;
+      }
+      return json(await createPrivateRoom(env));
     }
     if (path !== "/livekit/token") return json({ error: "Not found" }, 404);
     const auth = await optionalAuth(request, env);
     if (auth instanceof Response) return auth;
+    if (auth) {
+      const onboarding = await requireCompletedOnboarding(env, auth);
+      if (onboarding) return onboarding;
+    }
     const body = (await request.json().catch(() => null)) as { roomName?: unknown; inviteCode?: unknown } | null;
     let roomName = typeof body?.roomName === "string" ? body.roomName.trim() : "";
     roomName = roomName === "Main room" || roomName === "Main channel" ? "Main" : roomName;
