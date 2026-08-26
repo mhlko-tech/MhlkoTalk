@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import appPackage from "../../../package.json";
 import { Avatar } from "../../components/Avatar";
 import { DisplayNameField } from "../../components/DisplayNameField";
+import { serviceBaseUrl } from "../../config/serviceConfig";
 import { passwordError, usernameError } from "../../core/authRules";
 import {
   accountSession,
@@ -10,10 +11,7 @@ import {
 } from "../../services/accountSession";
 
 const appVersion = appPackage.version;
-const publicServiceUrl = (
-  import.meta.env.VITE_SOCIAL_API_ENDPOINT ||
-  "https://mhtalk-token-service.mhlkotalk.workers.dev"
-).replace(/\/$/, "");
+const publicServiceUrl = serviceBaseUrl;
 
 function GoogleMark() {
   return (

@@ -25,6 +25,7 @@ import type {
 } from "./core/types";
 import { mediaQualityLabels, mediaQualityOrder } from "./core/mediaQuality";
 import { profileAvatarImageSource } from "./core/profileAvatar";
+import { liveKitTokenEndpoint } from "./config/serviceConfig";
 import { roomSession } from "./services/roomSession";
 import {
   accountSession,
@@ -343,10 +344,8 @@ export function App() {
   useEffect(() => {
     let disposed = false;
     const refresh = async () => {
-      const endpoint = import.meta.env.VITE_LIVEKIT_TOKEN_ENDPOINT;
-      if (!endpoint) return;
       try {
-        const response = await fetch(new URL("/room-count", endpoint), {
+        const response = await fetch(new URL("/room-count", liveKitTokenEndpoint), {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ roomName: "Main" }),

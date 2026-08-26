@@ -22,6 +22,7 @@ import {
   profileAvatarImageSource,
 } from "../core/profileAvatar";
 import { moderateMainMessage } from "../core/moderation";
+import { liveKitTokenEndpoint, liveKitUrl } from "../config/serviceConfig";
 import { accountSession } from "./accountSession";
 
 const initialSnapshot: SessionSnapshot = {
@@ -137,10 +138,7 @@ export class RoomSession {
   }
 
   async createPrivateRoom() {
-    const endpoint = import.meta.env.VITE_LIVEKIT_TOKEN_ENDPOINT;
-    if (!endpoint)
-      throw new Error("Private rooms require the secure token service");
-    const response = await fetch(new URL("/private-room", endpoint), {
+    const response = await fetch(new URL("/private-room", liveKitTokenEndpoint), {
       method: "POST",
       headers: accountSession.getAccessToken()
         ? { authorization: `Bearer ${accountSession.getAccessToken()}` }
@@ -931,8 +929,6 @@ export class RoomSession {
         autoSubscribe: false,
       });
     } else {
-      const liveKitUrl = import.meta.env.VITE_LIVEKIT_URL;
-      if (!liveKitUrl) throw new Error("LiveKit URL is missing");
       const credentials = await this.fetchToken(roomName);
       await room.connect(liveKitUrl, credentials.token, {
         autoSubscribe: false,
@@ -1083,10 +1079,8 @@ export class RoomSession {
   }
 
   private async fetchToken(roomName: string) {
-    const endpoint = import.meta.env.VITE_LIVEKIT_TOKEN_ENDPOINT;
-    if (!endpoint) throw new Error("Token endpoint is missing");
     const accountToken = accountSession.getAccessToken();
-    const response = await fetch(endpoint, {
+    const response = await fetch(liveKitTokenEndpoint, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -1107,8 +1101,7 @@ export class RoomSession {
   private isLiveKitConfigured() {
     return Boolean(
       import.meta.env.VITE_LIVEKIT_DEVELOPMENT_TOKEN_SERVER_ID ||
-      (import.meta.env.VITE_LIVEKIT_URL &&
-        import.meta.env.VITE_LIVEKIT_TOKEN_ENDPOINT),
+      (liveKitUrl && liveKitTokenEndpoint),
     );
   }
 
@@ -1121,10 +1114,8 @@ export class RoomSession {
   private async filterMainTextWithServer(value: string) {
     const local = this.filterMainText(value);
     if (this.snapshot.roomName?.toLocaleLowerCase() !== "main") return local;
-    const endpoint = import.meta.env.VITE_LIVEKIT_TOKEN_ENDPOINT;
-    if (!endpoint) return local;
     try {
-      const response = await fetch(new URL("/moderate", endpoint), {
+      const response = await fetch(new URL("/moderate", liveKitTokenEndpoint), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text: value, roomName: "Main" }),

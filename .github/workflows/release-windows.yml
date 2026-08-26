@@ -24,6 +24,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_LIVEKIT_URL: wss://mhtalkremake-utuei6i7.livekit.cloud
+          VITE_LIVEKIT_TOKEN_ENDPOINT: https://mhtalk-token-service.mhlkotalk.workers.dev/livekit/token
+          VITE_SOCIAL_API_ENDPOINT: https://mhtalk-token-service.mhlkotalk.workers.dev
         with:
           tagName: v__VERSION__
           releaseName: MHTalk __VERSION__

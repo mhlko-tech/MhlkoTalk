@@ -2,6 +2,11 @@ import { createClient, type Session, type SupabaseClient } from "@supabase/supab
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  serviceBaseUrl,
+  supabasePublishableKey,
+  supabaseUrl,
+} from "../config/serviceConfig";
 
 export type MHTalkAccount = {
   id: string;
@@ -61,9 +66,7 @@ type ApiOnboarding = {
 };
 
 const initialSocial: SocialState = { friends: [], requests: [], incomingInvite: null, loading: false, error: "" };
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "https://fcadjrqrrzcvbyqrgnnm.supabase.co";
-const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || "sb_publishable_3Azp3R7eFE8YI81Eg_Bekw_D353_Efc";
-const apiEndpoint = import.meta.env.VITE_SOCIAL_API_ENDPOINT || import.meta.env.VITE_LIVEKIT_TOKEN_ENDPOINT;
+const apiEndpoint = serviceBaseUrl;
 const runningInTauri = () => Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 const secureStorage = {
   async getItem(key: string) {
@@ -81,8 +84,8 @@ const secureStorage = {
 };
 
 class AccountSession {
-  private readonly client: SupabaseClient | null = supabaseUrl && supabaseKey
-      ? createClient(supabaseUrl, supabaseKey, {
+  private readonly client: SupabaseClient | null = supabaseUrl && supabasePublishableKey
+      ? createClient(supabaseUrl, supabasePublishableKey, {
         auth: { flowType: "pkce", persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storage: secureStorage },
       })
     : null;

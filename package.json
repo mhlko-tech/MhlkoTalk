@@ -1,11 +1,11 @@
 {
   "name": "mhtalk-remake",
   "private": true,
-  "version": "1.5.6",
+  "version": "1.5.7",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1425",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/test-production-bundle.mjs",
     "preview": "npm run build && wrangler dev",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
