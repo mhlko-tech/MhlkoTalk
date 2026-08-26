@@ -7,7 +7,7 @@ LiveKit.
 
 ## Account system
 
-Version 1.3 provides a production account boundary on both desktop and Android:
+The desktop and Android clients share the same production account boundary:
 
 - username or email plus password sign-in;
 - account registration with private, globally unique usernames;
@@ -25,9 +25,11 @@ Cloudflare Worker and is never exposed to clients. Apply the migrations in
 
 ```powershell
 npm install
-npm test
-npm run build
+npm run check
 ```
+
+The source layout and dependency rules are documented in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 Required public client settings are documented in `.env.example`. Production
 secrets belong in Cloudflare Worker secrets and must never be committed.

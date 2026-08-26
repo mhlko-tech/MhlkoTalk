@@ -14,15 +14,5 @@ updater-recovery-password.txt
 !.dev.vars.example
 !.env.example
 
-# Android
-MHTalk Android/.gradle/
-MHTalk Android/.idea/
-MHTalk Android/local.properties
-MHTalk Android/**/build/
-MHTalk Android/*.jks
-MHTalk Android/*.keystore
-MHTalk Android/release/
-MHTalk Android/*.png
-MHTalk Android/*.xml
 /*.png
 /tauri-dev-android-test*.log

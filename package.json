@@ -1,7 +1,7 @@
 {
   "name": "mhtalk-remake",
   "private": true,
-  "version": "1.4.3",
+  "version": "1.5.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1425",
@@ -10,8 +10,9 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "deploy": "npm run build && wrangler deploy",
-    "test": "npx tsx scripts/test-moderation.ts && npx tsx scripts/test-auth-rules.ts",
-    "test:gateway": "node scripts/test-auth-gateway.mjs"
+    "test": "npx tsx scripts/test-moderation.ts && npx tsx scripts/test-auth-rules.ts && npx tsx scripts/test-media-quality.ts",
+    "test:gateway": "node scripts/test-auth-gateway.mjs",
+    "check": "npm test && npm run build && npm --prefix worker run check && cargo fmt --check --manifest-path src-tauri/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.4",

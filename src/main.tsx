@@ -1,18 +1,31 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
-import { RecorderStudio } from "./RecorderStudio";
-import { RecordingOverlay } from "./RecordingOverlay";
 import "./styles.css";
 
-createRoot(document.getElementById("root")!).render(
+const MainApp = lazy(async () => ({ default: (await import("./App")).App }));
+const RecorderStudio = lazy(async () => ({
+  default: (await import("./RecorderStudio")).RecorderStudio,
+}));
+const RecordingOverlay = lazy(async () => ({
+  default: (await import("./RecordingOverlay")).RecordingOverlay,
+}));
+
+const RootView =
+  window.location.hash === "#recorder-studio"
+    ? RecorderStudio
+    : window.location.hash === "#recording-overlay"
+      ? RecordingOverlay
+      : MainApp;
+const rootElement = document.getElementById("root");
+
+if (!rootElement) {
+  throw new Error("MHTalk root element was not found");
+}
+
+createRoot(rootElement).render(
   <StrictMode>
-    {window.location.hash === "#recorder-studio" ? (
-      <RecorderStudio />
-    ) : window.location.hash === "#recording-overlay" ? (
-      <RecordingOverlay />
-    ) : (
-      <App />
-    )}
+    <Suspense fallback={<div className="app-loading">Loading MHTalk…</div>}>
+      <RootView />
+    </Suspense>
   </StrictMode>,
 );
