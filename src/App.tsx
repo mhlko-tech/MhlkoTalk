@@ -24,6 +24,11 @@ import type {
   UserProfile,
 } from "./core/types";
 import { mediaQualityLabels, mediaQualityOrder } from "./core/mediaQuality";
+import {
+  formatAttachmentLimit,
+  freeSubscriptionPlan,
+  limitMediaQuality,
+} from "./core/subscription";
 import { profileAvatarImageSource } from "./core/profileAvatar";
 import { usernameError } from "./core/authRules";
 import { liveKitTokenEndpoint } from "./config/serviceConfig";
@@ -230,6 +235,9 @@ export function App() {
   const [accountState, setAccountState] = useState<AccountState>(() =>
     accountSession.getState(),
   );
+  const subscription = accountState.status === "signed-in"
+    ? accountState.account.subscription
+    : freeSubscriptionPlan;
   const [socialState, setSocialState] = useState<SocialState>(() =>
     accountSession.getSocialState(),
   );
@@ -317,6 +325,13 @@ export function App() {
   useEffect(() => accountSession.subscribe(setAccountState), []);
   useEffect(() => accountSession.subscribeSocial(setSocialState), []);
   useEffect(() => { void accountSession.initialize(); }, []);
+  useEffect(() => {
+    const allowed = limitMediaQuality(
+      shareQuality,
+      subscription.entitlements.maxScreenShareQuality,
+    );
+    if (allowed !== shareQuality) setShareQuality(allowed);
+  }, [shareQuality, subscription.entitlements.maxScreenShareQuality]);
   useEffect(() => {
     const handleKeyboardLanguage = (event: KeyboardEvent) => {
       if (!isKeyboardLanguageShortcut(event)) return;
@@ -1993,6 +2008,31 @@ export function App() {
               <h3>MHTalk account</h3>
               <p>{`Signed in as ${accountState.account.displayName} (@${accountState.account.username})`}</p>
             </div>
+            <div className="settings-section subscription-card">
+              <div className="subscription-heading">
+                <div>
+                  <h3>MHTalk {subscription.tier === "plus" ? "Plus" : "Free"}</h3>
+                  <small>Your current account plan</small>
+                </div>
+                <span className={`plan-badge ${subscription.tier}`}>{subscription.tier}</span>
+              </div>
+              <ul>
+                <li>Clear voice calls with optional microphone noise cancellation</li>
+                <li>Camera and screen sharing up to {subscription.tier === "plus" ? "1080p" : "720p"}</li>
+                <li>Files up to {formatAttachmentLimit(subscription.entitlements.maxAttachmentBytes)}</li>
+                {subscription.tier === "plus" && (
+                  <>
+                    <li>Animated profiles, banners, themes and profile frames</li>
+                    <li>Custom emojis, stickers, soundboard and invite links</li>
+                  </>
+                )}
+              </ul>
+              {subscription.tier === "free" && (
+                <p className="subscription-note">
+                  Plus billing will appear here after store payments are connected. Core calling and safety features remain free.
+                </p>
+              )}
+            </div>
           </section>
         </div>
       )}
@@ -2015,8 +2055,16 @@ export function App() {
                 }
               >
                 {mediaQualityOrder.map((quality) => (
-                  <option key={quality} value={quality}>
+                  <option
+                    key={quality}
+                    value={quality}
+                    disabled={
+                      quality === "high" &&
+                      subscription.entitlements.maxScreenShareQuality !== "high"
+                    }
+                  >
                     {mediaQualityLabels[quality]}
+                    {quality === "high" && subscription.tier === "free" ? " · Plus" : ""}
                   </option>
                 ))}
               </select>

@@ -7,6 +7,7 @@ import {
   ScreenSharePresets,
   TokenSource,
   Track,
+  VideoPresets,
 } from "livekit-client";
 import type {
   ChatListener,
@@ -24,6 +25,15 @@ import {
 import { moderateMainMessage } from "../core/moderation";
 import { liveKitTokenEndpoint, liveKitUrl } from "../config/serviceConfig";
 import { accountSession } from "./accountSession";
+import {
+  legacyRoomServiceRouting,
+  parseRoomServiceRouting,
+  type RoomServiceRouting,
+} from "../core/serviceRouting";
+import {
+  formatAttachmentLimit,
+  limitMediaQuality,
+} from "../core/subscription";
 
 const initialSnapshot: SessionSnapshot = {
   state: "idle",
@@ -74,6 +84,7 @@ export class RoomSession {
   private recoveryTimer: number | undefined;
   private recoveryStartedAt = 0;
   private room: Room | null = null;
+  private routing: RoomServiceRouting = legacyRoomServiceRouting(liveKitUrl);
   private attachedMediaElements = new Set<HTMLMediaElement>();
   private remoteVoiceAudio = new Map<string, Set<HTMLAudioElement>>();
   private remoteStreamAudio = new Map<string, Set<HTMLAudioElement>>();
@@ -209,9 +220,18 @@ export class RoomSession {
     }
     try {
       const deviceId = this.preferredDevices.videoinput;
+      const maximum = this.routing.subscription.entitlements.maxCameraQuality;
+      const preset = maximum === "high" ? VideoPresets.h1080 : VideoPresets.h720;
       await this.room.localParticipant.setCameraEnabled(
         true,
-        deviceId ? { deviceId: { exact: deviceId } } : undefined,
+        {
+          ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+          resolution: preset.resolution,
+        },
+        {
+          videoEncoding: preset.encoding,
+          simulcast: true,
+        },
       );
       this.update({ cameraEnabled: true });
     } catch {
@@ -235,6 +255,10 @@ export class RoomSession {
       return;
     }
     try {
+      quality = limitMediaQuality(
+        quality,
+        this.routing.subscription.entitlements.maxScreenShareQuality,
+      );
       const preset =
         quality === "low"
           ? ScreenSharePresets.h360fps15
@@ -519,6 +543,12 @@ export class RoomSession {
     signal?: AbortSignal,
   ) {
     if (!this.room) return;
+    const maximum = this.routing.subscription.entitlements.maxAttachmentBytes;
+    if (file.size > maximum) {
+      throw new Error(
+        `${this.routing.subscription.tier === "plus" ? "MHTalk Plus" : "Free accounts"} can send files up to ${formatAttachmentLimit(maximum)}.`,
+      );
+    }
     const id = crypto.randomUUID();
     const kind = attachmentKind(file.type);
     const localUrl = URL.createObjectURL(file);
@@ -938,7 +968,11 @@ export class RoomSession {
       });
     } else {
       const credentials = await this.fetchToken(roomName);
-      await room.connect(liveKitUrl, credentials.token, {
+      if (credentials.routing.rtc.provider !== "livekit") {
+        throw new Error("The selected call provider is not supported by this app version");
+      }
+      this.routing = credentials.routing;
+      await room.connect(credentials.routing.rtc.serverUrl, credentials.token, {
         autoSubscribe: false,
       });
       roomName = credentials.roomName;
@@ -966,9 +1000,15 @@ export class RoomSession {
     );
     if (this.snapshot.cameraEnabled) {
       const cameraId = this.preferredDevices.videoinput;
+      const maximum = this.routing.subscription.entitlements.maxCameraQuality;
+      const preset = maximum === "high" ? VideoPresets.h1080 : VideoPresets.h720;
       await room.localParticipant.setCameraEnabled(
         true,
-        cameraId ? { deviceId: { exact: cameraId } } : undefined,
+        {
+          ...(cameraId ? { deviceId: { exact: cameraId } } : {}),
+          resolution: preset.resolution,
+        },
+        { videoEncoding: preset.encoding, simulcast: true },
       );
     }
     this.update({ state: "connected", roomName });
@@ -1106,7 +1146,11 @@ export class RoomSession {
     };
     if (!payload.token || !payload.roomName)
       throw new Error("Invalid token response");
-    return { token: payload.token, roomName: payload.roomName };
+    return {
+      token: payload.token,
+      roomName: payload.roomName,
+      routing: parseRoomServiceRouting(payload, liveKitUrl),
+    };
   }
 
   private isLiveKitConfigured() {

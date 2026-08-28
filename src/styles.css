@@ -2357,3 +2357,44 @@ body:has(.native-recording-overlay) #root {
   from { transform: translateX(-110%); }
   to { transform: translateX(300%); }
 }
+
+.subscription-card {
+  border: 1px solid rgba(124, 102, 246, 0.34);
+  border-radius: 14px;
+  padding: 14px;
+  background: linear-gradient(145deg, rgba(113, 92, 232, 0.12), rgba(18, 24, 43, 0.42));
+}
+.subscription-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.subscription-heading h3,
+.subscription-heading small { margin: 0; }
+.subscription-card ul {
+  margin: 12px 0 0;
+  padding-left: 19px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+.plan-badge {
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  background: rgba(255, 255, 255, 0.08);
+}
+.plan-badge.plus {
+  background: linear-gradient(135deg, #7a63f0, #b96bea);
+  color: white;
+}
+.subscription-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}

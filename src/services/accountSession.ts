@@ -8,6 +8,10 @@ import {
   supabaseUrl,
 } from "../config/serviceConfig";
 import { isTerminalSessionFailure, sessionRetryDelay } from "./sessionResilience";
+import {
+  resolveSubscriptionPlan,
+  type SubscriptionPlan,
+} from "../core/subscription";
 
 export type MHTalkAccount = {
   id: string;
@@ -17,6 +21,7 @@ export type MHTalkAccount = {
   bio?: string;
   usernameVisible: boolean;
   usernameChangedAt?: string;
+  subscription: SubscriptionPlan;
 };
 export type FriendProfile = MHTalkAccount & { online: boolean; friendSince?: string };
 export type FriendRequest = MHTalkAccount & { requestId: string; createdAt: string };
@@ -57,6 +62,8 @@ type ApiProfile = {
   bio?: string | null;
   username_visible?: boolean;
   username_changed_at?: string | null;
+  subscription_tier?: "free" | "plus";
+  subscription_expires_at?: string | null;
   friend_since?: string;
   request_id?: string;
   created_at?: string;
@@ -443,6 +450,8 @@ class AccountSession {
     if (avatar?.startsWith("data:image/")) {
       const blob = await (await fetch(avatar)).blob();
       if (blob.size > 5 * 1024 * 1024) throw new Error("Profile image must be 5 MB or smaller");
+      if (blob.type === "image/gif" && !this.state.account.subscription.entitlements.animatedProfile)
+        throw new Error("Animated profile images are included with MHTalk Plus");
       const extension = blob.type === "image/png" ? "png" : blob.type === "image/webp" ? "webp" : blob.type === "image/gif" ? "gif" : "jpg";
       const path = `${this.state.account.id}/avatar.${extension}`;
       const { error } = await this.client.storage.from("profile-avatars").upload(path, blob, { upsert: true, contentType: blob.type });
@@ -670,6 +679,10 @@ class AccountSession {
       bio: profile.bio || undefined,
       usernameVisible: profile.username_visible !== false,
       usernameChangedAt: profile.username_changed_at || undefined,
+      subscription: resolveSubscriptionPlan({
+        tier: profile.subscription_tier,
+        expiresAt: profile.subscription_expires_at,
+      }),
     };
   }
   private async api<T = unknown>(path: string, init: RequestInit = {}) {

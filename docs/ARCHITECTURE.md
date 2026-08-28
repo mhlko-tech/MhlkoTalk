@@ -7,6 +7,7 @@ service, but services must not import React components.
 ## Desktop client
 
 - `src/core`: pure types, validation, moderation, and media-quality rules.
+  Subscription entitlements and provider-routing contracts also live here.
 - `src/components`: small presentation primitives shared by features.
 - `src/features/auth`: account registration, recovery, and OAuth screens.
 - `src/features/chat`: attachment rendering and chat-specific helpers.
@@ -22,6 +23,8 @@ service, but services must not import React components.
   LiveKit-token boundary. Secrets are read only from Worker bindings.
 - `supabase/migrations`: the ordered database contract. Never edit an applied
   migration; add a new migration instead.
+- `docs/SERVICE_ROUTING.md`: active provider routes, failover activation rules,
+  and the Free/Plus entitlement contract.
 
 ## Change rules
 

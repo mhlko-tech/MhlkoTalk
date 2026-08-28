@@ -6,7 +6,8 @@ The social layer deliberately stores only accounts, profiles, avatars, friend re
 
 1. Create a Supabase project and enable Google under **Authentication → Providers**.
 2. Add `mhtalk://auth/callback` to the allowed redirect URLs.
-3. Run `supabase/migrations/202608250001_accounts_friends.sql` in the SQL editor.
+3. Run the ordered files in `supabase/migrations`, including
+   `202608280002_subscription_plans.sql`, in the SQL editor.
 4. Put the project URL and publishable key in the desktop and Android build settings described by their `.env.example` files.
 
 ## 2. Cloudflare Worker secrets

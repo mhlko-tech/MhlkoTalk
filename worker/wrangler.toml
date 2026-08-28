@@ -5,6 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 LIVEKIT_URL = "https://mhtalkremake-utuei6i7.livekit.cloud"
+RTC_PROVIDER_ORDER = "livekit,agora,daily"
 
 [[kv_namespaces]]
 binding = "PRIVATE_ROOMS"

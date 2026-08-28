@@ -16,6 +16,7 @@ export interface Env {
   FIREBASE_PROJECT_ID?: string;
   FIREBASE_CLIENT_EMAIL?: string;
   FIREBASE_PRIVATE_KEY?: string;
+  RTC_PROVIDER_ORDER?: string;
 }
 
 type AuthUser = { id: string; accessToken: string; email?: string; userMetadata?: Record<string, unknown>; appMetadata?: Record<string, unknown> };
@@ -27,6 +28,8 @@ type Profile = {
   bio?: string | null;
   username_visible: boolean;
   username_changed_at?: string | null;
+  subscription_tier?: "free" | "plus";
+  subscription_expires_at?: string | null;
 };
 type AccountLogin = {
   user_id: string; username: string; email: string;
@@ -43,6 +46,72 @@ const headers = {
   "access-control-allow-headers": "authorization, content-type",
 };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers });
+const subscriptionEntitlements = {
+  free: {
+    maxCameraQuality: "medium",
+    maxScreenShareQuality: "medium",
+    maxAttachmentBytes: 20 * 1024 * 1024,
+    attachmentRetentionHours: 24,
+    animatedProfile: false,
+    profileBanner: false,
+    customThemes: false,
+    profileFrames: false,
+    customAppIcons: false,
+    customEmoji: false,
+    soundboard: false,
+    customInvites: false,
+    savedRoomLimit: 3,
+  },
+  plus: {
+    maxCameraQuality: "high",
+    maxScreenShareQuality: "high",
+    maxAttachmentBytes: 100 * 1024 * 1024,
+    attachmentRetentionHours: 24 * 7,
+    animatedProfile: true,
+    profileBanner: true,
+    customThemes: true,
+    profileFrames: true,
+    customAppIcons: true,
+    customEmoji: true,
+    soundboard: true,
+    customInvites: true,
+    savedRoomLimit: 20,
+  },
+} as const;
+function subscriptionFor(profile: Profile | null) {
+  const expiresAt = profile?.subscription_expires_at || undefined;
+  const plusIsCurrent = profile?.subscription_tier === "plus" &&
+    (!expiresAt || new Date(expiresAt).getTime() > Date.now());
+  const tier = plusIsCurrent ? "plus" : "free";
+  return { tier, expiresAt, entitlements: subscriptionEntitlements[tier] };
+}
+function serviceRouting(env: Env, profile: Profile | null) {
+  return {
+    rtc: { provider: "livekit", serverUrl: env.LIVEKIT_URL.replace(/^http/, "ws") },
+    messaging: { provider: "livekit-data" },
+    files: { provider: "livekit-stream" },
+    subscription: subscriptionFor(profile),
+  } as const;
+}
+function serviceCapabilities(env: Env) {
+  const requested = (env.RTC_PROVIDER_ORDER || "livekit,agora,daily")
+    .split(",").map((value) => value.trim().toLowerCase())
+    .filter((value) => ["livekit", "agora", "daily"].includes(value));
+  return {
+    active: {
+      rtc: "livekit",
+      messaging: "livekit-data",
+      files: "livekit-stream",
+    },
+    rtc: [...new Set(requested)].map((provider) => ({
+      provider,
+      ready: provider === "livekit",
+      reason: provider === "livekit" ? undefined : "Provider credentials and client adapter are not configured",
+    })),
+    messaging: ["livekit-data", "cloudflare-realtime", "supabase-realtime", "firebase"],
+    files: ["livekit-stream", "cloudflare-r2", "supabase-storage", "backblaze-b2"],
+  };
+}
 const publicPage = (title: string, body: string) => new Response(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title} · MHTalk</title><style>body{margin:0;background:#0c111b;color:#e8edf7;font:16px/1.65 system-ui,sans-serif}main{max-width:780px;margin:auto;padding:56px 24px}h1,h2{color:#fff}a{color:#73b7ff}.card{background:#151d2b;border:1px solid #263348;border-radius:18px;padding:28px}small{color:#9aa8bc}</style></head>
@@ -365,8 +434,17 @@ const rpc = (env: Env, user: AuthUser, name: string, body: unknown) => userApi(e
   method: "POST", body: JSON.stringify(body),
 });
 async function profileFor(env: Env, user: AuthUser): Promise<Profile | null> {
-  const path = `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,username,display_name,avatar_url,bio,username_visible,username_changed_at&limit=1`;
+  const path = `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,username,display_name,avatar_url,bio,username_visible,username_changed_at,subscription_tier,subscription_expires_at&limit=1`;
   let response = await userApi(env, user, path);
+  if (!response.ok) {
+    // Keep older deployments operational while the subscription migration is
+    // rolling out. Missing plan fields safely resolve to the Free tier.
+    response = await userApi(
+      env,
+      user,
+      `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,username,display_name,avatar_url,bio,username_visible,username_changed_at&limit=1`,
+    );
+  }
   let profile = response.ok ? ((await response.json()) as Profile[])[0] || null : null;
   if (profile) return profile;
 
@@ -376,6 +454,13 @@ async function profileFor(env: Env, user: AuthUser): Promise<Profile | null> {
   });
   if (!repaired.ok) return null;
   response = await userApi(env, user, path);
+  if (!response.ok) {
+    response = await userApi(
+      env,
+      user,
+      `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,username,display_name,avatar_url,bio,username_visible,username_changed_at&limit=1`,
+    );
+  }
   profile = response.ok ? ((await response.json()) as Profile[])[0] || null : null;
   return profile;
 }
@@ -414,8 +499,7 @@ async function createPrivateRoom(env: Env) {
   await env.PRIVATE_ROOMS.put(code, JSON.stringify({ roomName, invite }), { expirationTtl: 604800 });
   return { roomName, code };
 }
-async function issueToken(roomName: string, env: Env, user: AuthUser | null) {
-  const profile = user ? await profileFor(env, user) : null;
+async function issueToken(roomName: string, env: Env, user: AuthUser | null, profile: Profile | null) {
   const token = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
     identity: user?.id || crypto.randomUUID(), name: profile?.display_name || profile?.username,
     metadata: profile ? JSON.stringify({
@@ -641,6 +725,7 @@ export default {
     if (request.method === "GET" && path === "/privacy") return privacyPage();
     if (request.method === "GET" && path === "/terms") return termsPage();
     if (request.method === "GET" && path === "/auth/complete") return oauthCompletePage(request);
+    if (request.method === "GET" && path === "/service/capabilities") return json(serviceCapabilities(env));
     if (request.method === "OPTIONS") return new Response(null, { headers });
     if (path.startsWith("/auth/")) return handleAuth(request, env, path);
     if (path === "/presence" && request.method === "GET") {
@@ -714,6 +799,15 @@ export default {
     }
     if (!allowedRoom.test(roomName)) return json({ error: "Invalid room name" }, 400);
     if (roomName !== "Main" && typeof body?.inviteCode !== "string") return json({ error: "Private code required" }, 403);
-    return json({ token: await issueToken(roomName, env, auth), roomName });
+    const profile = auth ? await profileFor(env, auth) : null;
+    const routing = serviceRouting(env, profile);
+    return json({
+      token: await issueToken(roomName, env, auth, profile),
+      roomName,
+      provider: routing.rtc.provider,
+      serverUrl: routing.rtc.serverUrl,
+      routing,
+      subscription: routing.subscription,
+    });
   },
 };
