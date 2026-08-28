@@ -242,6 +242,7 @@ export function App() {
   const [memberMenu, setMemberMenu] = useState<MemberMenuState | null>(null);
   const [usernameDraft, setUsernameDraft] = useState("");
   const [usernameBusy, setUsernameBusy] = useState(false);
+  const [privateInviteCopied, setPrivateInviteCopied] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
   const [infoPage, setInfoPage] = useState<InfoPage | null>(null);
   const [viewProfile, setViewProfile] = useState<UserProfile | null>(null);
@@ -1088,8 +1089,28 @@ export function App() {
         {privateInvite && (
           <div className="invite">
             <strong>Private invite</strong>
-            <code>{privateInvite}</code>
-            <small>Share this complete code only with your friend.</small>
+            <button
+              type="button"
+              className="invite-code"
+              title="Copy private invite code"
+              aria-label={`Copy private invite code ${privateInvite}`}
+              onClick={() => {
+                void navigator.clipboard
+                  .writeText(privateInvite)
+                  .then(() => {
+                    setPrivateInviteCopied(true);
+                    window.setTimeout(() => setPrivateInviteCopied(false), 1400);
+                  })
+                  .catch(() => setAppError("Could not copy invite code"));
+              }}
+            >
+              {privateInvite}
+            </button>
+            <small>
+              {privateInviteCopied
+                ? "Code copied."
+                : "Share this complete code only with your friend."}
+            </small>
           </div>
         )}
         <div className="participants">

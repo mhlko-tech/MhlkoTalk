@@ -619,15 +619,26 @@ button {
 .invite small {
   display: block;
 }
-.invite code {
+.invite-code {
   display: block;
   margin: 7px 0;
   padding: 6px;
   border-radius: 5px;
   background: #141624;
   color: #fff;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: inherit;
   font-weight: 800;
   letter-spacing: 0.1em;
+  text-align: left;
+  width: 100%;
+}
+.invite-code:hover,
+.invite-code:focus-visible {
+  background: #191c2d;
+  outline: 2px solid #7564e8;
+  outline-offset: 1px;
 }
 .invite small {
   color: #9f9bbd;
