@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Avatar } from "../../components/Avatar";
 import {
   availableQualities,
@@ -12,6 +12,8 @@ export function ParticipantMediaCard({
   name,
   avatar,
   bio,
+  username,
+  usernameVisible,
   speaking,
   microphoneEnabled,
   cameraEnabled,
@@ -19,12 +21,14 @@ export function ParticipantMediaCard({
   cameraQuality,
   screenShareQuality,
   local = false,
-  onProfile,
+  onMemberMenu,
 }: {
   identity: string;
   name: string;
   avatar: string;
   bio: string;
+  username?: string;
+  usernameVisible?: boolean;
   speaking: boolean;
   microphoneEnabled: boolean;
   cameraEnabled: boolean;
@@ -32,7 +36,11 @@ export function ParticipantMediaCard({
   cameraQuality: MediaQuality;
   screenShareQuality: MediaQuality;
   local?: boolean;
-  onProfile: (profile: UserProfile) => void;
+  onMemberMenu: (
+    event: ReactMouseEvent<HTMLElement>,
+    profile: UserProfile,
+    identity?: string,
+  ) => void;
 }) {
   const hostIdentity = encodeURIComponent(identity);
   const [watchingCamera, setWatchingCamera] = useState(false);
@@ -102,7 +110,11 @@ export function ParticipantMediaCard({
     <article className="participant-card">
       <button
         className={`participant-card-header ${speaking ? "speaking" : ""}`}
-        onClick={() => onProfile({ name, avatar, bio })}
+        onClick={(event) => onMemberMenu(
+          event,
+          { name, avatar, bio, username, usernameVisible },
+          local ? undefined : identity,
+        )}
       >
         <Avatar value={avatar} remote={!local} />
         <span>

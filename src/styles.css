@@ -113,6 +113,42 @@ button {
   padding-top: 8px;
   position: relative;
 }
+.profile-identity {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
+.profile-identity .profile {
+  min-height: 54px;
+  padding-bottom: 20px;
+  width: 100%;
+}
+.profile-identity .profile strong {
+  align-self: start;
+  margin-top: 3px;
+  max-width: 135px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-username {
+  background: transparent;
+  bottom: 6px;
+  color: #8e96b7;
+  font-size: 10px;
+  left: 52px;
+  max-width: 142px;
+  overflow: hidden;
+  padding: 2px 0;
+  position: absolute;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.profile-username:hover {
+  color: #c8ceec;
+  text-decoration: underline;
+}
 .profile {
   margin-top: auto;
   display: flex;
@@ -144,6 +180,29 @@ button {
   font-size: 22px;
   height: 38px;
   width: 38px;
+}
+.friends-shortcut {
+  position: relative;
+}
+.friends-shortcut > span {
+  font-size: 18px;
+}
+.friend-request-badge {
+  align-items: center;
+  background: #e43b55;
+  border: 2px solid #131625;
+  border-radius: 999px;
+  color: #fff;
+  display: flex;
+  font-size: 9px;
+  font-weight: 900;
+  height: 18px;
+  justify-content: center;
+  min-width: 18px;
+  padding: 0 4px;
+  position: absolute;
+  right: -2px;
+  top: -3px;
 }
 .profile:hover,
 .profile-more:hover {
@@ -609,6 +668,12 @@ button {
 }
 .private-modal.friends-modal {
   width: min(560px, calc(100vw - 32px));
+}
+.profile-edit-modal {
+  max-height: calc(100vh - 46px);
+  overflow-y: auto;
+  scrollbar-color: #7665e9 #171a2a;
+  scrollbar-width: thin;
 }
 .friends-modal .social-account-card,
 .friends-modal .social-person {
@@ -1352,6 +1417,18 @@ button {
 .profile-modal {
   text-align: center;
 }
+.view-profile-username {
+  background: transparent;
+  color: #9ea7cc;
+  font-size: 12px;
+  margin: -2px 0 10px;
+  padding: 3px 8px !important;
+  width: auto !important;
+}
+.view-profile-username:hover {
+  color: #c9cfff;
+  text-decoration: underline;
+}
 .audio-player {
   display: flex;
   align-items: center;
@@ -1407,7 +1484,8 @@ button {
   font-size: 13px;
 }
 .context-menu,
-.media-menu {
+.media-menu,
+.member-menu {
   position: fixed;
   z-index: 50;
   min-width: 145px;
@@ -1418,7 +1496,8 @@ button {
   box-shadow: 0 15px 40px #000b;
 }
 .context-menu button,
-.media-menu button {
+.media-menu button,
+.member-menu button {
   width: 100%;
   background: transparent;
   text-align: left;
@@ -1427,7 +1506,8 @@ button {
   font-size: 12px;
 }
 .context-menu button:hover,
-.media-menu button:hover {
+.media-menu button:hover,
+.member-menu button:hover {
   background: #343a59;
 }
 .media-menu label {
@@ -1453,6 +1533,48 @@ button {
 }
 .media-volume-menu small {
   color: #8f98bb;
+}
+.member-menu {
+  min-width: 255px;
+}
+.member-profile-action {
+  align-items: center;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: 34px minmax(0, 1fr);
+}
+.member-profile-action > span {
+  display: grid;
+  min-width: 0;
+}
+.member-profile-action strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.member-profile-action small,
+.member-volume-controls small {
+  color: #929abd;
+}
+.member-volume-controls {
+  border-top: 1px solid #3b405e;
+  display: grid;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 7px 8px 4px;
+}
+.member-volume-controls label {
+  color: #bdc4e3;
+  font-size: 11px;
+}
+.member-volume-controls label > span {
+  display: flex;
+  justify-content: space-between;
+}
+.member-volume-controls input {
+  display: block;
+  margin-top: 6px;
+  width: 100%;
 }
 .avatar-upload {
   display: grid;
@@ -1632,8 +1754,9 @@ button {
 .crop-workspace header h2 { margin: 0; text-align: center; font-size: 20px; }
 .crop-workspace header > span { color: #b9bbc2; font-size: 24px; text-align: right; }
 .crop-back { width: 40px; height: 40px; padding: 0; background: transparent; color: #d9dae0; font-size: 27px; }
-.crop-stage { position: relative; height: 430px; display: grid; place-items: center; overflow: hidden; background: #0c0d0f; }
-.crop-stage-backdrop { position: absolute; inset: 28px; width: calc(100% - 56px); height: calc(100% - 56px); object-fit: contain; opacity: .22; filter: brightness(.45); }
+.crop-stage { position: relative; height: 430px; display: grid; place-items: center; overflow: hidden; background: #0c0d0f; cursor: grab; touch-action: none; user-select: none; }
+.crop-stage:active { cursor: grabbing; }
+.crop-stage-backdrop { position: absolute; inset: 28px; width: calc(100% - 56px); height: calc(100% - 56px); object-fit: contain; opacity: .22; filter: brightness(.45); pointer-events: none; user-select: none; }
 .crop-frame { position: relative; width: 280px; height: 280px; overflow: hidden; border: 2px solid #f6f6f7; background: #08090b; cursor: grab; touch-action: none; box-shadow: 0 0 0 999px #08090b73; }
 .crop-frame:active { cursor: grabbing; }
 .crop-frame > img { position: absolute; max-width: none; max-height: none; user-select: none; pointer-events: none; transform-origin: center; }
@@ -1648,6 +1771,45 @@ button {
 .crop-zoom { display: flex; align-items: center; gap: 10px; color: #aaaeb8; }
 .crop-zoom input { width: 100%; accent-color: #a99cff; }
 .crop-next { min-height: 44px; border-radius: 22px; background: #b9d4ff; color: #18345d; font-weight: 800; }
+.username-editor {
+  border-top: 1px solid #343850;
+  margin-top: 16px;
+  padding-top: 4px;
+}
+.username-editor label {
+  margin-bottom: 4px;
+}
+.private-modal .username-change-button {
+  background: #7665e9;
+  color: #fff;
+  margin-top: 2px;
+}
+.private-modal .username-change-button:disabled {
+  cursor: not-allowed;
+  opacity: .48;
+}
+.username-editor > small {
+  color: #8f97b7;
+  display: block;
+  font-size: 10px;
+  line-height: 1.45;
+  margin-top: 7px;
+}
+.profile-visibility-setting {
+  background: #22253a;
+  border-radius: 9px;
+  margin-top: 14px !important;
+  padding: 10px;
+}
+.profile-visibility-setting span {
+  display: grid;
+  gap: 3px;
+}
+.profile-visibility-setting small {
+  color: #8f97b7;
+  font-size: 10px;
+  font-weight: 500;
+}
 .remove-avatar {
   display: block !important;
   width: auto !important;

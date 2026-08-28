@@ -67,6 +67,8 @@ export class RoomSession {
     name: localStorage.getItem("mhtalk.profile.name") || "Me",
     bio: localStorage.getItem("mhtalk.profile.bio") || "",
     avatar: localStorage.getItem("mhtalk.profile.avatar") || "M",
+    username: localStorage.getItem("mhtalk.profile.username") || undefined,
+    usernameVisible: localStorage.getItem("mhtalk.profile.username-visible") !== "false",
   };
   private remoteProfiles = new Map<string, UserProfile>();
   private recoveryTimer: number | undefined;
@@ -333,6 +335,9 @@ export class RoomSession {
     localStorage.setItem("mhtalk.profile.name", this.profile.name);
     localStorage.setItem("mhtalk.profile.bio", this.profile.bio);
     localStorage.setItem("mhtalk.profile.avatar", this.profile.avatar);
+    if (this.profile.username) localStorage.setItem("mhtalk.profile.username", this.profile.username);
+    else localStorage.removeItem("mhtalk.profile.username");
+    localStorage.setItem("mhtalk.profile.username-visible", String(this.profile.usernameVisible !== false));
     await this.publishProfile();
   }
 
@@ -657,6 +662,9 @@ export class RoomSession {
               participant.identity,
             bio: dataProfile?.bio || metadataProfile.bio || "",
             avatar,
+            username: dataProfile?.username || metadataProfile.username,
+            usernameVisible:
+              dataProfile?.usernameVisible ?? metadataProfile.usernameVisible,
           };
         },
       );
@@ -981,7 +989,10 @@ export class RoomSession {
 
   private async publishProfile() {
     if (!this.room) return;
-    const safe = sanitizeProfile(this.profile);
+    const profile = sanitizeProfile(this.profile);
+    const safe: UserProfile = profile.usernameVisible === false
+      ? { ...profile, username: undefined }
+      : profile;
     const metadata = JSON.stringify(safe);
     await Promise.allSettled([
       this.room.localParticipant.publishData(
@@ -1373,6 +1384,8 @@ function parseParticipantProfile(
             : typeof value.avatar_url === "string"
               ? value.avatar_url
               : "",
+        username: typeof value.username === "string" ? value.username : undefined,
+        usernameVisible: value.usernameVisible !== false,
       },
       fallbackIdentity,
     );
@@ -1399,10 +1412,15 @@ function sanitizeProfile(
   const bio =
     typeof profile?.bio === "string" ? profile.bio.trim().slice(0, 240) : "";
   const avatar = normalizeProfileAvatar(profile?.avatar);
+  const username = typeof profile?.username === "string"
+    ? profile.username.trim().slice(0, 32)
+    : undefined;
   return {
     name: name || fallbackIdentity.slice(0, 16) || "Member",
     bio,
     avatar: avatar || (name || fallbackIdentity || "M")[0].toUpperCase(),
+    username,
+    usernameVisible: profile?.usernameVisible !== false,
   };
 }
 

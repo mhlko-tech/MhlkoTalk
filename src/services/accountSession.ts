@@ -15,6 +15,8 @@ export type MHTalkAccount = {
   displayName: string;
   avatarUrl?: string;
   bio?: string;
+  usernameVisible: boolean;
+  usernameChangedAt?: string;
 };
 export type FriendProfile = MHTalkAccount & { online: boolean; friendSince?: string };
 export type FriendRequest = MHTalkAccount & { requestId: string; createdAt: string };
@@ -53,6 +55,8 @@ type ApiProfile = {
   display_name: string;
   avatar_url?: string | null;
   bio?: string | null;
+  username_visible?: boolean;
+  username_changed_at?: string | null;
   friend_since?: string;
   request_id?: string;
   created_at?: string;
@@ -433,7 +437,7 @@ class AccountSession {
     await this.api("/social/friend-remove", { method: "POST", body: JSON.stringify({ friendId }) });
     await this.refreshSocial();
   }
-  async updateProfile(displayName: string, bio: string, avatar?: string) {
+  async updateProfile(displayName: string, bio: string, avatar?: string, usernameVisible?: boolean) {
     if (!this.client || !this.session || this.state.status !== "signed-in") throw new Error("Sign in is required");
     let avatarUrl: string | undefined;
     if (avatar?.startsWith("data:image/")) {
@@ -447,7 +451,20 @@ class AccountSession {
     } else if (avatar !== undefined) avatarUrl = avatar;
     await this.api("/social/profile", {
       method: "PATCH",
-      body: JSON.stringify({ display_name: displayName, bio, ...(avatarUrl !== undefined ? { avatar_url: avatarUrl } : {}) }),
+      body: JSON.stringify({
+        display_name: displayName,
+        bio,
+        ...(avatarUrl !== undefined ? { avatar_url: avatarUrl } : {}),
+        ...(usernameVisible !== undefined ? { username_visible: usernameVisible } : {}),
+      }),
+    });
+    await this.applySession(this.session);
+  }
+  async changeUsername(username: string) {
+    if (!this.session || this.state.status !== "signed-in") throw new Error("Sign in is required");
+    await this.api("/social/profile", {
+      method: "PATCH",
+      body: JSON.stringify({ username: username.trim() }),
     });
     await this.applySession(this.session);
   }
@@ -631,6 +648,10 @@ class AccountSession {
       if (event.type === "invite" && event.invite) {
         this.setSocial({ ...this.social, incomingInvite: event.invite }); return;
       }
+      if (event.type === "friend_request") {
+        void this.refreshSocial();
+        return;
+      }
       const online = event.type === "presence_snapshot" && Array.isArray(event.online)
         ? new Set(event.online)
         : null;
@@ -641,8 +662,15 @@ class AccountSession {
     } catch { /* Ignore malformed presence events. */ }
   }
   private mapProfile(profile: ApiProfile): MHTalkAccount {
-    return { id: profile.id, username: profile.username, displayName: profile.display_name,
-      avatarUrl: profile.avatar_url || undefined, bio: profile.bio || undefined };
+    return {
+      id: profile.id,
+      username: profile.username,
+      displayName: profile.display_name,
+      avatarUrl: profile.avatar_url || undefined,
+      bio: profile.bio || undefined,
+      usernameVisible: profile.username_visible !== false,
+      usernameChangedAt: profile.username_changed_at || undefined,
+    };
   }
   private async api<T = unknown>(path: string, init: RequestInit = {}) {
     if (!apiEndpoint || !this.client) throw new Error("Account service is unavailable");

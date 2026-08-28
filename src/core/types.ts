@@ -30,6 +30,8 @@ export interface SessionSnapshot {
     name?: string;
     bio?: string;
     avatar?: string;
+    username?: string;
+    usernameVisible?: boolean;
   }>;
 }
 
@@ -51,7 +53,13 @@ export type ChatMessage = {
   deleted?: boolean;
   replyTo?: { id: string; sender: string; body: string };
 };
-export type UserProfile = { name: string; bio: string; avatar: string };
+export type UserProfile = {
+  name: string;
+  bio: string;
+  avatar: string;
+  username?: string;
+  usernameVisible?: boolean;
+};
 export type ChatSnapshot = { messages: ChatMessage[]; typing: string[] };
 
 export type SessionListener = (snapshot: SessionSnapshot) => void;

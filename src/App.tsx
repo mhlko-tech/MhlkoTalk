@@ -25,6 +25,7 @@ import type {
 } from "./core/types";
 import { mediaQualityLabels, mediaQualityOrder } from "./core/mediaQuality";
 import { profileAvatarImageSource } from "./core/profileAvatar";
+import { usernameError } from "./core/authRules";
 import { liveKitTokenEndpoint } from "./config/serviceConfig";
 import { roomSession } from "./services/roomSession";
 import {
@@ -84,6 +85,16 @@ const emojiList = [
 ];
 
 type InfoPage = "help" | "terms" | "privacy";
+type MemberMenuState = {
+  x: number;
+  y: number;
+  identity?: string;
+  profile: UserProfile;
+  voiceVolume: number;
+  streamVolume: number;
+};
+
+const usernameCooldownMs = 30 * 24 * 60 * 60 * 1000;
 
 const infoPages: Record<InfoPage, { title: string; paragraphs: string[] }> = {
   help: {
@@ -228,6 +239,10 @@ export function App() {
   const [socialBusy, setSocialBusy] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [memberMenu, setMemberMenu] = useState<MemberMenuState | null>(null);
+  const [usernameDraft, setUsernameDraft] = useState("");
+  const [usernameBusy, setUsernameBusy] = useState(false);
+  const [usernameCopied, setUsernameCopied] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
   const [infoPage, setInfoPage] = useState<InfoPage | null>(null);
   const [viewProfile, setViewProfile] = useState<UserProfile | null>(null);
@@ -323,11 +338,27 @@ export function App() {
       name: accountState.account.displayName,
       bio: accountState.account.bio || "",
       avatar: accountState.account.avatarUrl || accountState.account.displayName.slice(0, 1).toUpperCase(),
+      username: accountState.account.username,
+      usernameVisible: accountState.account.usernameVisible,
     };
     lastPersistedProfile.current = JSON.stringify(accountProfile);
+    setUsernameDraft(accountState.account.username);
     setProfile(accountProfile);
     roomSession.setProfile(accountProfile);
   }, [accountState, profileOpen]);
+  useEffect(() => {
+    if (accountState.status !== "signed-in") return;
+    const refresh = () => void accountSession.refreshSocial();
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [accountState.status]);
   useEffect(() => roomSession.setRemoteVolume(remoteVolume / 100), []);
   useEffect(
     () => subscribeStartupUpdater(setUpdateActivity, () => setStartupReady(true)),
@@ -512,6 +543,10 @@ export function App() {
   const displayRoomName = session.roomName?.startsWith("Private-")
     ? "Private channel"
     : (session.roomName ?? "Welcome to MHTalk");
+  const usernameNextChangeAt = accountState.status === "signed-in" && accountState.account.usernameChangedAt
+    ? new Date(new Date(accountState.account.usernameChangedAt).getTime() + usernameCooldownMs)
+    : null;
+  const usernameChangeLocked = Boolean(usernameNextChangeAt && usernameNextChangeAt.getTime() > Date.now());
   const enterRoom = async (roomName: string, invite?: string) => {
     if (active && session.roomName !== roomName) await roomSession.leave();
     await roomSession.join(roomName, invite);
@@ -563,6 +598,27 @@ export function App() {
       setSocialBusy("");
     }
   };
+  const openMemberMenu = (
+    event: React.MouseEvent<HTMLElement>,
+    memberProfile: UserProfile,
+    identity?: string,
+  ) => {
+    event.stopPropagation();
+    const volumes = identity
+      ? roomSession.getParticipantVolumes(identity)
+      : { voice: 100, stream: 100 };
+    setContextMenu(null);
+    setMediaMenu(null);
+    setProfileMenuOpen(false);
+    setMemberMenu({
+      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 280)),
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 220)),
+      identity,
+      profile: memberProfile,
+      voiceVolume: volumes.voice,
+      streamVolume: volumes.stream,
+    });
+  };
   const acceptIncomingInvite = async () => {
     const invite = socialState.incomingInvite;
     if (!invite) return;
@@ -599,13 +655,20 @@ export function App() {
       await roomSession.setProfile(normalized);
       let storedProfile = normalized;
       if (accountState.status === "signed-in") {
-        await accountSession.updateProfile(normalized.name, normalized.bio, normalized.avatar);
+        await accountSession.updateProfile(
+          normalized.name,
+          normalized.bio,
+          normalized.avatar,
+          normalized.usernameVisible,
+        );
         const refreshed = accountSession.getState();
         if (refreshed.status === "signed-in") {
           storedProfile = {
             name: refreshed.account.displayName,
             bio: refreshed.account.bio || "",
             avatar: refreshed.account.avatarUrl || normalized.avatar,
+            username: refreshed.account.username,
+            usernameVisible: refreshed.account.usernameVisible,
           };
           await roomSession.setProfile(storedProfile);
           setProfile((current) =>
@@ -638,6 +701,34 @@ export function App() {
     profileSaveTimer.current = null;
     await persistProfile(profile);
     setProfileOpen(false);
+  };
+  const changeUsername = async () => {
+    const nextUsername = usernameDraft.trim();
+    const validation = usernameError(nextUsername);
+    if (validation) {
+      setAppError(validation);
+      return;
+    }
+    if (accountState.status !== "signed-in" || nextUsername === accountState.account.username) return;
+    setUsernameBusy(true);
+    try {
+      await accountSession.changeUsername(nextUsername);
+      const refreshed = accountSession.getState();
+      if (refreshed.status === "signed-in") {
+        setUsernameDraft(refreshed.account.username);
+        const updatedProfile = {
+          ...profile,
+          username: refreshed.account.username,
+          usernameVisible: refreshed.account.usernameVisible,
+        };
+        setProfile(updatedProfile);
+        await roomSession.setProfile(updatedProfile);
+      }
+    } catch (error) {
+      setAppError(error instanceof Error ? error.message : "Could not change username");
+    } finally {
+      setUsernameBusy(false);
+    }
   };
   const resizeChat = (event: React.PointerEvent<HTMLDivElement>) => {
     const startX = event.clientX;
@@ -963,6 +1054,7 @@ export function App() {
       onClick={() => {
         setContextMenu(null);
         setMediaMenu(null);
+        setMemberMenu(null);
         setProfileMenuOpen(false);
         setHelpMenuOpen(false);
       }}
@@ -1008,7 +1100,7 @@ export function App() {
           {active && (
             <button
               className={`participant ${session.microphoneEnabled ? "speaking" : ""}`}
-              onClick={() => setViewProfile(profile)}
+              onClick={(event) => openMemberMenu(event, profile)}
             >
               <Avatar value={profile.avatar} />
               <span>{profile.name}</span>
@@ -1018,14 +1110,16 @@ export function App() {
           {session.participants.map((participant) => (
             <button
               className={`participant ${participant.speaking ? "speaking" : ""}`}
-              onClick={() =>
-                setViewProfile({
+              onClick={(event) =>
+                openMemberMenu(event, {
                   name: participant.name || participant.identity.slice(0, 12),
                   bio: participant.bio || "",
                   avatar:
                     participant.avatar ||
                     participant.identity.slice(0, 1).toUpperCase(),
-                })
+                  username: participant.username,
+                  usernameVisible: participant.usernameVisible,
+                }, participant.identity)
               }
               key={participant.identity}
             >
@@ -1044,24 +1138,54 @@ export function App() {
           ))}
         </div>
         <div className="profile-area">
-          <button className="profile" onClick={() => setViewProfile(profile)}>
-            <Avatar value={profile.avatar} />
-            <div>
+          <div className="profile-identity">
+            <button
+              className="profile"
+              aria-label="Open account menu"
+              onClick={(event) => {
+                event.stopPropagation();
+                setProfileMenuOpen((open) => !open);
+                setHelpMenuOpen(false);
+              }}
+            >
+              <Avatar value={profile.avatar} />
               <strong>{profile.name}</strong>
-              <small>{statusLabel(session.state)}</small>
-            </div>
-          </button>
+            </button>
+            <button
+              className="profile-username"
+              title="Copy username"
+              onClick={(event) => {
+                event.stopPropagation();
+                void navigator.clipboard
+                  .writeText(`@${accountState.account.username}`)
+                  .then(() => {
+                    setUsernameCopied(true);
+                    window.setTimeout(() => setUsernameCopied(false), 1400);
+                  })
+                  .catch(() => setAppError("Could not copy username"));
+              }}
+            >
+              {usernameCopied ? "Copied!" : `@${accountState.account.username}`}
+            </button>
+          </div>
           <button
-            className="profile-more"
-            aria-label="Open profile menu"
-            title="Profile menu"
+            className="profile-more friends-shortcut"
+            aria-label={`Friends${socialState.requests.length ? `, ${socialState.requests.length} pending requests` : ""}`}
+            title="Friends"
             onClick={(event) => {
               event.stopPropagation();
-              setProfileMenuOpen((open) => !open);
+              setProfileMenuOpen(false);
               setHelpMenuOpen(false);
+              setFriendsOpen(true);
+              void accountSession.refreshSocial();
             }}
           >
-            ⋯
+            <span aria-hidden="true">👥</span>
+            {socialState.requests.length > 0 && (
+              <b className="friend-request-badge">
+                {socialState.requests.length > 99 ? "99+" : socialState.requests.length}
+              </b>
+            )}
           </button>
           {profileMenuOpen && (
             <div
@@ -1075,15 +1199,6 @@ export function App() {
                 }}
               >
                 <span>◉</span> Edit profile
-              </button>
-              <button
-                onClick={() => {
-                  setProfileMenuOpen(false);
-                  setFriendsOpen(true);
-                  if (accountState.status === "signed-in") void accountSession.refreshSocial();
-                }}
-              >
-                <span>♧</span> Friends
               </button>
               <button
                 onClick={() => {
@@ -1178,6 +1293,8 @@ export function App() {
                 name={profile.name}
                 avatar={profile.avatar}
                 bio={profile.bio}
+                username={profile.username}
+                usernameVisible={profile.usernameVisible}
                 speaking={session.localSpeaking}
                 microphoneEnabled={session.microphoneEnabled}
                 cameraEnabled={session.cameraEnabled}
@@ -1185,7 +1302,7 @@ export function App() {
                 cameraQuality="high"
                 screenShareQuality={shareQuality}
                 local
-                onProfile={setViewProfile}
+                onMemberMenu={openMemberMenu}
               />
               {session.participants.map((participant) => (
                 <ParticipantMediaCard
@@ -1197,13 +1314,15 @@ export function App() {
                     participant.identity.slice(0, 1).toUpperCase()
                   }
                   bio={participant.bio || ""}
+                  username={participant.username}
+                  usernameVisible={participant.usernameVisible}
                   speaking={participant.speaking}
                   microphoneEnabled={participant.microphoneEnabled}
                   cameraEnabled={participant.cameraEnabled}
                   screenShareEnabled={participant.screenShareEnabled}
                   cameraQuality={participant.cameraQuality}
                   screenShareQuality={participant.screenShareQuality}
-                  onProfile={setViewProfile}
+                  onMemberMenu={openMemberMenu}
                 />
               ))}
             </div>
@@ -1903,7 +2022,7 @@ export function App() {
       )}
       {profileOpen && (
         <div className="modal-backdrop">
-          <section className="private-modal">
+          <section className="private-modal profile-edit-modal">
             <button
               className="modal-close"
               onClick={() => void closeProfile()}
@@ -1949,6 +2068,54 @@ export function App() {
               onValueChange={(name) => setProfile((current) => ({ ...current, name }))}
               autoComplete="name"
             />
+            <div className="username-editor">
+              <label>
+                Username
+                <input
+                  value={usernameDraft}
+                  maxLength={32}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  disabled={usernameChangeLocked || usernameBusy}
+                  onChange={(event) => setUsernameDraft(
+                    event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 32),
+                  )}
+                />
+              </label>
+              <button
+                className="username-change-button"
+                disabled={
+                  usernameBusy ||
+                  usernameChangeLocked ||
+                  accountState.status !== "signed-in" ||
+                  usernameDraft.trim() === accountState.account.username ||
+                  Boolean(usernameError(usernameDraft))
+                }
+                onClick={() => void changeUsername()}
+              >
+                {usernameBusy ? "Changing…" : "Change username"}
+              </button>
+              <small>
+                {usernameChangeLocked && usernameNextChangeAt
+                  ? `You can change it again on ${usernameNextChangeAt.toLocaleDateString()}.`
+                  : "You can change your username once every 30 days."}
+              </small>
+            </div>
+            <label className="settings-check profile-visibility-setting">
+              <input
+                type="checkbox"
+                checked={profile.usernameVisible !== false}
+                onChange={(event) => setProfile((current) => ({
+                  ...current,
+                  usernameVisible: event.target.checked,
+                }))}
+              />
+              <span>
+                Show my username on my profile
+                <small>Your username remains available for sign-in and friend search.</small>
+              </span>
+            </label>
             <label>
               Bio
               <input
@@ -2029,6 +2196,17 @@ export function App() {
               </div>
             )}
             <h2>{viewProfile.name}</h2>
+            {viewProfile.usernameVisible !== false && viewProfile.username && (
+              <button
+                className="view-profile-username"
+                title="Copy username"
+                onClick={() => void navigator.clipboard
+                  .writeText(`@${viewProfile.username}`)
+                  .catch(() => setAppError("Could not copy username"))}
+              >
+                @{viewProfile.username}
+              </button>
+            )}
             <p>{viewProfile.bio || "No bio yet."}</p>
           </section>
         </div>
@@ -2099,6 +2277,59 @@ export function App() {
             >
               Save as
             </button>
+          )}
+        </div>
+      )}
+      {memberMenu && (
+        <div
+          className="member-menu"
+          style={{ left: memberMenu.x, top: memberMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <button
+            className="member-profile-action"
+            onClick={() => {
+              setViewProfile(memberMenu.profile);
+              setMemberMenu(null);
+            }}
+          >
+            <Avatar value={memberMenu.profile.avatar} remote={Boolean(memberMenu.identity)} />
+            <span>
+              <strong>{memberMenu.profile.name}</strong>
+              <small>Open profile</small>
+            </span>
+          </button>
+          {memberMenu.identity && (
+            <div className="member-volume-controls">
+              <label>
+                <span>Microphone <small>{memberMenu.voiceVolume}%</small></span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={memberMenu.voiceVolume}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    roomSession.setParticipantVoiceVolume(memberMenu.identity || "", value);
+                    setMemberMenu((current) => current ? { ...current, voiceVolume: value } : current);
+                  }}
+                />
+              </label>
+              <label>
+                <span>Stream <small>{memberMenu.streamVolume}%</small></span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={memberMenu.streamVolume}
+                  onChange={(event) => {
+                    const value = Number(event.target.value);
+                    roomSession.setParticipantStreamVolume(memberMenu.identity || "", value);
+                    setMemberMenu((current) => current ? { ...current, streamVolume: value } : current);
+                  }}
+                />
+              </label>
+            </div>
           )}
         </div>
       )}

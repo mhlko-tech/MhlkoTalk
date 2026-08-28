@@ -19,7 +19,15 @@ export interface Env {
 }
 
 type AuthUser = { id: string; accessToken: string; email?: string; userMetadata?: Record<string, unknown>; appMetadata?: Record<string, unknown> };
-type Profile = { id: string; username: string; display_name: string; avatar_url: string | null; bio?: string | null };
+type Profile = {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_url: string | null;
+  bio?: string | null;
+  username_visible: boolean;
+  username_changed_at?: string | null;
+};
 type AccountLogin = {
   user_id: string; username: string; email: string;
   google_linked_at?: string | null; password_enabled_at?: string | null;
@@ -357,7 +365,7 @@ const rpc = (env: Env, user: AuthUser, name: string, body: unknown) => userApi(e
   method: "POST", body: JSON.stringify(body),
 });
 async function profileFor(env: Env, user: AuthUser): Promise<Profile | null> {
-  const path = `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,username,display_name,avatar_url,bio&limit=1`;
+  const path = `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}&select=id,username,display_name,avatar_url,bio,username_visible,username_changed_at&limit=1`;
   let response = await userApi(env, user, path);
   let profile = response.ok ? ((await response.json()) as Profile[])[0] || null : null;
   if (profile) return profile;
@@ -410,7 +418,11 @@ async function issueToken(roomName: string, env: Env, user: AuthUser | null) {
   const profile = user ? await profileFor(env, user) : null;
   const token = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
     identity: user?.id || crypto.randomUUID(), name: profile?.display_name || profile?.username,
-    metadata: profile ? JSON.stringify({ avatar: profile.avatar_url, username: profile.username }) : undefined, ttl: "10m",
+    metadata: profile ? JSON.stringify({
+      avatar: profile.avatar_url,
+      ...(profile.username_visible ? { username: profile.username } : {}),
+      usernameVisible: profile.username_visible,
+    }) : undefined, ttl: "10m",
   });
   token.addGrant({
     roomJoin: true,
@@ -470,11 +482,22 @@ async function handleSocial(request: Request, env: Env, path: string, user: Auth
   }
   if (path === "/social/profile" && request.method === "PATCH") {
     const body = (await request.json().catch(() => null)) as Partial<Profile> | null;
+    const current = await profileFor(env, user);
+    if (!current) return json({ error: "Profile is unavailable" }, 404);
+    const requestedUsername = typeof body?.username === "string" ? body.username.trim() : undefined;
+    if (requestedUsername !== undefined) {
+      const validation = usernameError(requestedUsername);
+      if (validation) return json({ error: validation }, 400);
+      if (requestedUsername.toLowerCase() !== current.username.toLowerCase() && !(await usernameAvailable(env, requestedUsername)))
+        return json({ error: "Username is unavailable" }, 409);
+    }
     const update = {
-      username: typeof body?.username === "string" ? body.username.trim().slice(0, 32) : undefined,
+      username: requestedUsername,
       display_name: typeof body?.display_name === "string" ? body.display_name.trim().slice(0, 60) : undefined,
       avatar_url: typeof body?.avatar_url === "string" ? body.avatar_url.slice(0, 1000) : undefined,
-      bio: typeof body?.bio === "string" ? body.bio.slice(0, 160) : undefined, updated_at: new Date().toISOString(),
+      bio: typeof body?.bio === "string" ? body.bio.slice(0, 160) : undefined,
+      username_visible: typeof body?.username_visible === "boolean" ? body.username_visible : undefined,
+      updated_at: new Date().toISOString(),
     };
     return proxyUserResponse(await userApi(env, user, `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}`, {
       method: "PATCH", headers: { prefer: "return=representation" }, body: JSON.stringify(update),
@@ -488,7 +511,22 @@ async function handleSocial(request: Request, env: Env, path: string, user: Auth
   }
   if (path === "/social/friend-request" && request.method === "POST") {
     const body = (await request.json().catch(() => null)) as { targetId?: string } | null;
-    return proxyUserResponse(await rpc(env, user, "send_friend_request", { target_profile: body?.targetId }));
+    const response = await rpc(env, user, "send_friend_request", { target_profile: body?.targetId });
+    if (response.ok && body?.targetId) {
+      try {
+        const hub = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
+        await hub.fetch("https://presence.internal/deliver", {
+          method: "POST",
+          body: JSON.stringify({
+            targetId: body.targetId,
+            event: { type: "friend_request", senderId: user.id },
+          }),
+        });
+      } catch {
+        // The request is already stored; focus/startup refresh remains the fallback.
+      }
+    }
+    return proxyUserResponse(response);
   }
   if (path === "/social/friend-response" && request.method === "POST") {
     const body = (await request.json().catch(() => null)) as { requestId?: string; accept?: boolean } | null;

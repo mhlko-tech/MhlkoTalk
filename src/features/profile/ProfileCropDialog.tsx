@@ -45,23 +45,33 @@ export function CropDialog({
           <h2>Crop &amp; rotate</h2>
           <span aria-hidden="true">⋮</span>
         </header>
-        <div className="crop-stage">
-          <img className="crop-stage-backdrop" src={source} alt="" />
+        <div
+          className="crop-stage"
+          onWheel={zoomFromWheel}
+          onDragStart={(event) => event.preventDefault()}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            event.currentTarget.setPointerCapture(event.pointerId);
+            drag.current = { x: event.clientX, y: event.clientY, moveX: x, moveY: y };
+          }}
+          onPointerMove={moveFromPointer}
+          onPointerUp={(event) => {
+            drag.current = null;
+            if (event.currentTarget.hasPointerCapture(event.pointerId))
+              event.currentTarget.releasePointerCapture(event.pointerId);
+          }}
+          onPointerCancel={() => { drag.current = null; }}
+        >
+          <img className="crop-stage-backdrop" src={source} alt="" draggable={false} />
           <div
             className="crop-frame"
-            onWheel={zoomFromWheel}
-            onPointerDown={(event) => {
-              event.currentTarget.setPointerCapture(event.pointerId);
-              drag.current = { x: event.clientX, y: event.clientY, moveX: x, moveY: y };
-            }}
-            onPointerMove={moveFromPointer}
-            onPointerUp={() => { drag.current = null; }}
-            onPointerCancel={() => { drag.current = null; }}
           >
             <img
               src={source}
               alt="Crop preview"
               draggable={false}
+              onDragStart={(event) => event.preventDefault()}
               style={{
                 width: crop.width,
                 height: crop.height,
@@ -88,7 +98,7 @@ export function CropDialog({
   );
 }
 
-function cropLayout(size: ImageSize, zoom: number, rotation: number, frame: number) {
+export function cropLayout(size: ImageSize, zoom: number, rotation: number, frame: number) {
   const sideways = Math.abs(rotation % 180) === 90;
   const orientedWidth = sideways ? size.height : size.width;
   const orientedHeight = sideways ? size.width : size.height;
