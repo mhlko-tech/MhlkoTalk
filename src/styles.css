@@ -107,12 +107,12 @@ button {
 }
 .profile-area {
   align-items: center;
-  border-top: 1px solid #292d43;
+  background: #101321;
   display: flex;
   gap: 4px;
-  margin-top: auto;
-  min-height: 58px;
-  padding: 8px 2px 0;
+  margin: auto 0 -22px;
+  min-height: 60px;
+  padding: 5px 10px 5px 3px;
   position: relative;
 }
 .profile-identity {
