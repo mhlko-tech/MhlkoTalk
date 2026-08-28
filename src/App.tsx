@@ -242,7 +242,6 @@ export function App() {
   const [memberMenu, setMemberMenu] = useState<MemberMenuState | null>(null);
   const [usernameDraft, setUsernameDraft] = useState("");
   const [usernameBusy, setUsernameBusy] = useState(false);
-  const [usernameCopied, setUsernameCopied] = useState(false);
   const [helpMenuOpen, setHelpMenuOpen] = useState(false);
   const [infoPage, setInfoPage] = useState<InfoPage | null>(null);
   const [viewProfile, setViewProfile] = useState<UserProfile | null>(null);
@@ -1157,15 +1156,11 @@ export function App() {
               onClick={(event) => {
                 event.stopPropagation();
                 void navigator.clipboard
-                  .writeText(`@${accountState.account.username}`)
-                  .then(() => {
-                    setUsernameCopied(true);
-                    window.setTimeout(() => setUsernameCopied(false), 1400);
-                  })
+                  .writeText(accountState.account.username)
                   .catch(() => setAppError("Could not copy username"));
               }}
             >
-              {usernameCopied ? "Copied!" : `@${accountState.account.username}`}
+              @{accountState.account.username}
             </button>
           </div>
           <button

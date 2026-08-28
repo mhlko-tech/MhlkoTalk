@@ -109,23 +109,28 @@ button {
   align-items: center;
   border-top: 1px solid #292d43;
   display: flex;
+  gap: 4px;
   margin-top: auto;
-  padding-top: 8px;
+  min-height: 58px;
+  padding: 8px 2px 0;
   position: relative;
 }
 .profile-identity {
   flex: 1;
+  height: 50px;
   min-width: 0;
   position: relative;
 }
 .profile-identity .profile {
-  min-height: 54px;
-  padding-bottom: 20px;
+  height: 50px;
+  margin: 0;
+  padding: 6px 6px 18px;
   width: 100%;
 }
 .profile-identity .profile strong {
   align-self: start;
-  margin-top: 3px;
+  line-height: 18px;
+  margin-top: 1px;
   max-width: 135px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -133,10 +138,11 @@ button {
 }
 .profile-username {
   background: transparent;
-  bottom: 6px;
+  bottom: 5px;
   color: #8e96b7;
   font-size: 10px;
-  left: 52px;
+  left: 50px;
+  line-height: 15px;
   max-width: 142px;
   overflow: hidden;
   padding: 2px 0;
@@ -182,6 +188,8 @@ button {
   width: 38px;
 }
 .friends-shortcut {
+  flex: 0 0 38px;
+  margin: 0;
   position: relative;
 }
 .friends-shortcut > span {
