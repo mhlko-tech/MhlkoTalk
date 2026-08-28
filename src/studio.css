@@ -36,6 +36,16 @@
 .studio-settings {
   z-index: 20;
 }
+.studio-tier-note {
+  background: #252947;
+  border: 1px solid #414a79;
+  border-radius: 10px;
+  color: #bac4ea;
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+}
 .studio-source-button {
   position: static;
   width: 100%;

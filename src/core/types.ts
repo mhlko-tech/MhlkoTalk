@@ -19,6 +19,7 @@ export interface SessionSnapshot {
   estimatedDropPercent: number | null;
   recoveryAttempt: number;
   lastRecoveryMs: number | null;
+  connectionMessage: string | null;
   participants: Array<{
     identity: string;
     speaking: boolean;

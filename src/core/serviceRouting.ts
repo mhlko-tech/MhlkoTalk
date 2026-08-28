@@ -4,7 +4,7 @@ import {
   type SubscriptionPlan,
 } from "./subscription";
 
-export type RtcProviderId = "livekit" | "agora" | "daily";
+export type RtcProviderId = "stream" | "agora" | "100ms" | "daily" | "livekit";
 export type MessagingProviderId =
   | "livekit-data"
   | "supabase-realtime"
@@ -52,8 +52,7 @@ export function parseRoomServiceRouting(
   const serverUrl = payload.routing?.rtc?.serverUrl ?? payload.serverUrl;
   return {
     rtc: {
-      provider:
-        provider === "agora" || provider === "daily" ? provider : "livekit",
+      provider: isRtcProvider(provider) ? provider : "livekit",
       serverUrl: typeof serverUrl === "string" && serverUrl
         ? serverUrl
         : fallbackServerUrl,
@@ -70,6 +69,10 @@ export function parseRoomServiceRouting(
     },
     subscription: resolveSubscriptionPlan(payload.subscription),
   };
+}
+
+function isRtcProvider(value: unknown): value is RtcProviderId {
+  return ["stream", "agora", "100ms", "daily", "livekit"].includes(String(value));
 }
 
 function isMessagingProvider(value: unknown): value is MessagingProviderId {

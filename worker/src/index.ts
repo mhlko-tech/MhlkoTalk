@@ -1,6 +1,14 @@
 import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
 import { moderateMainMessage } from "../../src/core/moderation";
 import { emailError, passwordError, usernameError } from "../../src/core/authRules";
+import {
+  isRtcProvider,
+  parseRtcProviders,
+  rtcCapabilities,
+  selectRtcProvider,
+  updateProviderHealth,
+  type RtcProviderId,
+} from "./providerRouting";
 
 export interface Env {
   LIVEKIT_API_KEY: string;
@@ -17,6 +25,15 @@ export interface Env {
   FIREBASE_CLIENT_EMAIL?: string;
   FIREBASE_PRIVATE_KEY?: string;
   RTC_PROVIDER_ORDER?: string;
+  STREAM_API_KEY?: string;
+  STREAM_API_SECRET?: string;
+  AGORA_APP_ID?: string;
+  AGORA_APP_CERTIFICATE?: string;
+  HMS_ACCESS_KEY?: string;
+  HMS_APP_SECRET?: string;
+  DAILY_API_KEY?: string;
+  ROUTING_ADMIN_KEY?: string;
+  LAVA_MEMBERSHIP_BACKEND_URL?: string;
 }
 
 type AuthUser = { id: string; accessToken: string; email?: string; userMetadata?: Record<string, unknown>; appMetadata?: Record<string, unknown> };
@@ -85,29 +102,25 @@ function subscriptionFor(profile: Profile | null) {
   const tier = plusIsCurrent ? "plus" : "free";
   return { tier, expiresAt, entitlements: subscriptionEntitlements[tier] };
 }
-function serviceRouting(env: Env, profile: Profile | null) {
+function serviceRouting(env: Env, profile: Profile | null, provider: RtcProviderId) {
+  if (provider !== "livekit") throw new Error(`RTC adapter ${provider} is not deployed`);
   return {
-    rtc: { provider: "livekit", serverUrl: env.LIVEKIT_URL.replace(/^http/, "ws") },
+    rtc: { provider, serverUrl: env.LIVEKIT_URL.replace(/^http/, "ws") },
     messaging: { provider: "livekit-data" },
     files: { provider: "livekit-stream" },
     subscription: subscriptionFor(profile),
   } as const;
 }
-function serviceCapabilities(env: Env) {
-  const requested = (env.RTC_PROVIDER_ORDER || "livekit,agora,daily")
-    .split(",").map((value) => value.trim().toLowerCase())
-    .filter((value) => ["livekit", "agora", "daily"].includes(value));
+async function serviceCapabilities(env: Env) {
+  const rtc = await rtcCapabilities(env);
   return {
     active: {
-      rtc: "livekit",
+      rtc: rtc.find((item) => item.ready)?.provider || null,
       messaging: "livekit-data",
       files: "livekit-stream",
     },
-    rtc: [...new Set(requested)].map((provider) => ({
-      provider,
-      ready: provider === "livekit",
-      reason: provider === "livekit" ? undefined : "Provider credentials and client adapter are not configured",
-    })),
+    thresholds: { warningPercent: 70, drainPercent: 85, migratePercent: 95 },
+    rtc,
     messaging: ["livekit-data", "cloudflare-realtime", "supabase-realtime", "firebase"],
     files: ["livekit-stream", "cloudflare-r2", "supabase-storage", "backblaze-b2"],
   };
@@ -465,6 +478,52 @@ async function profileFor(env: Env, user: AuthUser): Promise<Profile | null> {
   return profile;
 }
 
+async function syncLavaSubscription(request: Request, env: Env, user: AuthUser) {
+  const body = (await request.json().catch(() => null)) as { membershipToken?: unknown } | null;
+  const membershipToken = typeof body?.membershipToken === "string" ? body.membershipToken.trim() : "";
+  if (membershipToken.length < 24 || membershipToken.length > 512) return json({ error: "Invalid membership token" }, 400);
+  const tokenFingerprint = await digest(`lava:${membershipToken}`);
+  const bindingKey = `membership:lava:owner:${tokenFingerprint}`;
+  const owner = await env.PRIVATE_ROOMS.get(bindingKey);
+  if (owner && owner !== user.id) return json({ error: "This membership is already linked to another MHTalk account" }, 409);
+
+  const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
+  const verification = await fetch(`${backend}/v1/subscription-sessions/status`, {
+    headers: { authorization: `Bearer ${membershipToken}`, accept: "application/json" },
+  });
+  const membership = (await verification.json().catch(() => ({}))) as {
+    entitlementTier?: unknown;
+    status?: unknown;
+    expiry?: unknown;
+    error?: unknown;
+  };
+  if (verification.status === 401) return json({ error: "Membership verification was rejected" }, 401);
+  if (!verification.ok && verification.status !== 410) {
+    return json({ error: "Membership verification is temporarily unavailable" }, 503);
+  }
+
+  await env.PRIVATE_ROOMS.put(bindingKey, user.id);
+  const status = typeof membership.status === "string" ? membership.status.toLowerCase() : "pending";
+  const active = status === "active" && typeof membership.entitlementTier === "string" && membership.entitlementTier !== "guest";
+  const terminal = ["expired", "failed", "inactive", "disconnected", "revoked"].includes(status) || verification.status === 410;
+  if (!active && !terminal) return json({ status, tier: "free", pending: true });
+
+  const expiry = active && typeof membership.expiry === "string" && membership.expiry
+    ? membership.expiry
+    : null;
+  const update = await serviceApi(env, `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}`, {
+    method: "PATCH",
+    headers: { prefer: "return=representation" },
+    body: JSON.stringify({
+      subscription_tier: active ? "plus" : "free",
+      subscription_expires_at: expiry,
+    }),
+  });
+  if (!update?.ok) return json({ error: "Could not update the MHTalk membership" }, 503);
+  const profile = ((await update.json()) as Profile[])[0] || await profileFor(env, user);
+  return json({ status, tier: active ? "plus" : "free", expiresAt: expiry, subscription: subscriptionFor(profile) });
+}
+
 async function hmacKey(secret: string) {
   return crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
 }
@@ -725,7 +784,22 @@ export default {
     if (request.method === "GET" && path === "/privacy") return privacyPage();
     if (request.method === "GET" && path === "/terms") return termsPage();
     if (request.method === "GET" && path === "/auth/complete") return oauthCompletePage(request);
-    if (request.method === "GET" && path === "/service/capabilities") return json(serviceCapabilities(env));
+    if (request.method === "GET" && path === "/service/capabilities") return json(await serviceCapabilities(env));
+    if (path === "/service/provider-health" && request.method === "POST") {
+      if (!env.ROUTING_ADMIN_KEY || request.headers.get("authorization") !== `Bearer ${env.ROUTING_ADMIN_KEY}`) {
+        return json({ error: "Unauthorized" }, 401);
+      }
+      const body = (await request.json().catch(() => null)) as { provider?: unknown; usedPercent?: unknown; disabled?: unknown } | null;
+      if (!isRtcProvider(body?.provider)) return json({ error: "Invalid provider" }, 400);
+      if (body?.usedPercent !== undefined && (typeof body.usedPercent !== "number" || !Number.isFinite(body.usedPercent))) {
+        return json({ error: "Invalid usage percentage" }, 400);
+      }
+      const health = await updateProviderHealth(env, body.provider, {
+        usedPercent: typeof body.usedPercent === "number" ? body.usedPercent : undefined,
+        disabled: typeof body.disabled === "boolean" ? body.disabled : undefined,
+      });
+      return json({ provider: body.provider, ...health });
+    }
     if (request.method === "OPTIONS") return new Response(null, { headers });
     if (path.startsWith("/auth/")) return handleAuth(request, env, path);
     if (path === "/presence" && request.method === "GET") {
@@ -743,6 +817,36 @@ export default {
       if (auth instanceof Response) return auth;
       const onboarding = await requireCompletedOnboarding(env, auth);
       return onboarding || handleSocial(request, env, path, auth);
+    }
+    if (path === "/subscription/lava/sync" && request.method === "POST") {
+      const auth = await authenticate(request, env);
+      if (auth instanceof Response) return auth;
+      const onboarding = await requireCompletedOnboarding(env, auth);
+      return onboarding || syncLavaSubscription(request, env, auth);
+    }
+    if (path === "/subscription/lava/start" && request.method === "POST") {
+      const auth = await authenticate(request, env);
+      if (auth instanceof Response) return auth;
+      const onboarding = await requireCompletedOnboarding(env, auth);
+      if (onboarding) return onboarding;
+      const body = (await request.json().catch(() => null)) as { planId?: unknown } | null;
+      const planId = typeof body?.planId === "string" ? body.planId : "";
+      if (!["plus", "pro", "ultimate", "max_supporter"].includes(planId)) return json({ error: "Invalid membership plan" }, 400);
+      const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
+      const response = await fetch(`${backend}/v1/subscription-sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ planId }),
+      });
+      const payload = await response.json().catch(() => ({ error: "Membership service returned an invalid response" })) as {
+        desktopToken?: unknown;
+        error?: unknown;
+      };
+      if (response.ok && typeof payload.desktopToken === "string") {
+        const fingerprint = await digest(`lava:${payload.desktopToken}`);
+        await env.PRIVATE_ROOMS.put(`membership:lava:owner:${fingerprint}`, auth.id);
+      }
+      return json(payload, response.status);
     }
     if (request.method !== "POST") return json({ error: "Not found" }, 404);
     if (path === "/moderate") {
@@ -787,7 +891,12 @@ export default {
       const onboarding = await requireCompletedOnboarding(env, auth);
       if (onboarding) return onboarding;
     }
-    const body = (await request.json().catch(() => null)) as { roomName?: unknown; inviteCode?: unknown } | null;
+    const body = (await request.json().catch(() => null)) as {
+      roomName?: unknown;
+      inviteCode?: unknown;
+      supportedRtcProviders?: unknown;
+      excludedRtcProviders?: unknown;
+    } | null;
     let roomName = typeof body?.roomName === "string" ? body.roomName.trim() : "";
     roomName = roomName === "Main room" || roomName === "Main channel" ? "Main" : roomName;
     if (typeof body?.inviteCode === "string") {
@@ -800,7 +909,22 @@ export default {
     if (!allowedRoom.test(roomName)) return json({ error: "Invalid room name" }, 400);
     if (roomName !== "Main" && typeof body?.inviteCode !== "string") return json({ error: "Private code required" }, 403);
     const profile = auth ? await profileFor(env, auth) : null;
-    const routing = serviceRouting(env, profile);
+    const selected = await selectRtcProvider(
+      env,
+      roomName,
+      parseRtcProviders(body?.supportedRtcProviders),
+      Array.isArray(body?.excludedRtcProviders)
+        ? [...new Set(body.excludedRtcProviders.map((value) => String(value).toLowerCase()).filter(isRtcProvider))]
+        : [],
+    );
+    if (!selected) {
+      return json({
+        error: "All compatible realtime providers are temporarily unavailable",
+        code: "RTC_CAPACITY_UNAVAILABLE",
+        retryAfterSeconds: 20,
+      }, 503);
+    }
+    const routing = serviceRouting(env, profile, selected.provider);
     return json({
       token: await issueToken(roomName, env, auth, profile),
       roomName,

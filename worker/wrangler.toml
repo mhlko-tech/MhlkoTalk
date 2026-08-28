@@ -5,7 +5,8 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 LIVEKIT_URL = "https://mhtalkremake-utuei6i7.livekit.cloud"
-RTC_PROVIDER_ORDER = "livekit,agora,daily"
+RTC_PROVIDER_ORDER = "stream,agora,100ms,daily,livekit"
+LAVA_MEMBERSHIP_BACKEND_URL = "https://mvdownloader-lava-staging.mhlkotalk.workers.dev"
 
 [[kv_namespaces]]
 binding = "PRIVATE_ROOMS"

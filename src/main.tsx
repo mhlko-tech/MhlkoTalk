@@ -27,7 +27,7 @@ createRoot(rootElement).render(
     <Suspense fallback={
       <div className="startup-update-gate">
         <section className="startup-update-card">
-          <header><img src="/mhtalk-icon.png" alt="MHTalk" /><div><h1>MHTalk</h1><small>Secure desktop</small></div></header>
+          <header><img src="/mhtalk-icon.png" alt="MHTalk" /><div><h1>MHTalk <span className="beta-badge">Beta</span></h1><small>Secure desktop</small></div></header>
           <div className="startup-update-copy"><strong>Starting MHTalk</strong><span>Loading the secure application…</span></div>
           <div className="startup-progress indeterminate"><i /></div>
         </section>

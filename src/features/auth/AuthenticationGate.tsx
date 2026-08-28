@@ -149,7 +149,7 @@ export function AuthenticationGate({ state }: { state: AccountState }) {
     <section className="auth-gate-card auth-professional" aria-label="MHTalk account">
       <div className="auth-brand">
         <div className="auth-gate-logo" aria-hidden="true">M</div>
-        <div><h1>MHTalk</h1><small>Voice, video and rooms · v{appVersion}</small></div>
+        <div><h1>MHTalk <span className="beta-badge">Beta</span></h1><small>Voice, video and rooms · v{appVersion}</small></div>
       </div>
 
       {state.status === "checking" ? (

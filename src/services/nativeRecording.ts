@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { limitRecordingDimensions } from "../core/subscription";
 
 export type RecordingSettings = {
   quality: "high" | "balanced" | "performance" | "lossless";
@@ -150,18 +151,26 @@ function nativeSourceSettings(
   const screenMatch = video.label.match(/screen:(\d+):/i);
   const outputWidth = displaySettings.width || window.screen.width || 1920;
   const outputHeight = displaySettings.height || window.screen.height || 1080;
+  const [limitedWidth, limitedHeight] = limitRecordingDimensions(
+    outputWidth,
+    outputHeight,
+    localStorage.getItem("mhtalk.subscription-tier") === "plus",
+  );
   return {
-    fps: settings.fps,
+    fps: localStorage.getItem("mhtalk.subscription-tier") === "plus"
+      ? settings.fps
+      : Math.min(settings.fps, 60),
     quality: settings.quality,
     hasAudio,
     ...nativeMixSettings(settings),
     sourceKind,
     sourceLabel: video.label,
     outputIndex: screenMatch ? Number(screenMatch[1]) : 0,
-    outputWidth,
-    outputHeight,
+    outputWidth: limitedWidth,
+    outputHeight: limitedHeight,
   };
 }
+
 
 let capabilitiesRequest: Promise<RecorderCapabilities> | null = null;
 

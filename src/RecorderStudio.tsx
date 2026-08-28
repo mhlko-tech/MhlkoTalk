@@ -41,6 +41,7 @@ type StudioScene = {
 };
 
 export function RecorderStudio() {
+  const plusRecording = localStorage.getItem("mhtalk.subscription-tier") === "plus";
   const recorder = useRef<NativeScreenRecording | null>(null);
   const preview = useRef<HTMLVideoElement | null>(null);
   const [display, setDisplay] = useState<MediaStream | null>(null);
@@ -78,6 +79,15 @@ export function RecorderStudio() {
   const [capabilities, setCapabilities] = useState<RecorderCapabilities | null>(
     null,
   );
+
+  useEffect(() => {
+    if (plusRecording) return;
+    setSettings((current) => ({
+      ...current,
+      fps: current.fps > 60 ? 60 : current.fps,
+      quality: current.quality === "lossless" ? "high" : current.quality,
+    }));
+  }, [plusRecording]);
 
   useEffect(() => {
     void getRecorderCapabilities()
@@ -663,6 +673,9 @@ export function RecorderStudio() {
               ×
             </button>
             <h2>Output settings</h2>
+            <p className="studio-tier-note">
+              {plusRecording ? "MHTalk Plus · source resolution and up to 120 FPS" : "Free · up to 720p and 60 FPS"}
+            </p>
             <label>
               Quality
               <select
@@ -678,7 +691,7 @@ export function RecorderStudio() {
                 <option value="high">High quality</option>
                 <option value="balanced">Balanced</option>
                 <option value="performance">Performance</option>
-                <option value="lossless">Near lossless</option>
+                <option value="lossless" disabled={!plusRecording}>Near lossless{plusRecording ? "" : " · Plus"}</option>
               </select>
             </label>
             <label>
@@ -695,7 +708,7 @@ export function RecorderStudio() {
               >
                 <option value={60}>60 FPS</option>
                 <option value={30}>30 FPS</option>
-                <option value={120}>120 FPS</option>
+                <option value={120} disabled={!plusRecording}>120 FPS{plusRecording ? "" : " · Plus"}</option>
               </select>
             </label>
             <button

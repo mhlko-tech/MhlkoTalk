@@ -131,6 +131,9 @@ class AccountSession {
   getState() { return this.state; }
   getSocialState() { return this.social; }
   getAccessToken() { return this.session?.access_token || null; }
+  async refreshAccount() {
+    if (this.session) await this.applySession(this.session);
+  }
 
   async initialize() {
     if (this.initialized || !this.client) return;

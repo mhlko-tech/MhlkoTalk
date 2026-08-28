@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   freeSubscriptionPlan,
+  limitRecordingDimensions,
   limitMediaQuality,
   resolveSubscriptionPlan,
   subscriptionEntitlements,
@@ -17,6 +18,9 @@ assert.equal(
   resolveSubscriptionPlan({ tier: "plus", expiresAt: "2020-01-01T00:00:00Z" }).tier,
   "free",
 );
+assert.deepEqual(limitRecordingDimensions(1920, 1080, false), [1280, 720]);
+assert.deepEqual(limitRecordingDimensions(1080, 1920, false), [720, 1280]);
+assert.deepEqual(limitRecordingDimensions(2560, 1440, true), [2560, 1440]);
 
 const routing = parseRoomServiceRouting(
   {

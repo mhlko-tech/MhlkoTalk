@@ -105,3 +105,21 @@ export function limitMediaQuality(
 export function formatAttachmentLimit(bytes: number) {
   return `${Math.round(bytes / 1024 / 1024)} MB`;
 }
+
+export function limitRecordingDimensions(
+  width: number,
+  height: number,
+  plus: boolean,
+): [number, number] {
+  if (plus) return [evenDimension(width), evenDimension(height)];
+  const landscape = width >= height;
+  const maximumWidth = landscape ? 1280 : 720;
+  const maximumHeight = landscape ? 720 : 1280;
+  const scale = Math.min(1, maximumWidth / width, maximumHeight / height);
+  return [evenDimension(width * scale), evenDimension(height * scale)];
+}
+
+function evenDimension(value: number) {
+  const rounded = Math.max(2, Math.floor(value));
+  return rounded - (rounded % 2);
+}

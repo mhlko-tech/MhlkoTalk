@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import appPackage from "../package.json";
 import { Avatar } from "./components/Avatar";
 import { DisplayNameField } from "./components/DisplayNameField";
@@ -45,6 +46,7 @@ import {
   type UpdateActivity,
 } from "./services/appUpdater";
 import { isKeyboardLanguageShortcut, switchKeyboardLanguage } from "./services/inputLanguage";
+import { startLavaMembership, syncLavaMembership } from "./services/membershipService";
 
 const initial: SessionSnapshot = {
   state: "idle",
@@ -58,10 +60,13 @@ const initial: SessionSnapshot = {
   estimatedDropPercent: null,
   recoveryAttempt: 0,
   lastRecoveryMs: null,
+  connectionMessage: null,
   participants: [],
 };
 const emptyChat: ChatSnapshot = { messages: [], typing: [] };
 const appVersion = appPackage.version;
+const patreonMembershipUrl = "https://www.patreon.com/cw/MhlkoVD/membership";
+const mvDownloaderUrl = "https://github.com/mhlko-tech/MVDownloader/releases/latest";
 const emojiList = [
   "😀",
   "😂",
@@ -163,7 +168,7 @@ function StartupUpdateGate({
       <section className="startup-update-card">
         <header>
           <img src="/mhtalk-icon.png" alt="MHTalk" />
-          <div><h1>MHTalk</h1><small>Secure desktop · v{appVersion}</small></div>
+          <div><h1>MHTalk <span className="beta-badge">Beta</span></h1><small>Secure desktop · v{appVersion}</small></div>
         </header>
         <div className="startup-update-copy">
           <strong>{label}</strong>
@@ -242,6 +247,9 @@ export function App() {
     accountSession.getSocialState(),
   );
   const [friendsOpen, setFriendsOpen] = useState(false);
+  const [supportOpen, setSupportOpen] = useState(false);
+  const [lavaBusy, setLavaBusy] = useState(false);
+  const [membershipMessage, setMembershipMessage] = useState("");
   const [friendSearch, setFriendSearch] = useState("");
   const [friendResults, setFriendResults] = useState<SearchProfile[]>([]);
   const [socialBusy, setSocialBusy] = useState("");
@@ -325,6 +333,13 @@ export function App() {
   useEffect(() => accountSession.subscribe(setAccountState), []);
   useEffect(() => accountSession.subscribeSocial(setSocialState), []);
   useEffect(() => { void accountSession.initialize(); }, []);
+  useEffect(() => {
+    localStorage.setItem("mhtalk.subscription-tier", subscription.tier);
+  }, [subscription.tier]);
+  useEffect(() => {
+    if (accountState.status !== "signed-in") return;
+    void syncLavaMembership().catch(() => undefined);
+  }, [accountState.status]);
   useEffect(() => {
     const allowed = limitMediaQuality(
       shareQuality,
@@ -501,6 +516,7 @@ export function App() {
     };
   }, []);
   useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void getCurrentWebview()
@@ -1077,7 +1093,7 @@ export function App() {
       <aside className="sidebar">
         <div className="brand">
           <span><img src="/mhtalk-icon.png" alt="" /></span>
-          <div>MHTalk<small>{appVersion}</small></div>
+          <div>MHTalk <b className="beta-badge">Beta</b><small>{appVersion}</small></div>
         </div>
         <div className="section-label">Rooms</div>
         <button
@@ -1217,6 +1233,19 @@ export function App() {
                 {socialState.requests.length > 99 ? "99+" : socialState.requests.length}
               </b>
             )}
+          </button>
+          <button
+            className="profile-more support-shortcut"
+            aria-label="About Beta servers and support"
+            title="Beta servers and support"
+            onClick={(event) => {
+              event.stopPropagation();
+              setProfileMenuOpen(false);
+              setHelpMenuOpen(false);
+              setSupportOpen(true);
+            }}
+          >
+            <span aria-hidden="true">?</span>
           </button>
           {profileMenuOpen && (
             <div
@@ -1365,8 +1394,8 @@ export function App() {
                 <span></span>
                 <span></span>
               </div>
-              <h2>Ready when you are</h2>
-              <p>Join Main channel or create a private room.</p>
+              <h2>{roomTransitioning ? "Connecting to a server" : session.state === "failed" ? "Connection unavailable" : "Ready when you are"}</h2>
+              <p>{session.connectionMessage || "Join Main channel or create a private room."}</p>
             </div>
           )}
         </div>
@@ -1846,6 +1875,46 @@ export function App() {
           </section>
         </div>
       )}
+      {supportOpen && (
+        <div className="modal-backdrop">
+          <section className="private-modal support-modal" role="dialog" aria-modal="true" aria-label="MHTalk Beta and support">
+            <button className="modal-close" onClick={() => setSupportOpen(false)}>×</button>
+            <div className="support-heading"><span>?</span><div><h2>MHTalk Beta</h2><small>Zero-budget public testing</small></div></div>
+            <p>MHTalk currently uses carefully selected free service allocations. When one provider is busy or near its limit, connecting may take a little longer while the app selects a compatible server.</p>
+            <p>We never move an active room between incompatible providers. Everyone in a room stays together, and MHTalk only selects adapters this app version can actually use.</p>
+            <div className="support-note"><strong>You can help without paying.</strong><span>Sharing MHTalk with friends is one of the most useful ways to help this small project reach sustainable hosting.</span></div>
+            <p className="support-membership">One active membership is planned to unlock premium features in both MHTalk and MVDownloader.</p>
+            {membershipMessage && <div className="support-membership-status">{membershipMessage}</div>}
+            <div className="support-actions">
+              <button className="primary" disabled={lavaBusy} onClick={async () => {
+                setLavaBusy(true);
+                try {
+                  await startLavaMembership("plus");
+                  setMembershipMessage("Complete payment in your browser, then return here and choose Verify membership.");
+                } catch (error) {
+                  setAppError(error instanceof Error ? error.message : "Could not open LAVA membership");
+                } finally {
+                  setLavaBusy(false);
+                }
+              }}>{lavaBusy ? "Opening LAVA…" : "Support with LAVA"}</button>
+              <button className="control" disabled={lavaBusy} onClick={async () => {
+                setLavaBusy(true);
+                try {
+                  const result = await syncLavaMembership(true);
+                  setMembershipMessage(!result ? "Start a LAVA membership first." : result.tier === "plus" ? "MHTalk Plus is active on this account." : result.pending ? "Payment confirmation is still pending." : "No active LAVA membership was found.");
+                } catch (error) {
+                  setMembershipMessage(error instanceof Error ? error.message : "Could not verify membership");
+                } finally { setLavaBusy(false); }
+              }}>Verify membership</button>
+              <button className="control" onClick={() => void openUrl(patreonMembershipUrl)}>View Patreon plans</button>
+              <button className="control" onClick={() => void openUrl(mvDownloaderUrl)}>Download MVDownloader</button>
+              <button className="control" onClick={() => {
+                void navigator.clipboard.writeText("Try MHTalk Beta for voice, video, rooms and chat: https://github.com/mhlko-tech/MhlkoTalk/releases/latest").then(() => setAppError("MHTalk link copied — thank you for sharing."));
+              }}>Share MHTalk</button>
+            </div>
+          </section>
+        </div>
+      )}
       {settingsOpen && (
         <div className="modal-backdrop">
           <section className="private-modal settings-modal compact-settings">
@@ -2019,6 +2088,7 @@ export function App() {
               <ul>
                 <li>Clear voice calls with optional microphone noise cancellation</li>
                 <li>Camera and screen sharing up to {subscription.tier === "plus" ? "1080p" : "720p"}</li>
+                <li>Screen recording {subscription.tier === "plus" ? "at source resolution and up to 120 FPS" : "up to 720p at 60 FPS"}</li>
                 <li>Files up to {formatAttachmentLimit(subscription.entitlements.maxAttachmentBytes)}</li>
                 {subscription.tier === "plus" && (
                   <>
@@ -2029,7 +2099,7 @@ export function App() {
               </ul>
               {subscription.tier === "free" && (
                 <p className="subscription-note">
-                  Plus billing will appear here after store payments are connected. Core calling and safety features remain free.
+                  Open the yellow help button beside Friends to view LAVA and Patreon support options. Core calling and safety features remain free.
                 </p>
               )}
             </div>

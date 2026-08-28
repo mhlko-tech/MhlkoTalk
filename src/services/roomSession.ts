@@ -47,6 +47,7 @@ const initialSnapshot: SessionSnapshot = {
   estimatedDropPercent: null,
   recoveryAttempt: 0,
   lastRecoveryMs: null,
+  connectionMessage: null,
   participants: [],
 };
 
@@ -140,13 +141,21 @@ export class RoomSession {
       roomName,
       recoveryAttempt: 0,
       lastRecoveryMs: null,
+      connectionMessage: "Selecting the best available server…",
     });
     this.inviteCode = inviteCode;
     try {
       if (this.isLiveKitConfigured()) await this.joinLiveKit(roomName);
       else await this.joinSimulator();
-    } catch {
-      this.update({ state: "failed" });
+    } catch (error) {
+      await this.room?.disconnect().catch(() => undefined);
+      this.room = null;
+      this.update({
+        state: "failed",
+        connectionMessage: error instanceof Error
+          ? error.message
+          : "Could not connect to a realtime server",
+      });
     }
   }
 
@@ -962,19 +971,25 @@ export class RoomSession {
       .VITE_LIVEKIT_DEVELOPMENT_TOKEN_SERVER_ID;
     if (developmentServerId) {
       const source = TokenSource.developmentTokenServer(developmentServerId);
-      const details = await source.fetch({ roomName });
-      await room.connect(details.serverUrl, details.participantToken, {
+      const details = await withTimeout(
+        source.fetch({ roomName }),
+        12_000,
+        "The development token service did not respond",
+      );
+      this.update({ connectionMessage: "Connecting to the realtime server…" });
+      await withTimeout(room.connect(details.serverUrl, details.participantToken, {
         autoSubscribe: false,
-      });
+      }), 18_000, "The realtime server took too long to respond");
     } else {
       const credentials = await this.fetchToken(roomName);
       if (credentials.routing.rtc.provider !== "livekit") {
         throw new Error("The selected call provider is not supported by this app version");
       }
       this.routing = credentials.routing;
-      await room.connect(credentials.routing.rtc.serverUrl, credentials.token, {
+      this.update({ connectionMessage: `Connecting through ${credentials.routing.rtc.provider}…` });
+      await withTimeout(room.connect(credentials.routing.rtc.serverUrl, credentials.token, {
         autoSubscribe: false,
-      });
+      }), 18_000, "The selected realtime server took too long to respond");
       roomName = credentials.roomName;
     }
     for (const kind of [
@@ -1011,7 +1026,7 @@ export class RoomSession {
         { videoEncoding: preset.encoding, simulcast: true },
       );
     }
-    this.update({ state: "connected", roomName });
+    this.update({ state: "connected", roomName, connectionMessage: null });
     this.subscribeToRemoteVoice();
     void this.publishProfile();
     void this.requestProfiles();
@@ -1131,19 +1146,29 @@ export class RoomSession {
 
   private async fetchToken(roomName: string) {
     const accountToken = accountSession.getAccessToken();
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 12_000);
     const response = await fetch(liveKitTokenEndpoint, {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "content-type": "application/json",
         ...(accountToken ? { authorization: `Bearer ${accountToken}` } : {}),
       },
-      body: JSON.stringify({ roomName, inviteCode: this.inviteCode }),
-    });
-    if (!response.ok) throw new Error("Token service unavailable");
-    const payload = (await response.json()) as {
+      body: JSON.stringify({
+        roomName,
+        inviteCode: this.inviteCode,
+        clientPlatform: "windows",
+        supportedRtcProviders: ["livekit"],
+      }),
+    }).finally(() => window.clearTimeout(timer));
+    const payload = (await response.json().catch(() => ({}))) as {
       token?: string;
       roomName?: string;
+      error?: string;
     };
+    if (!response.ok)
+      throw new Error(payload.error || "Realtime account service is unavailable");
     if (!payload.token || !payload.roomName)
       throw new Error("Invalid token response");
     return {
@@ -1198,6 +1223,7 @@ export class RoomSession {
       state: "connected",
       recoveryAttempt: 0,
       lastRecoveryMs: Math.round(performance.now() - this.recoveryStartedAt),
+      connectionMessage: null,
     });
   }
 
@@ -1466,6 +1492,24 @@ function sanitizeProfile(
     username,
     usernameVisible: profile?.usernameVisible !== false,
   };
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  milliseconds: number,
+  message: string,
+): Promise<T> {
+  let timer: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = window.setTimeout(() => reject(new Error(message)), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+  }
 }
 
 export const roomSession = new RoomSession();

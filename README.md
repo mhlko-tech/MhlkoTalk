@@ -3,7 +3,8 @@
 MHTalk is a Windows desktop application for persistent voice rooms, video,
 screen sharing, room chat, private invitations, file exchange and local screen
 recording. The desktop client is built with Tauri, Rust, React, Supabase and
-LiveKit.
+LiveKit, with a capability-gated multi-provider routing broker for the public
+Beta.
 
 ## Account system
 
@@ -36,3 +37,13 @@ secrets belong in Cloudflare Worker secrets and must never be committed.
 
 Official releases are published at
 [github.com/mhlko-tech/MhlkoTalk/releases](https://github.com/mhlko-tech/MhlkoTalk/releases).
+
+## Beta service policy
+
+MHTalk is visibly marked **Beta** while it operates on zero-budget service
+allocations. The routing broker keeps every room on one compatible RTC provider,
+drains providers at 85% usage and stops assigning them at 95%. Windows and
+Android also impose hard token/connection deadlines so a provider failure cannot
+leave the interface spinning forever. See
+[`docs/SERVICE_ROUTING.md`](docs/SERVICE_ROUTING.md) for rollout and credential
+requirements.
