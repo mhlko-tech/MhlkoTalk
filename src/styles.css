@@ -518,7 +518,6 @@ button {
 .auth-message-panel input:focus { border-color: #8173f4; box-shadow: 0 0 0 3px #8173f426; }
 .auth-message-panel input:read-only { color: #9299b7; }
 .multilingual-name-field > input { text-align: start; unicode-bidi: plaintext; }
-.multilingual-name-help { color: #8f98b8; font-size: 10px; font-weight: 500; }
 .auth-avatar-picker { display: flex; align-items: center; justify-content: center; gap: 14px; }
 .auth-avatar-picker .avatar { width: 62px; height: 62px; flex: 0 0 auto; }
 .auth-avatar-picker > div:last-of-type { display: grid; gap: 5px; text-align: left; }
@@ -1413,7 +1412,6 @@ button {
 .private-modal label input[type="range"] {
   padding: 0;
 }
-.private-modal .multilingual-name-help { display: block; margin-top: 5px; }
 .big-avatar {
   width: 70px;
   height: 70px;

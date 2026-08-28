@@ -25,7 +25,6 @@ export function DisplayNameField({
         maxLength={maxLength}
         onChange={(event) => onValueChange(event.currentTarget.value)}
       />
-      <small className="multilingual-name-help">يدعم الأسماء العربية والإنجليزية</small>
     </label>
   );
 }
