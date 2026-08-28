@@ -1,7 +1,7 @@
 {
   "name": "mhtalk-remake",
   "private": true,
-  "version": "1.5.15",
+  "version": "1.5.16",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1425",

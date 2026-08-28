@@ -1880,8 +1880,8 @@ export function App() {
           <section className="private-modal support-modal" role="dialog" aria-modal="true" aria-label="MHTalk Beta and support">
             <button className="modal-close" onClick={() => setSupportOpen(false)}>×</button>
             <div className="support-heading"><span>?</span><div><h2>MHTalk Beta</h2><small>Zero-budget public testing</small></div></div>
-            <p>MHTalk currently uses carefully selected free service allocations. When one provider is busy or near its limit, connecting may take a little longer while the app selects a compatible server.</p>
-            <p>We never move an active room between incompatible providers. Everyone in a room stays together, and MHTalk only selects adapters this app version can actually use.</p>
+            <p>MHTalk Beta currently uses LiveKit for calls. Its free monthly capacity can pause new connections until the quota resets.</p>
+            <p>The safe multi-provider broker is ready, but another call provider will not be activated until its credentials and tested Windows/Android adapters are installed. We never pretend an unavailable provider is usable.</p>
             <div className="support-note"><strong>You can help without paying.</strong><span>Sharing MHTalk with friends is one of the most useful ways to help this small project reach sustainable hosting.</span></div>
             <p className="support-membership">One active membership is planned to unlock premium features in both MHTalk and MVDownloader.</p>
             {membershipMessage && <div className="support-membership-status">{membershipMessage}</div>}

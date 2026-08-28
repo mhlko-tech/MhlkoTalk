@@ -439,6 +439,39 @@ async function serviceApi(env: Env, path: string, init: RequestInit = {}) {
     },
   });
 }
+
+async function membershipBackendRequest(url: string, init: RequestInit = {}) {
+  let lastStatus = 503;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8_000);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      lastStatus = response.status;
+      const raw = await response.text();
+      let payload: Record<string, unknown> | null = null;
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          payload = parsed as Record<string, unknown>;
+        }
+      } catch {
+        payload = null;
+      }
+      const retryable = response.status === 429 || response.status >= 500 || (response.ok && !payload);
+      if (retryable && attempt === 0) continue;
+      return { response, payload };
+    } catch {
+      if (attempt === 0) continue;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  return {
+    response: new Response(null, { status: lastStatus }),
+    payload: null as Record<string, unknown> | null,
+  };
+}
 async function proxyUserResponse(response: Response) {
   const body = await response.text();
   return new Response(body || (response.ok ? "{}" : '{"error":"Request failed"}'), { status: response.status, headers });
@@ -488,10 +521,10 @@ async function syncLavaSubscription(request: Request, env: Env, user: AuthUser) 
   if (owner && owner !== user.id) return json({ error: "This membership is already linked to another MHTalk account" }, 409);
 
   const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
-  const verification = await fetch(`${backend}/v1/subscription-sessions/status`, {
+  const { response: verification, payload: membershipPayload } = await membershipBackendRequest(`${backend}/v1/subscription-sessions/status`, {
     headers: { authorization: `Bearer ${membershipToken}`, accept: "application/json" },
   });
-  const membership = (await verification.json().catch(() => ({}))) as {
+  const membership = (membershipPayload || {}) as {
     entitlementTier?: unknown;
     status?: unknown;
     expiry?: unknown;
@@ -833,15 +866,12 @@ export default {
       const planId = typeof body?.planId === "string" ? body.planId : "";
       if (!["plus", "pro", "ultimate", "max_supporter"].includes(planId)) return json({ error: "Invalid membership plan" }, 400);
       const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
-      const response = await fetch(`${backend}/v1/subscription-sessions`, {
+      const { response, payload } = await membershipBackendRequest(`${backend}/v1/subscription-sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ planId }),
       });
-      const payload = await response.json().catch(() => ({ error: "Membership service returned an invalid response" })) as {
-        desktopToken?: unknown;
-        error?: unknown;
-      };
+      if (!payload) return json({ error: "Membership service is temporarily unavailable. Please try again." }, 503);
       if (response.ok && typeof payload.desktopToken === "string") {
         const fingerprint = await digest(`lava:${payload.desktopToken}`);
         await env.PRIVATE_ROOMS.put(`membership:lava:owner:${fingerprint}`, auth.id);
