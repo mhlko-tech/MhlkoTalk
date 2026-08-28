@@ -305,11 +305,21 @@ async function authenticate(request: Request, env: Env): Promise<AuthUser | Resp
   if (!configured(env)) return json({ error: "Accounts are not configured yet" }, 503);
   const authorization = request.headers.get("authorization") || "";
   if (!authorization.toLowerCase().startsWith("bearer ")) return json({ error: "Sign in is required" }, 401);
-  const response = await fetch(supabaseUrl(env, "/auth/v1/user"), {
-    headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY!, authorization },
-  });
-  if (!response.ok) return json({ error: "Session is invalid or expired" }, 401);
-  const user = (await response.json()) as { id?: string; email?: string; user_metadata?: Record<string, unknown>; app_metadata?: Record<string, unknown> };
+  let response: Response;
+  try {
+    response = await fetch(supabaseUrl(env, "/auth/v1/user"), {
+      headers: { apikey: env.SUPABASE_PUBLISHABLE_KEY!, authorization },
+    });
+  } catch {
+    return json({ error: "Account service is temporarily unavailable" }, 503);
+  }
+  if (response.status === 401 || response.status === 403)
+    return json({ error: "Session is invalid or expired" }, 401);
+  if (!response.ok) return json({ error: "Account service is temporarily unavailable" }, 503);
+  const user = await response.json().catch(() => null) as {
+    id?: string; email?: string; user_metadata?: Record<string, unknown>; app_metadata?: Record<string, unknown>;
+  } | null;
+  if (!user) return json({ error: "Account service returned an invalid response" }, 502);
   return user.id ? {
     id: user.id, email: user.email, userMetadata: user.user_metadata, appMetadata: user.app_metadata,
     accessToken: authorization.slice(7),

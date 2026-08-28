@@ -7,6 +7,7 @@ import {
   supabasePublishableKey,
   supabaseUrl,
 } from "../config/serviceConfig";
+import { isTerminalSessionFailure, sessionRetryDelay } from "./sessionResilience";
 
 export type MHTalkAccount = {
   id: string;
@@ -96,9 +97,15 @@ class AccountSession {
   private socialListeners = new Set<(state: SocialState) => void>();
   private presence: WebSocket | null = null;
   private reconnectTimer: number | undefined;
+  private hydrationRetryTimer: number | undefined;
+  private authRecoveryTimer: number | undefined;
   private oauthTimer: number | undefined;
   private initialized = false;
   private handlingPasswordRecovery = false;
+  private intentionalSignOut = false;
+  private recoveringUnexpectedSignOut = false;
+  private lastAuthenticatedSession: Session | null = null;
+  private hydrationRetryAttempt = 0;
   private hydrationRevision = 0;
   private processedAuthCallbacks = new Set<string>();
 
@@ -120,9 +127,26 @@ class AccountSession {
     this.client.auth.onAuthStateChange((event, session) => {
       if (event === "PASSWORD_RECOVERY" || this.handlingPasswordRecovery) {
         this.session = session;
+        if (session) this.lastAuthenticatedSession = session;
         if (session) this.setState({ status: "password-recovery" });
         return;
       }
+      if (event === "TOKEN_REFRESHED" && session) {
+        if (this.intentionalSignOut) return;
+        this.session = session;
+        this.lastAuthenticatedSession = session;
+        this.finishSessionRecovery();
+        return;
+      }
+      if (event === "SIGNED_OUT" && this.lastAuthenticatedSession && this.state.status === "signed-in") {
+        if (!this.recoveringUnexpectedSignOut) {
+          const recoverableSession = this.lastAuthenticatedSession;
+          this.recoveringUnexpectedSignOut = true;
+          window.setTimeout(() => void this.recoverUnexpectedSignOut(recoverableSession), 0);
+        }
+        return;
+      }
+      if (session) this.lastAuthenticatedSession = session;
       window.setTimeout(() => void this.applySession(session), 0);
     });
     await this.retry();
@@ -353,13 +377,23 @@ class AccountSession {
   }
 
   async signOut() {
+    this.intentionalSignOut = true;
     window.clearTimeout(this.reconnectTimer);
+    window.clearTimeout(this.hydrationRetryTimer);
+    window.clearTimeout(this.authRecoveryTimer);
     window.clearTimeout(this.oauthTimer);
     this.presence?.close(); this.presence = null;
-    await this.client?.auth.signOut();
-    this.session = null;
-    this.setSocial(initialSocial);
-    this.setState(this.client ? { status: "signed-out" } : { status: "unavailable" });
+    this.lastAuthenticatedSession = null;
+    this.recoveringUnexpectedSignOut = false;
+    this.hydrationRetryAttempt = 0;
+    try {
+      await this.client?.auth.signOut();
+    } finally {
+      this.session = null;
+      this.setSocial(initialSocial);
+      this.setState(this.client ? { status: "signed-out" } : { status: "unavailable" });
+      this.intentionalSignOut = false;
+    }
   }
 
   async refreshSocial() {
@@ -478,9 +512,11 @@ class AccountSession {
 
   private async applySession(session: Session | null) {
     const revision = ++this.hydrationRevision;
+    const stableState = this.state.status === "signed-in" ? this.state : null;
     if (session) window.clearTimeout(this.oauthTimer);
     this.session = session;
     if (!session) {
+      window.clearTimeout(this.hydrationRetryTimer);
       this.setState(this.client ? { status: "signed-out" } : { status: "unavailable" });
       return;
     }
@@ -497,12 +533,74 @@ class AccountSession {
       }
       const profile = await this.apiWithSession<ApiProfile>(session, "/social/me");
       if (revision !== this.hydrationRevision) return;
+      this.lastAuthenticatedSession = session;
+      window.clearTimeout(this.hydrationRetryTimer);
+      this.hydrationRetryAttempt = 0;
       this.setState({ status: "signed-in", account: this.mapProfile(profile) });
       await this.refreshSocial();
     } catch (error) {
       if (revision !== this.hydrationRevision) return;
+      if (stableState && this.session) {
+        this.setState(stableState);
+        this.setSocial({
+          ...this.social,
+          loading: false,
+          error: "Connection interrupted. MHTalk will reconnect automatically.",
+        });
+        window.clearTimeout(this.hydrationRetryTimer);
+        this.hydrationRetryTimer = window.setTimeout(
+          () => { if (this.session) void this.applySession(this.session); },
+          sessionRetryDelay(this.hydrationRetryAttempt++),
+        );
+        return;
+      }
       this.setState({ status: "failed", message: error instanceof Error ? error.message : "Profile could not be loaded" });
     }
+  }
+
+  private async recoverUnexpectedSignOut(previousSession: Session, attempt = 0) {
+    if (!this.client || this.lastAuthenticatedSession !== previousSession) {
+      this.recoveringUnexpectedSignOut = false;
+      return;
+    }
+    const { data, error } = await this.client.auth.refreshSession({ refresh_token: previousSession.refresh_token });
+    if (data.session) {
+      this.session = data.session;
+      this.lastAuthenticatedSession = data.session;
+      this.finishSessionRecovery();
+      return;
+    }
+    if (isTerminalSessionFailure(error) || !error) {
+      console.warn("[auth] Supabase rejected the stored session; interactive sign-in is required.");
+      window.clearTimeout(this.hydrationRetryTimer);
+      window.clearTimeout(this.authRecoveryTimer);
+      this.session = null;
+      this.lastAuthenticatedSession = null;
+      this.recoveringUnexpectedSignOut = false;
+      this.setSocial(initialSocial);
+      this.setState({ status: "signed-out" });
+      return;
+    }
+    console.warn(`[auth] Session refresh was interrupted; retrying in ${sessionRetryDelay(attempt)}ms.`);
+    this.session = previousSession;
+    this.recoveringUnexpectedSignOut = false;
+    this.setSocial({
+      ...this.social,
+      loading: false,
+      error: "Connection interrupted. Your session is being restored.",
+    });
+    window.clearTimeout(this.authRecoveryTimer);
+    this.authRecoveryTimer = window.setTimeout(() => {
+      if (!this.lastAuthenticatedSession || this.state.status !== "signed-in") return;
+      this.recoveringUnexpectedSignOut = true;
+      void this.recoverUnexpectedSignOut(this.lastAuthenticatedSession, attempt + 1);
+    }, sessionRetryDelay(attempt));
+  }
+
+  private finishSessionRecovery() {
+    window.clearTimeout(this.authRecoveryTimer);
+    this.recoveringUnexpectedSignOut = false;
+    if (this.social.error.startsWith("Connection interrupted.")) this.setSocial({ ...this.social, error: "" });
   }
 
   private async connectPresence() {
@@ -571,7 +669,9 @@ class AccountSession {
     };
     let response = await send(session);
     if (response.status === 401 && this.client) {
-      const refreshed = await this.client.auth.refreshSession({ refresh_token: session.refresh_token });
+      // Let Supabase refresh its current persisted session under its own lock.
+      // Passing the request's older refresh token here can race token rotation.
+      const refreshed = await this.client.auth.refreshSession();
       if (refreshed.data.session) {
         session = refreshed.data.session;
         this.session = session;
