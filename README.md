@@ -2,9 +2,10 @@
 
 MHTalk is a Windows desktop application for persistent voice rooms, video,
 screen sharing, room chat, private invitations, file exchange and local screen
-recording. The desktop client is built with Tauri, Rust, React, Supabase and
-LiveKit, with a capability-gated multi-provider routing broker for the public
-Beta.
+recording. The desktop client is built with Tauri, Rust, React and Supabase.
+Stream, Agora, Tencent, Whereby Embedded, Daily and LiveKit are its currently
+shipped realtime adapters, selected by a capability-gated routing broker for
+the public Beta.
 
 ## Account system
 

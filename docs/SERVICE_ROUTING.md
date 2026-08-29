@@ -6,22 +6,22 @@ entitlements. Both clients accept the same response contract:
 ```json
 {
   "routing": {
-    "rtc": { "provider": "livekit", "serverUrl": "wss://…" },
-    "messaging": { "provider": "livekit-data" },
-    "files": { "provider": "livekit-stream" }
+    "rtc": { "provider": "daily", "serverUrl": "https://…daily.co/…" },
+    "messaging": { "provider": "daily-chat" },
+    "files": { "provider": "daily-prebuilt" }
   },
   "subscription": { "tier": "free", "entitlements": {} }
 }
 ```
 
-The current production adapters remain LiveKit for calls, live messages and
-ephemeral files. The broker models eleven service integrations: Stream, Agora,
-100ms, Daily and LiveKit for RTC; Cloudflare Durable Objects, Supabase Realtime
-and Firebase for messaging; and Cloudflare R2, Supabase Storage and Backblaze
-B2 for files. A
-provider must not be returned as active until its server credential issuer and
-both native client adapters are installed and integration-tested. This prevents
-a quota failover from silently dropping camera, audio or room data.
+The current working tree contains Stream, Agora, Tencent, Whereby Embedded,
+Daily Prebuilt and LiveKit adapters. Daily is a legacy Beta path and is not part
+of the target zero-budget portfolio.
+`PROVIDER_PORTFOLIO.md` is the authoritative list of the eleven target RTC
+providers and their activation order. A provider must not be returned as active
+until its server credential issuer and both native client adapters are installed
+and integration-tested. This prevents a quota failover from silently dropping
+camera, audio or room data.
 
 `GET /service/capabilities` reports the active route and which RTC candidates
 are ready. Secrets are never included in this response or stored in a client.
@@ -32,9 +32,9 @@ are ready. Secrets are never included in this response or stored in a client.
   never split across vendors, and existing members stay together.
 - Clients send their supported adapter list. The broker cannot return a vendor
   that the installed Windows or Android build cannot use.
-- At 70% usage operations are warned. At 85% a provider drains and receives no
-  new rooms when another healthy adapter exists. At 95% it is exhausted and
-  new/reconnecting rooms migrate to the next compatible provider.
+- Thresholds are provider-specific. Cloudflare warns at 45%, loses priority at
+  50%, drains at 55%, and is disabled at 60%. Other providers use limits defined
+  in their verified quota policy rather than one unsafe global percentage.
 - `POST /service/provider-health` updates measured usage or disables a provider.
   It requires the `ROUTING_ADMIN_KEY` bearer secret. This endpoint is designed
   for a scheduled quota collector; it is not callable by the apps.
@@ -42,9 +42,10 @@ are ready. Secrets are never included in this response or stored in a client.
   on both clients. A failed provider therefore produces a clear error instead
   of an infinite spinner.
 
-Only LiveKit has a shipped end-to-end adapter today. The other entries remain
-visibly unavailable until their credentials and both client SDK adapters are
-deployed. This is an intentional release-safety rule, not a placeholder route.
+Stream, Agora, Tencent and Whereby are deployed end to end. Every other target
+entry remains visibly unavailable until its credentials and both client
+adapters are deployed. This is an intentional release-safety rule, not a
+placeholder route.
 
 ## Account plans
 

@@ -51,6 +51,8 @@ import { startLavaMembership, syncLavaMembership } from "./services/membershipSe
 const initial: SessionSnapshot = {
   state: "idle",
   roomName: null,
+  rtcProvider: null,
+  embeddedCallUrl: null,
   microphoneEnabled: true,
   localSpeaking: false,
   cameraEnabled: false,
@@ -129,7 +131,7 @@ const infoPages: Record<InfoPage, { title: string; paragraphs: string[] }> = {
     title: "Privacy Policy",
     paragraphs: [
       "Your account identifier, username, email address, profile, friend relationships, blocks and notification tokens are hosted by Supabase. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk. Google supplies basic account information only when you choose Google sign-in.",
-      "MHTalk does not sell personal data. Live room media and messages are transmitted through LiveKit. Files, recordings and recovered recording pieces remain on the device paths selected by you unless you deliberately send them.",
+      "MHTalk does not sell personal data. Live room media and messages are transmitted through the active realtime provider, currently Daily or LiveKit. Files, recordings and recovered recording pieces remain on the device paths selected by you unless you deliberately send them.",
       "People in a room may capture or redistribute what they receive. Share only what you are comfortable revealing and use private invitations carefully.",
       "You can sign out, remove your profile photo, leave a room, delete local recordings and stop camera, microphone or screen sharing at any time. Contact MHTalk to request account deletion.",
     ],
@@ -1060,7 +1062,7 @@ export function App() {
 
   return (
     <main
-      className="app-shell"
+      className={`app-shell ${session.rtcProvider === "daily" || session.rtcProvider === "whereby" ? "embedded-provider" : ""}`}
       style={{ "--chat-width": `${chatWidth}px` } as React.CSSProperties}
       onContextMenu={(event) => event.preventDefault()}
       onDragEnter={(event) => {
@@ -1341,8 +1343,16 @@ export function App() {
           </span>
         </header>
 
-        <div className="stage">
-          {active ? (
+        <div className={`stage ${session.rtcProvider === "daily" || session.rtcProvider === "whereby" ? "embedded-stage" : ""}`}>
+          {active && (session.rtcProvider === "daily" || session.rtcProvider === "whereby") && session.embeddedCallUrl ? (
+            <iframe
+              className="embedded-call-frame"
+              src={session.embeddedCallUrl}
+              title={`${displayRoomName} call`}
+              allow="camera; microphone; display-capture; autoplay; fullscreen"
+              referrerPolicy="strict-origin-when-cross-origin"
+            />
+          ) : active ? (
             <div
               id="media-stage"
               className="media-stage"
@@ -1400,7 +1410,7 @@ export function App() {
           )}
         </div>
 
-        <footer className="controls">
+        {session.rtcProvider !== "daily" && session.rtcProvider !== "whereby" && <footer className="controls">
           <button
             className="control icon-control record-control"
             onClick={openRecorderStudio}
@@ -1463,10 +1473,10 @@ export function App() {
           >
             📞
           </button>
-        </footer>
+        </footer>}
       </section>
-      <div className="chat-resizer" onPointerDown={resizeChat} />
-      <aside className={`chat-panel ${dragging ? "dragging" : ""}`}>
+      {session.rtcProvider !== "daily" && session.rtcProvider !== "whereby" && <div className="chat-resizer" onPointerDown={resizeChat} />}
+      {session.rtcProvider !== "daily" && session.rtcProvider !== "whereby" && <aside className={`chat-panel ${dragging ? "dragging" : ""}`}>
         <div className="chat-header">
           <strong>Room chat</strong>
           <small>
@@ -1756,7 +1766,7 @@ export function App() {
             ))}
           </div>
         )}
-      </aside>
+      </aside>}
       {privateDialogOpen && (
         <div className="modal-backdrop" role="presentation">
           <section
@@ -1880,8 +1890,8 @@ export function App() {
           <section className="private-modal support-modal" role="dialog" aria-modal="true" aria-label="MHTalk Beta and support">
             <button className="modal-close" onClick={() => setSupportOpen(false)}>×</button>
             <div className="support-heading"><span>?</span><div><h2>MHTalk Beta</h2><small>Zero-budget public testing</small></div></div>
-            <p>MHTalk Beta currently uses LiveKit for calls. Its free monthly capacity can pause new connections until the quota resets.</p>
-            <p>The safe multi-provider broker is ready, but another call provider will not be activated until its credentials and tested Windows/Android adapters are installed. We never pretend an unavailable provider is usable.</p>
+            <p>MHTalk Beta selects among compatible free realtime providers. Stream, Agora, Tencent, Whereby, Daily and LiveKit are used only when their server route and this app version are ready.</p>
+            <p>The server selects a provider before the room opens and retries the next compatible provider if room creation fails. Active rooms are never moved between incompatible providers.</p>
             <div className="support-note"><strong>You can help without paying.</strong><span>Sharing MHTalk with friends is one of the most useful ways to help this small project reach sustainable hosting.</span></div>
             <p className="support-membership">One active membership is planned to unlock premium features in both MHTalk and MVDownloader.</p>
             {membershipMessage && <div className="support-membership-status">{membershipMessage}</div>}

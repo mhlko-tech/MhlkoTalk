@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 LIVEKIT_URL = "https://mhtalkremake-utuei6i7.livekit.cloud"
-RTC_PROVIDER_ORDER = "stream,agora,100ms,daily,livekit"
+RTC_PROVIDER_ORDER = "stream,agora,tencent,cloudflare-realtime,whereby,100ms,daily,livekit"
 LAVA_MEMBERSHIP_BACKEND_URL = "https://mvdownloader-lava-staging.mhlkotalk.workers.dev"
 
 [[kv_namespaces]]
@@ -16,6 +16,25 @@ id = "3ced063544014961bd3aa2b5af26db09"
 name = "PRESENCE"
 class_name = "PresenceHub"
 
+[[durable_objects.bindings]]
+name = "CLOUDFLARE_RTC_ROOMS"
+class_name = "CloudflareRtcRoom"
+
+[[durable_objects.bindings]]
+name = "CLOUDFLARE_RTC_USAGE"
+class_name = "CloudflareRtcUsage"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PresenceHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["CloudflareRtcRoom"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["CloudflareRtcUsage"]
+
+[triggers]
+crons = ["*/10 * * * *"]

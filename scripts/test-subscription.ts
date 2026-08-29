@@ -38,4 +38,18 @@ assert.equal(routing.messaging.provider, "cloudflare-realtime");
 assert.equal(routing.files.provider, "cloudflare-r2");
 assert.equal(routing.subscription.tier, "plus");
 
+const agoraRouting = parseRoomServiceRouting(
+  {
+    routing: {
+      rtc: { provider: "agora", serverUrl: "", clientKey: "public-app-id" },
+      messaging: { provider: "agora-data" },
+      files: { provider: "supabase-storage" },
+    },
+  },
+  "wss://fallback.example",
+);
+assert.equal(agoraRouting.rtc.provider, "agora");
+assert.equal(agoraRouting.rtc.clientKey, "public-app-id");
+assert.equal(agoraRouting.messaging.provider, "agora-data");
+
 console.log("subscription and service-routing tests passed");

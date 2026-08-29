@@ -1,4 +1,6 @@
 import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
+import { StreamClient } from "@stream-io/node-sdk";
+import { RtcRole, RtcTokenBuilder } from "agora-token";
 import { moderateMainMessage } from "../../src/core/moderation";
 import { emailError, passwordError, usernameError } from "../../src/core/authRules";
 import {
@@ -9,6 +11,10 @@ import {
   updateProviderHealth,
   type RtcProviderId,
 } from "./providerRouting";
+import { generateTencentUserSig } from "./tencentUserSig";
+import { CloudflareRtcRoom, CloudflareRtcUsage, proxyCloudflareRtc } from "./cloudflareRtc";
+
+export { CloudflareRtcRoom, CloudflareRtcUsage };
 
 export interface Env {
   LIVEKIT_API_KEY: string;
@@ -17,6 +23,8 @@ export interface Env {
   INVITE_SIGNING_KEY: string;
   PRIVATE_ROOMS: KVNamespace;
   PRESENCE: DurableObjectNamespace;
+  CLOUDFLARE_RTC_ROOMS: DurableObjectNamespace;
+  CLOUDFLARE_RTC_USAGE: DurableObjectNamespace;
   SUPABASE_URL?: string;
   SUPABASE_PUBLISHABLE_KEY?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
@@ -29,8 +37,13 @@ export interface Env {
   STREAM_API_SECRET?: string;
   AGORA_APP_ID?: string;
   AGORA_APP_CERTIFICATE?: string;
+  TENCENT_SDK_APP_ID?: string;
+  TENCENT_SECRET_KEY?: string;
+  CLOUDFLARE_REALTIME_APP_ID?: string;
+  CLOUDFLARE_REALTIME_API_TOKEN?: string;
   HMS_ACCESS_KEY?: string;
   HMS_APP_SECRET?: string;
+  WHEREBY_API_KEY?: string;
   DAILY_API_KEY?: string;
   ROUTING_ADMIN_KEY?: string;
   LAVA_MEMBERSHIP_BACKEND_URL?: string;
@@ -59,7 +72,7 @@ const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
 const headers = {
   "content-type": "application/json",
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
+  "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "access-control-allow-headers": "authorization, content-type",
 };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers });
@@ -102,27 +115,51 @@ function subscriptionFor(profile: Profile | null) {
   const tier = plusIsCurrent ? "plus" : "free";
   return { tier, expiresAt, entitlements: subscriptionEntitlements[tier] };
 }
-function serviceRouting(env: Env, profile: Profile | null, provider: RtcProviderId) {
-  if (provider !== "livekit") throw new Error(`RTC adapter ${provider} is not deployed`);
+function serviceRouting(env: Env, profile: Profile | null, provider: RtcProviderId, providerUrl?: string) {
+  if (provider !== "stream" && provider !== "agora" && provider !== "tencent" && provider !== "cloudflare-realtime" && provider !== "whereby" && provider !== "daily" && provider !== "livekit")
+    throw new Error(`RTC adapter ${provider} is not deployed`);
+  const daily = provider === "daily";
+  const whereby = provider === "whereby";
+  const stream = provider === "stream";
+  const agora = provider === "agora";
+  const tencent = provider === "tencent";
+  const cloudflare = provider === "cloudflare-realtime";
   return {
-    rtc: { provider, serverUrl: env.LIVEKIT_URL.replace(/^http/, "ws") },
-    messaging: { provider: "livekit-data" },
-    files: { provider: "livekit-stream" },
+    rtc: {
+      provider,
+      serverUrl: daily || whereby || cloudflare ? providerUrl || "" : stream || agora || tencent ? "" : env.LIVEKIT_URL.replace(/^http/, "ws"),
+      ...(stream ? { clientKey: env.STREAM_API_KEY || "" } : {}),
+      ...(agora ? { clientKey: env.AGORA_APP_ID || "" } : {}),
+      ...(tencent ? { clientKey: env.TENCENT_SDK_APP_ID || "" } : {}),
+    },
+    messaging: { provider: daily ? "daily-chat" : whereby ? "whereby-chat" : cloudflare ? "cloudflare-realtime" : stream ? "stream-events" : agora ? "agora-data" : tencent ? "tencent-data" : "livekit-data" },
+    files: { provider: daily ? "daily-prebuilt" : whereby ? "whereby-prebuilt" : stream || agora || tencent || cloudflare ? "supabase-storage" : "livekit-stream" },
     subscription: subscriptionFor(profile),
   } as const;
 }
 async function serviceCapabilities(env: Env) {
   const rtc = await rtcCapabilities(env);
+  const activeRtc = rtc.find((item) => item.ready)?.provider || null;
   return {
     active: {
-      rtc: rtc.find((item) => item.ready)?.provider || null,
-      messaging: "livekit-data",
-      files: "livekit-stream",
+      rtc: activeRtc,
+      messaging: activeRtc === "daily" ? "daily-chat" : activeRtc === "whereby" ? "whereby-chat" : activeRtc === "cloudflare-realtime" ? "cloudflare-realtime" : activeRtc === "stream" ? "stream-events" : activeRtc === "agora" ? "agora-data" : activeRtc === "tencent" ? "tencent-data" : "livekit-data",
+      files: activeRtc === "daily" ? "daily-prebuilt" : activeRtc === "whereby" ? "whereby-prebuilt" : activeRtc === "stream" || activeRtc === "agora" || activeRtc === "tencent" || activeRtc === "cloudflare-realtime" ? "supabase-storage" : "livekit-stream",
     },
-    thresholds: { warningPercent: 70, drainPercent: 85, migratePercent: 95 },
+    thresholds: {
+      default: { warningPercent: 70, drainPercent: 85, migratePercent: 95 },
+      "cloudflare-realtime": {
+        warningPercent: 45,
+        lowerPriorityPercent: 50,
+        stopNewRoomsPercent: 55,
+        disablePercent: 60,
+        telemetryMaxAgeMinutes: 20,
+        accountingSafetyMarginPercent: 25,
+      },
+    },
     rtc,
-    messaging: ["livekit-data", "cloudflare-realtime", "supabase-realtime", "firebase"],
-    files: ["livekit-stream", "cloudflare-r2", "supabase-storage", "backblaze-b2"],
+    messaging: ["daily-chat", "whereby-chat", "livekit-data", "stream-events", "agora-data", "tencent-data", "cloudflare-realtime", "supabase-realtime", "firebase"],
+    files: ["daily-prebuilt", "whereby-prebuilt", "livekit-stream", "cloudflare-r2", "supabase-storage", "backblaze-b2"],
   };
 }
 const publicPage = (title: string, body: string) => new Response(`<!doctype html>
@@ -132,7 +169,7 @@ const publicPage = (title: string, body: string) => new Response(`<!doctype html
   headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff" },
 });
 const homePage = () => publicPage("MHTalk", `<p>MHTalk is a voice, video, screen-sharing and social rooms app for Android and Windows.</p><p>Sign in securely with your username or email and password, or continue with Google, to keep your profile and friends available across your devices.</p>`);
-const privacyPage = () => publicPage("Privacy Policy", `<p>Last updated: August 26, 2026.</p><h2>Data we use</h2><p>When you create or use an account, MHTalk stores your account identifier, username, email address, profile name and picture, friend relationships, blocks, and notification device tokens. Supabase hosts this account data and Cloudflare routes authenticated requests. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk.</p><h2>Calls and files</h2><p>LiveKit carries live voice, camera and screen sharing. Chat attachments and live media are not stored by the MHTalk account backend. Room invitations and presence data are temporary.</p><h2>Purpose and sharing</h2><p>We use this data only to provide authentication, account recovery, profiles, friends, presence, room invitations and notifications. Google supplies basic account information only when you choose Google sign-in. We do not sell personal data.</p><h2>Your choices</h2><p>You may sign out, disable notifications, edit your profile, or contact us to request deletion of your account data.</p>`);
+const privacyPage = () => publicPage("Privacy Policy", `<p>Last updated: August 28, 2026.</p><h2>Data we use</h2><p>When you create or use an account, MHTalk stores your account identifier, username, email address, profile name and picture, friend relationships, blocks, and notification device tokens. Supabase hosts this account data and Cloudflare routes authenticated requests. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk.</p><h2>Calls and files</h2><p>The selected compatible realtime provider carries live voice, camera, screen sharing, chat and short room events. The routing response tells the app which service is active before a room opens. Live media is not stored by the MHTalk account backend. Room invitations and presence data are temporary.</p><h2>Purpose and sharing</h2><p>We use this data only to provide authentication, account recovery, profiles, friends, presence, room invitations and notifications. Google supplies basic account information only when you choose Google sign-in. We do not sell personal data.</p><h2>Your choices</h2><p>You may sign out, disable notifications, edit your profile, or contact us to request deletion of your account data.</p>`);
 const termsPage = () => publicPage("Terms of Service", `<p>Last updated: August 25, 2026.</p><p>Use MHTalk lawfully and respectfully. Do not abuse rooms, harass others, distribute illegal material, evade moderation, or attempt to compromise the service or other users.</p><p>You are responsible for content you transmit. Network, device and third-party service conditions can affect call quality and availability. The service is provided as available, without removing rights that cannot legally be waived.</p><p>Accounts or access may be limited when necessary to protect users or the service.</p>`);
 const oauthCompletePage = (request: Request) => {
   const incoming = new URL(request.url);
@@ -610,6 +647,240 @@ async function issueToken(roomName: string, env: Env, user: AuthUser | null, pro
   return token.toJwt();
 }
 
+async function issueStreamToken(env: Env, user: AuthUser | null) {
+  if (!env.STREAM_API_KEY || !env.STREAM_API_SECRET) {
+    throw new Error("Stream is not configured");
+  }
+  const identity = user?.id || `guest-${crypto.randomUUID()}`;
+  const serverClient = new StreamClient(env.STREAM_API_KEY, env.STREAM_API_SECRET);
+  return serverClient.generateUserToken({
+    user_id: identity,
+    validity_in_seconds: 6 * 60 * 60,
+  });
+}
+
+type AgoraCredentials = {
+  token: string;
+  identity: string;
+  screenToken: string;
+  screenIdentity: string;
+};
+
+function issueAgoraCredentials(
+  roomName: string,
+  env: Env,
+  user: AuthUser | null,
+): AgoraCredentials {
+  if (!env.AGORA_APP_ID || !env.AGORA_APP_CERTIFICATE) {
+    throw new Error("Agora is not configured");
+  }
+  const identity = user?.id || `guest-${crypto.randomUUID()}`;
+  const screenIdentity = `${identity}:screen`;
+  const tokenLifetimeSeconds = 60 * 60;
+  const create = (account: string) => RtcTokenBuilder.buildTokenWithUserAccount(
+    env.AGORA_APP_ID!,
+    env.AGORA_APP_CERTIFICATE!,
+    roomName,
+    account,
+    RtcRole.PUBLISHER,
+    tokenLifetimeSeconds,
+    tokenLifetimeSeconds,
+  );
+  return {
+    token: create(identity),
+    identity,
+    screenToken: create(screenIdentity),
+    screenIdentity,
+  };
+}
+
+type TencentCredentials = {
+  token: string;
+  identity: string;
+};
+
+function tencentIdentity(user: AuthUser | null) {
+  const normalized = (user?.id || crypto.randomUUID())
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .replaceAll("-", "")
+    .slice(0, 32);
+  return normalized || crypto.randomUUID().replaceAll("-", "");
+}
+
+async function issueTencentCredentials(env: Env, user: AuthUser | null): Promise<TencentCredentials> {
+  const sdkAppId = Number(env.TENCENT_SDK_APP_ID);
+  if (!Number.isSafeInteger(sdkAppId) || sdkAppId <= 0 || !env.TENCENT_SECRET_KEY) {
+    throw new Error("Tencent RTC is not configured");
+  }
+  const identity = tencentIdentity(user);
+  return {
+    token: await generateTencentUserSig(sdkAppId, identity, env.TENCENT_SECRET_KEY),
+    identity,
+  };
+}
+
+async function issueCloudflareCredentials(
+  request: Request,
+  env: Env,
+  roomName: string,
+  user: AuthUser | null,
+) {
+  if (!env.CLOUDFLARE_REALTIME_APP_ID || !env.CLOUDFLARE_REALTIME_API_TOKEN) {
+    throw new Error("Cloudflare Realtime is not configured");
+  }
+  const identity = user?.id || `guest-${crypto.randomUUID()}`;
+  const ticket = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
+  const roomKey = await digest(`cloudflare-rtc-room:${roomName}`);
+  await env.PRIVATE_ROOMS.put(
+    `rtc:cloudflare:ticket:${ticket}`,
+    JSON.stringify({ identity, roomKey }),
+    { expirationTtl: 90 },
+  );
+  return {
+    token: ticket,
+    identity,
+    serverUrl: `${new URL(request.url).origin}/rtc/cloudflare`,
+  };
+}
+
+type WherebyRoom = {
+  meetingId?: string;
+  roomUrl?: string;
+  endDate?: string;
+};
+
+async function ensureWherebyRoom(env: Env, roomName: string) {
+  if (!env.WHEREBY_API_KEY) throw new Error("Whereby is not configured");
+  const cacheKey = `routing:whereby:room:${await digest(roomName)}`;
+  const cached = await env.PRIVATE_ROOMS.get(cacheKey, "json") as WherebyRoom | null;
+  if (cached?.meetingId && cached.roomUrl && cached.endDate && new Date(cached.endDate).getTime() > Date.now() + 60_000) {
+    return cached as Required<WherebyRoom>;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const endDate = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
+    const response = await fetch("https://api.whereby.dev/v1/meetings", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${env.WHEREBY_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        endDate,
+        isLocked: false,
+        roomMode: "group",
+        roomNamePrefix: "mhtalk-",
+        roomNamePattern: "uuid",
+      }),
+    });
+    if (!response.ok) throw new Error(`Whereby room service returned ${response.status}`);
+    const room = await response.json() as WherebyRoom;
+    if (!room.meetingId || !room.roomUrl) throw new Error("Whereby returned an invalid room");
+    const stored = { ...room, endDate: room.endDate || endDate } as Required<WherebyRoom>;
+    await env.PRIVATE_ROOMS.put(cacheKey, JSON.stringify(stored), { expirationTtl: 2 * 60 * 60 });
+    return stored;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function issueWherebyCredentials(env: Env, roomName: string) {
+  const room = await ensureWherebyRoom(env, roomName);
+  return { token: room.meetingId, roomUrl: room.roomUrl };
+}
+
+type DailyRoom = { name?: string; url?: string };
+
+async function dailyRequest(env: Env, path: string, init: RequestInit = {}) {
+  if (!env.DAILY_API_KEY) throw new Error("Daily is not configured");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    return await fetch(`https://api.daily.co/v1${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${env.DAILY_API_KEY}`,
+        "content-type": "application/json",
+        ...(init.headers || {}),
+      },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function dailyRoomName(roomName: string) {
+  return `mhtalk-${(await digest(`daily-room:${roomName}`)).slice(0, 40)}`;
+}
+
+async function ensureDailyRoom(env: Env, roomName: string) {
+  const cacheKey = `routing:daily:room:${await digest(roomName)}`;
+  const cached = await env.PRIVATE_ROOMS.get(cacheKey, "json") as DailyRoom | null;
+  if (cached?.name && cached.url) return cached as Required<DailyRoom>;
+
+  const name = await dailyRoomName(roomName);
+  let response = await dailyRequest(env, `/rooms/${encodeURIComponent(name)}`);
+  if (response.status === 404) {
+    response = await dailyRequest(env, "/rooms", {
+      method: "POST",
+      body: JSON.stringify({
+        name,
+        privacy: "private",
+        properties: {
+          enable_chat: true,
+          enable_screenshare: true,
+          start_video_off: true,
+          start_audio_off: false,
+          enable_people_ui: true,
+          enable_network_ui: true,
+          enable_prejoin_ui: false,
+          enable_noise_cancellation_ui: true,
+        },
+      }),
+    });
+    if (response.status === 400 || response.status === 409)
+      response = await dailyRequest(env, `/rooms/${encodeURIComponent(name)}`);
+  }
+  if (!response.ok) throw new Error(`Daily room service returned ${response.status}`);
+  const room = await response.json() as DailyRoom;
+  if (!room.name || !room.url) throw new Error("Daily returned an invalid room");
+  await env.PRIVATE_ROOMS.put(cacheKey, JSON.stringify(room), { expirationTtl: 86_400 });
+  return room as Required<DailyRoom>;
+}
+
+async function issueDailyCredentials(
+  roomName: string,
+  env: Env,
+  user: AuthUser | null,
+  profile: Profile | null,
+) {
+  const room = await ensureDailyRoom(env, roomName);
+  const expires = Math.floor(Date.now() / 1000) + 2 * 60 * 60;
+  const response = await dailyRequest(env, "/meeting-tokens", {
+    method: "POST",
+    body: JSON.stringify({
+      properties: {
+        room_name: room.name,
+        user_id: (user?.id || crypto.randomUUID()).slice(0, 36),
+        user_name: (profile?.display_name || profile?.username || "MHTalk member").slice(0, 60),
+        exp: expires,
+        eject_at_token_exp: true,
+        start_video_off: true,
+        start_audio_off: false,
+        enable_screenshare: true,
+      },
+    }),
+  });
+  if (!response.ok) throw new Error(`Daily token service returned ${response.status}`);
+  const payload = await response.json() as { token?: string };
+  if (!payload.token) throw new Error("Daily returned an invalid meeting token");
+  return { token: payload.token, roomUrl: room.url };
+}
+
 let googleAccessToken: { token: string; expiresAt: number } | null = null;
 async function firebaseAccessToken(env: Env) {
   if (googleAccessToken && googleAccessToken.expiresAt > Date.now() + 60_000) return googleAccessToken.token;
@@ -834,6 +1105,27 @@ export default {
       return json({ provider: body.provider, ...health });
     }
     if (request.method === "OPTIONS") return new Response(null, { headers });
+    if (path === "/rtc/cloudflare/room" && request.method === "GET") {
+      const ticket = url.searchParams.get("ticket") || "";
+      const key = `rtc:cloudflare:ticket:${ticket}`;
+      const value = await env.PRIVATE_ROOMS.get(key, "json") as { identity?: string; roomKey?: string } | null;
+      if (!value?.identity || !value.roomKey) return json({ error: "RTC ticket is invalid or expired" }, 401);
+      await env.PRIVATE_ROOMS.delete(key);
+      const room = env.CLOUDFLARE_RTC_ROOMS.get(env.CLOUDFLARE_RTC_ROOMS.idFromName(value.roomKey));
+      const forwarded = new Request(request, { headers: new Headers(request.headers) });
+      forwarded.headers.set("x-mhtalk-user-id", value.identity);
+      return room.fetch(forwarded);
+    }
+    if (path.startsWith("/rtc/cloudflare/partytracks")) {
+      const auth = await authenticate(request, env);
+      if (auth instanceof Response) return auth;
+      const onboarding = await requireCompletedOnboarding(env, auth);
+      if (onboarding) return onboarding;
+      if (await rateLimited(request, env, "cloudflare-rtc-api", auth.id, 600, 60)) {
+        return json({ error: "Too many RTC negotiation requests" }, 429);
+      }
+      return proxyCloudflareRtc(request, env);
+    }
     if (path.startsWith("/auth/")) return handleAuth(request, env, path);
     if (path === "/presence" && request.method === "GET") {
       const ticket = url.searchParams.get("ticket") || "";
@@ -939,29 +1231,78 @@ export default {
     if (!allowedRoom.test(roomName)) return json({ error: "Invalid room name" }, 400);
     if (roomName !== "Main" && typeof body?.inviteCode !== "string") return json({ error: "Private code required" }, 403);
     const profile = auth ? await profileFor(env, auth) : null;
-    const selected = await selectRtcProvider(
-      env,
-      roomName,
-      parseRtcProviders(body?.supportedRtcProviders),
-      Array.isArray(body?.excludedRtcProviders)
-        ? [...new Set(body.excludedRtcProviders.map((value) => String(value).toLowerCase()).filter(isRtcProvider))]
-        : [],
-    );
-    if (!selected) {
+    const supportedProviders = parseRtcProviders(body?.supportedRtcProviders);
+    const excludedProviders = Array.isArray(body?.excludedRtcProviders)
+      ? [...new Set(body.excludedRtcProviders.map((value) => String(value).toLowerCase()).filter(isRtcProvider))]
+      : [];
+    let selected = await selectRtcProvider(env, roomName, supportedProviders, excludedProviders);
+    let providerToken = "";
+    let providerUrl: string | undefined;
+    let providerIdentity: string | undefined;
+    let screenToken: string | undefined;
+    let screenIdentity: string | undefined;
+    while (selected) {
+      try {
+        if (selected.provider === "daily") {
+          const daily = await issueDailyCredentials(roomName, env, auth, profile);
+          providerToken = daily.token;
+          providerUrl = daily.roomUrl;
+        } else if (selected.provider === "stream") {
+          providerToken = await issueStreamToken(env, auth);
+          providerIdentity = auth?.id;
+        } else if (selected.provider === "agora") {
+          const agora = issueAgoraCredentials(roomName, env, auth);
+          providerToken = agora.token;
+          providerIdentity = agora.identity;
+          screenToken = agora.screenToken;
+          screenIdentity = agora.screenIdentity;
+        } else if (selected.provider === "tencent") {
+          const tencent = await issueTencentCredentials(env, auth);
+          providerToken = tencent.token;
+          providerIdentity = tencent.identity;
+        } else if (selected.provider === "cloudflare-realtime") {
+          const cloudflare = await issueCloudflareCredentials(request, env, roomName, auth);
+          providerToken = cloudflare.token;
+          providerIdentity = cloudflare.identity;
+          providerUrl = cloudflare.serverUrl;
+        } else if (selected.provider === "whereby") {
+          const whereby = await issueWherebyCredentials(env, roomName);
+          providerToken = whereby.token;
+          providerUrl = whereby.roomUrl;
+        } else {
+          providerToken = await issueToken(roomName, env, auth, profile);
+          providerIdentity = auth?.id;
+        }
+        break;
+      } catch {
+        excludedProviders.push(selected.provider);
+        selected = await selectRtcProvider(env, roomName, supportedProviders, excludedProviders);
+      }
+    }
+    if (!selected || !providerToken) {
       return json({
         error: "All compatible realtime providers are temporarily unavailable",
         code: "RTC_CAPACITY_UNAVAILABLE",
         retryAfterSeconds: 20,
       }, 503);
     }
-    const routing = serviceRouting(env, profile, selected.provider);
+    const routing = serviceRouting(env, profile, selected.provider, providerUrl);
     return json({
-      token: await issueToken(roomName, env, auth, profile),
+      token: providerToken,
+      ...(providerIdentity ? { identity: providerIdentity } : {}),
+      ...(screenToken ? { screenToken } : {}),
+      ...(screenIdentity ? { screenIdentity } : {}),
       roomName,
       provider: routing.rtc.provider,
       serverUrl: routing.rtc.serverUrl,
       routing,
       subscription: routing.subscription,
     });
+  },
+  async scheduled(_controller: ScheduledController, env: Env) {
+    const usage = env.CLOUDFLARE_RTC_USAGE.get(
+      env.CLOUDFLARE_RTC_USAGE.idFromName("account-egress"),
+    );
+    await usage.fetch("https://internal/usage/refresh", { method: "POST" });
   },
 };

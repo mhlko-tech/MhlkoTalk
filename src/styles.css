@@ -34,6 +34,22 @@ button {
   background:
     radial-gradient(circle at 70% 0%, #27245c 0, transparent 40%), #101321;
 }
+.app-shell.embedded-provider {
+  grid-template-columns: 260px minmax(0, 1fr);
+}
+.stage.embedded-stage {
+  min-height: 0;
+  padding: 12px;
+  place-items: stretch;
+}
+.embedded-call-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 14px;
+  background: #0d101c;
+}
 .sidebar {
   display: flex;
   flex-direction: column;

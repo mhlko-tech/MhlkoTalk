@@ -8,7 +8,10 @@
     "check": "tsc --noEmit"
   },
   "dependencies": {
-    "livekit-server-sdk": "^2.13.2"
+    "@stream-io/node-sdk": "^0.7.63",
+    "agora-token": "^2.0.5",
+    "livekit-server-sdk": "^2.13.2",
+    "partytracks": "^0.0.56"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260714.1",

@@ -1,3 +1,5 @@
+import type { RtcProviderId } from "./rtcProviders";
+
 export type SessionState =
   | "idle"
   | "connecting"
@@ -10,6 +12,8 @@ export type MediaQuality = "low" | "medium" | "high";
 export interface SessionSnapshot {
   state: SessionState;
   roomName: string | null;
+  rtcProvider: RtcProviderId | null;
+  embeddedCallUrl: string | null;
   microphoneEnabled: boolean;
   localSpeaking: boolean;
   cameraEnabled: boolean;
