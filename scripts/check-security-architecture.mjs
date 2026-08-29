@@ -6,6 +6,7 @@ const requireMatch = (value, pattern, message) => { if (!pattern.test(value)) fa
 const requireAbsent = (value, pattern, message) => { if (pattern.test(value)) failures.push(message); };
 
 const worker = read('worker/src/index.ts');
+const livekitToken = read('worker/src/livekitToken.ts');
 const realtime = read('src/services/realtime.ts');
 const profileAssets = read('src/services/profileAssets.ts');
 const app = read('src/App.tsx');
@@ -25,6 +26,12 @@ requireMatch(worker, /parsed\.from = source\.peerId;/, 'Worker must overwrite cl
 requireMatch(worker, /parsed\.profile = sanitizePublicProfile/, 'Worker must strip heavy and unknown fields from signaling profiles.');
 requireMatch(worker, /this\.ctx\.storage\.get<ProfileAsset>\(keys\)/, 'Profile assets must use a batch storage read.');
 requireMatch(worker, /authorizedProfileAttachment/, 'Profile REST access must be authorized by an approved socket token.');
+requireMatch(worker, /handleMediaTokenRequest[\s\S]+authorizedProfileAttachment\(request\)/, 'SFU tokens must require an approved room socket token.');
+requireMatch(worker, /LIVEKIT_API_SECRET/, 'SFU token signing secret must come from the Worker environment.');
+requireAbsent(worker, /participant_token:\s*['"`]/, 'SFU participant tokens must never be embedded in Worker source.');
+requireMatch(livekitToken, /exp:\s*nowSeconds \+ 5 \* 60/, 'SFU join tokens must remain short-lived.');
+requireMatch(livekitToken, /canPublishData:\s*false/, 'The media SFU must not become an untracked durable chat path.');
+requireMatch(livekitToken, /parsed\.protocol !== 'wss:' && parsed\.protocol !== 'https:'/, 'SFU endpoints must require TLS.');
 
 requireMatch(realtime, /avatarVersion: profileAvatarVersion\(this\.profile\.avatar_data_url\)/, 'Signaling profile must publish only avatar freshness metadata.');
 const publicProfile = realtime.slice(realtime.indexOf('private publicProfile()'), realtime.indexOf('private emitPeers()'));

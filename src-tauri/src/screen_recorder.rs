@@ -857,23 +857,28 @@ fn finalize_safe_container(
     let partial = safe_path.with_extension(format!("partial.{extension}"));
     let _ = fs::remove_file(&partial);
 
-    if manifest.segments.len() == 1 {
-        fs::copy(session_dir.join(&manifest.segments[0].file_name), &partial)
-            .map_err(|error| format!("could not finalize recording container: {error}"))?;
-    } else {
-        ensure_dependencies(app)?;
-        let ffmpeg = ffmpeg_path(app)?;
-        let list_path = write_concat_list(&session_dir, &manifest, extension)?;
-        run_ffmpeg(&ffmpeg, &[
-            "-y".to_string(), "-hide_banner".to_string(), "-loglevel".to_string(), "error".to_string(),
-            "-f".to_string(), "concat".to_string(), "-safe".to_string(), "0".to_string(),
-            "-i".to_string(), list_path.to_string_lossy().to_string(),
-            "-c".to_string(), "copy".to_string(),
-            if direct_mp4 { "-movflags".to_string() } else { "-map".to_string() },
-            if direct_mp4 { "+faststart".to_string() } else { "0".to_string() },
-            partial.to_string_lossy().to_string(),
-        ])?;
+    // Never publish the raw MediaRecorder fragment, even for a one-segment
+    // recording. Browser fragments can retain live/fragmented metadata and some
+    // players then report an unknown duration or disable seeking. Passing every
+    // recording through FFmpeg rebuilds timestamps, the MP4 moov index or WebM
+    // cues, and only then publishes the stable file.
+    ensure_dependencies(app)?;
+    let ffmpeg = ffmpeg_path(app)?;
+    let list_path = write_concat_list(&session_dir, &manifest, extension)?;
+    let mut finalize_args = vec![
+        "-y".to_string(), "-hide_banner".to_string(), "-loglevel".to_string(), "error".to_string(),
+        "-fflags".to_string(), "+genpts+discardcorrupt".to_string(),
+        "-f".to_string(), "concat".to_string(), "-safe".to_string(), "0".to_string(),
+        "-i".to_string(), list_path.to_string_lossy().to_string(),
+        "-map".to_string(), "0:v:0".to_string(), "-map".to_string(), "0:a?".to_string(),
+        "-c".to_string(), "copy".to_string(),
+        "-avoid_negative_ts".to_string(), "make_zero".to_string(),
+    ];
+    if direct_mp4 {
+        finalize_args.extend(["-movflags".to_string(), "+faststart".to_string()]);
     }
+    finalize_args.push(partial.to_string_lossy().to_string());
+    run_ffmpeg(&ffmpeg, &finalize_args)?;
     let size = fs::metadata(&partial).map_err(|error| format!("could not read finalized recording: {error}"))?.len();
     if size == 0 { return Err("recording finalization produced an empty file".to_string()); }
     if safe_path.exists() { let _ = fs::remove_file(&safe_path); }

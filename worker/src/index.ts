@@ -1,7 +1,11 @@
 import { DurableObject } from 'cloudflare:workers';
+import { createLiveKitJoinToken, normalizeLiveKitUrl } from './livekitToken';
 
 export interface Env {
   ROOMS: DurableObjectNamespace;
+  LIVEKIT_URL?: string;
+  LIVEKIT_API_KEY?: string;
+  LIVEKIT_API_SECRET?: string;
 }
 
 type RoomRole = 'owner' | 'moderator' | 'member';
@@ -110,6 +114,12 @@ function isValidSignalMessage(parsed: Record<string, unknown>): boolean {
 
 export class RoomObject extends DurableObject<Env> {
   private readonly messageRateLimits = new Map<string, number[]>();
+  private readonly env: Env;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.env = env;
+  }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -120,6 +130,9 @@ export class RoomObject extends DurableObject<Env> {
 
     if (url.pathname.endsWith('/profiles')) {
       return this.handleProfilesRequest(request, url);
+    }
+    if (url.pathname.endsWith('/media-token')) {
+      return this.handleMediaTokenRequest(request, url);
     }
 
     if (request.method !== 'GET' || request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
@@ -819,6 +832,40 @@ export class RoomObject extends DurableObject<Env> {
     return json({ ok: false, error: 'Method not allowed' }, 405);
   }
 
+  private async handleMediaTokenRequest(request: Request, url: URL): Promise<Response> {
+    if (request.method === 'OPTIONS') return json({ ok: true });
+    if (request.method !== 'POST') return json({ ok: false, error: 'Method not allowed' }, 405);
+    const source = this.authorizedProfileAttachment(request);
+    if (!source) return json({ ok: false, error: 'Room authorization required' }, 401);
+    if (!this.env.LIVEKIT_URL || !this.env.LIVEKIT_API_KEY || !this.env.LIVEKIT_API_SECRET) {
+      return json({ ok: false, error: 'SFU media is not configured' }, 503);
+    }
+
+    const roomMatch = url.pathname.match(/^\/room\/([a-zA-Z0-9_-]{1,128})\/media-token$/);
+    if (!roomMatch) return json({ ok: false, error: 'Invalid room route' }, 400);
+    const roles = await this.getRoles();
+    const role = roles[source.peerId] || (await this.isOwnerIdentity(source) ? 'owner' : 'member');
+    try {
+      const participantToken = await createLiveKitJoinToken(
+        this.env.LIVEKIT_API_KEY,
+        this.env.LIVEKIT_API_SECRET,
+        {
+          room: roomMatch[1],
+          identity: source.peerId,
+          name: source.displayName,
+          role
+        }
+      );
+      return json({
+        server_url: normalizeLiveKitUrl(this.env.LIVEKIT_URL),
+        participant_token: participantToken,
+        expires_in: 300
+      });
+    } catch {
+      return json({ ok: false, error: 'Could not issue SFU media token' }, 500);
+    }
+  }
+
   private async getRateLimits(): Promise<RateEntry[]> {
     return (await this.ctx.storage.get<RateEntry[]>('rateLimits')) || [];
   }
@@ -870,6 +917,8 @@ function sanitizePublicProfile(value: unknown, peerId: string, fallbackName: str
     peerId,
     displayName: sanitizeDisplayName(typeof profile.displayName === 'string' ? profile.displayName : fallbackName),
     status: typeof profile.status === 'string' ? profile.status.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 120) : 'Online',
+    bio: typeof profile.bio === 'string' ? profile.bio.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 500) : '',
+    profileVersion: Number.isSafeInteger(profile.profileVersion) ? Math.max(0, Number(profile.profileVersion)) : 0,
     avatarVersion: typeof profile.avatarVersion === 'string' ? profile.avatarVersion.slice(0, 80) : 'none',
     capabilities: {
       rtpVoice: capabilities.rtpVoice === true,
@@ -926,8 +975,8 @@ export default {
     if (request.method === 'OPTIONS') return json({ ok: true });
     const url = new URL(request.url);
     const pathname = url.pathname.replace(/\/+$/, '');
-    const match = pathname.match(/^\/room\/([a-zA-Z0-9_-]{1,128})\/(?:ws|profiles)$/);
-    if (!match) return json({ ok: true, service: 'MHTalk signaling', version: '0.9.2' });
+    const match = pathname.match(/^\/room\/([a-zA-Z0-9_-]{1,128})\/(?:ws|profiles|media-token)$/);
+    if (!match) return json({ ok: true, service: 'MHTalk signaling', version: '0.9.3' });
     const id = env.ROOMS.idFromName(match[1]);
     return env.ROOMS.get(id).fetch(request);
   }

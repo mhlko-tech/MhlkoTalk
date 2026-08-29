@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { RefObject, MouseEvent as ReactMouseEvent, ChangeEvent, ClipboardEvent as ReactClipboardEvent, PointerEvent as ReactPointerEvent, CSSProperties } from 'react';
+import type { RefObject, MouseEvent as ReactMouseEvent, ChangeEvent, ClipboardEvent as ReactClipboardEvent, PointerEvent as ReactPointerEvent, KeyboardEvent as ReactKeyboardEvent, CSSProperties } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { availableMonitors, getCurrentWindow, LogicalPosition, LogicalSize } from '@tauri-apps/api/window';
@@ -20,21 +20,27 @@ import {
   generateRoomId,
   listMediaDevices,
   normalizeRoomId,
-  RealtimeRoom,
   MAX_ATTACHMENT_BYTES,
   INLINE_PREVIEW_MAX_BYTES
 } from './services/realtime';
+import { createRoomSession, type RoomSession } from './services/roomSession';
 import {
   clearAllLocalData,
   clearRoomMessages,
+  acknowledgeMessageOutbox,
+  enqueueMessageOutbox,
   initDb,
+  loadDueMessageOutbox,
+  loadMessageOutbox,
   loadMessages,
   loadProfile,
   loadSettings,
   markMessageDeleted,
+  markMessageOutboxAttempt,
   saveMessage,
   saveProfile,
   saveSettings,
+  setMessageOutboxRecipients,
   DEFAULT_SETTINGS,
   DEFAULT_HOTKEYS,
   DEFAULT_CAMERA_OVERLAY,
@@ -55,7 +61,7 @@ import type {
   ScreenRecorderSourceInfo,
   ScreenRecorderAudioLevels
 } from './services/screenRecorder';
-import type { AppLanguage, AppSettings, ChatMessage, ChatOverlaySettings, CameraOverlaySettings, ConnectionState, PeerProfile, ScreenFps, ScreenQuality, ScreenRecorderSettings, UserProfile } from './types/models';
+import type { AppSettings, ChatMessage, ChatOverlaySettings, CameraOverlaySettings, ConnectionState, PeerProfile, ScreenFps, ScreenQuality, ScreenRecorderSettings, UserProfile } from './types/models';
 import {
   fetchProfileAssets,
   MAX_PROFILE_SOURCE_IMAGE_BYTES,
@@ -63,1306 +69,27 @@ import {
   publishProfileAvatar,
   type ProfileAssetAccess
 } from './services/profileAssets';
+import { AsyncCommandGate } from './core/asyncCommandGate';
+import { BoundedMessageIdCache, outboxRetryDelayMs, pendingOutboxRecipients } from './core/outboxPolicy';
+import { ENGLISH_COPY } from './copy/en';
+import { appendDiagnostic, clearDiagnostics, loadDiagnostics, subscribeDiagnostics, type DiagnosticEntry } from './core/diagnostics';
+import { validateHotkeyMap } from './core/hotkeyPolicy';
+import { supportedRecorderResolutions } from './core/recordingQuality';
+
+const TEXT: Readonly<Record<string, string>> = ENGLISH_COPY;
 
 const EMOJIS = ['😀', '😂', '😍', '🔥', '❤️', '👍', '👏', '😎', '😢', '😡', '🙏', '🎉', '💯', '✨', '👀', '✅', '❌', '⚡', '🌟', '😴', '🤝', '💪', '🎮', '🫡', '🤣', '🥲', '😅', '🙌', '🌹', '💙'];
 const INSTAGRAM_URL = 'https://www.instagram.com/m.ed1t/';
-const APP_VERSION = '0.9.2';
+const APP_VERSION = '0.9.3';
 
-const LOCALIZED_TEXT: Record<AppLanguage, Record<string, string>> = {
-  ar: {
-    boot: 'جاري تشغيل MHTalk...',
-    connection: 'الاتصال',
-    startRoom: 'ابدأ غرفة خاصة',
-    startRoomDesc: 'أنشئ غرفة وأرسل الكود لصديقك، أو أدخل كود غرفة وصل لك. بعد الدخول تختار تفعيل المايك أو البقاء ميوت.',
-    createRoom: 'إنشاء روم',
-    joinRoom: 'انضمام لروم',
-    waiting: 'بانتظار الأصدقاء...',
-    choosePeer: 'اختر صديقاً من الدوائر العلوية لعرض بث الشاشة هنا',
-    copyCode: 'نسخ الكود',
-    endCall: 'غلق الاتصال',
-    stopVoice: 'إيقاف الصوت',
-    startVoice: 'بدء الصوت',
-    muteMic: 'كتم المايك',
-    unmuteMic: 'فتح المايك',
-    stopShare: 'إيقاف مشاركة الشاشة',
-    shareScreen: 'مشاركة الشاشة',
-    refreshAudio: 'تحديث أجهزة الصوت',
-    screenQuality: 'جودة الشاشة',
-    screenFps: 'عدد الإطارات',
-    applySettings: 'حفظ / تطبيق',
-    settingsSaved: 'تم حفظ الإعدادات.',
-    unsavedSettings: 'تغييرات غير محفوظة',
-    saveChat: 'حفظ المحادثات محلياً',
-    friendsInRoom: 'الأصدقاء داخل الروم',
-    nobody: 'ماكو أحد متصل بعد.',
-    showStream: 'عرض بثه',
-    privateMessage: 'رسالة خاصة',
-    kickMember: 'طرد من الروم',
-    kickConfirm: 'هل تريد طرد هذا العضو من الروم؟',
-    kickedOut: 'تم طردك من الروم.',
-    kickedMember: 'تم طرد العضو من الروم.',
-    ownerOnly: 'هذا الخيار لصاحب الروم فقط.',
-    callVolume: 'صوت المكالمة',
-    screenVolume: 'صوت البث',
-    muteCall: 'إسكات صوت المكالمة',
-    unmuteCall: 'تشغيل صوت المكالمة',
-    muteScreen: 'إسكات صوت البث',
-    unmuteScreen: 'تشغيل صوت البث',
-    deleteRoomHistory: 'حذف سجل الغرفة',
-    deleteAllLocalData: 'حذف كل البيانات المحلية',
-    reply: 'رد',
-    edit: 'تعديل',
-    edited: 'تم التعديل',
-    saveEdit: 'حفظ التعديل',
-    cancel: 'إلغاء',
-    send: 'إرسال',
-    writeMessage: 'اكتب رسالة...',
-    privateTo: 'رسالة خاصة إلى',
-    replyTo: 'رد على',
-    editingMessage: 'تعديل الرسالة',
-    profileSettings: 'إعدادات الحساب',
-    localAccount: 'تعديل الحساب المحلي',
-    name: 'الاسم',
-    email: 'الإيميل / الحساب',
-    status: 'الحالة',
-    bio: 'نبذة',
-    avatar: 'صورة شخصية',
-    profileImageTooLarge: 'يجب أن يكون حجم صورة الملف الشخصي أقل من 32MB.',
-    banner: 'خلفية',
-    language: 'اللغة',
-    screenRecorder: 'مسجل الشاشة',
-    screenRecorderTitle: 'تسجيل البث والشاشة',
-    screenRecorderHint: 'سجّل بث الشاشة الحالي مباشرة إلى جهازك بإعدادات خفيفة ومتكيّفة.',
-    screenRecorderIdle: 'جاهز للتسجيل',
-    screenRecorderStarting: 'جاري بدء التسجيل…',
-    screenRecorderRecording: 'جاري التسجيل',
-    screenRecorderPaused: 'التسجيل متوقف مؤقتاً',
-    screenRecorderStopping: 'جاري حفظ التسجيل…',
-    screenRecorderError: 'خطأ في التسجيل',
-    screenRecorderQuality: 'جودة التسجيل',
-    screenRecorderQualityAdaptive: 'متكيّفة مع الجهاز',
-    screenRecorderQualityHigh: 'جودة عالية',
-    screenRecorderQualityBalanced: 'متوازنة',
-    screenRecorderQualityPerformance: 'خفيفة على الجهاز',
-    screenRecorderFps: 'إطارات التسجيل',
-    screenRecorderFpsMatch: 'مطابقة البث',
-    screenRecorderCodec: 'ترميز الفيديو',
-    screenRecorderCodecAuto: 'تلقائي (موصى به)',
-    screenRecorderIncludeAudio: 'تسجيل صوت البث',
-    screenRecorderAutoStart: 'بدء التسجيل تلقائياً مع البث',
-    screenRecorderSource: 'مصدر البث',
-    screenRecorderSourceUnavailable: 'ابدأ مشاركة الشاشة',
-    screenRecorderEstimatedSize: 'الحجم التقديري',
-    screenRecorderAdaptiveEstimate: 'يُحسب عند البدء',
-    screenRecorderStart: 'بدء التسجيل',
-    screenRecorderPause: 'إيقاف مؤقت',
-    screenRecorderResume: 'متابعة التسجيل',
-    screenRecorderStop: 'إيقاف وحفظ',
-    screenRecorderOpenFolder: 'فتح مجلد التسجيلات',
-    screenRecorderSaveSettings: 'حفظ الإعدادات',
-    screenRecorderSettingsSaved: 'تم حفظ إعدادات تسجيل الشاشة.',
-    screenRecorderNeedsStream: 'ابدأ مشاركة الشاشة أولاً حتى تتمكن من تسجيل البث.',
-    screenRecorderSaved: 'تم حفظ التسجيل',
-    screenRecorderSaveFailed: 'تعذر تسجيل البث أو حفظه',
-    screenRecorderLocalOnly: 'يُحفظ محلياً فقط',
-    screenRecorderAudioUnavailable: 'البث الحالي لا يحتوي على مسار صوتي، لذلك سيُسجل الفيديو دون صوت.',
-    screenRecorderFile: 'ملف التسجيل',
-    screenRecorderPerformanceNote: 'يستخدم المسجل نفس بث الشاشة الحالي دون فتح التقاط ثانٍ، ويكيّف الإطارات ومعدل البيانات لتقليل الضغط على الجهاز.',
-    screenRecorderSettingsOnly: 'هذه النافذة لضبط إعدادات التسجيل فقط. ابدأ أو أوقف التسجيل من الزر القريب من زر مشاركة الشاشة.',
-    screenRecorderToolbarStart: 'بدء تسجيل البث',
-    screenRecorderToolbarStop: 'إيقاف التسجيل وحفظ MP4',
-    screenRecorderArmed: 'جاري بدء البث والتسجيل…',
-    screenRecorderMp4Hint: 'عند إيقاف التسجيل أو البث، يُغلق التسجيل أولاً ثم يُحوّل تلقائياً إلى MP4.',
-    screenRecorderRepair: 'حل التسجيل التالف',
-    screenRecorderRepairTitle: 'استعادة تسجيل غير مكتمل',
-    screenRecorderRepairHint: 'اختر استكمال التسجيل السابق في جزء جديد، أو إيقافه وإصلاح الأجزاء المحفوظة ثم إخراج ملف MP4.',
-    screenRecorderNoRecovery: 'لا توجد تسجيلات غير مكتملة تحتاج إلى إصلاح.',
-    screenRecorderResumePrevious: 'استكمال التسجيل السابق',
-    screenRecorderStopAndSaveMp4: 'إيقافه وحفظه MP4',
-    screenRecorderRecoveryDate: 'آخر حفظ',
-    screenRecorderRecoverySize: 'الحجم المحفوظ',
-    screenRecorderRecoverySegments: 'أجزاء',
-    screenRecorderRecoveryStarted: 'تم استكمال التسجيل السابق.',
-    screenRecorderRecoverySaved: 'تم إصلاح التسجيل وحفظه بصيغة MP4',
-    screenRecorderRepairFailed: 'تعذر إصلاح التسجيل',
-    screenRecorderFinalizingMp4: 'جاري تجهيز MP4…',
-    screenRecorderDependencyPreparing: 'يتم تجهيز محوّل MP4 في الخلفية دون مقاطعتك.',
-    screenRecorderDependencyReady: 'محوّل MP4 جاهز.',
-    screenRecorderDependencyFailed: 'تعذر تجهيز محوّل MP4 تلقائياً.',
-    recorderMyMic: 'المايكروفون الخاص بي',
-    recorderMembers: 'أصوات الأعضاء',
-    recorderSystem: 'صوت النظام / اللعبة',
-    recorderAutoDuck: 'خفض صوت النظام تلقائياً عند الكلام',
-    recorderMicDevice: 'مايكروفون التسجيل',
-    recorderOutputDevice: 'مخرج أصوات الأعضاء',
-    recorderMasterMeter: 'مستوى المزيج النهائي',
-    recorderMuteSource: 'كتم هذا المصدر',
-    recorderFinalizationSafe: 'تم حفظ نسخة آمنة فوراً، ويجري تجهيز MP4 في الخلفية.',
-    fileActions: 'خيارات الملف',
-    downloadToDesktop: 'تحميل إلى سطح المكتب',
-    saveAs: 'حفظ باسم',
-    downloadProgress: 'تقدم الحفظ',
-    fileSaved: 'تم حفظ الملف',
-    fileSaveFailed: 'تعذر حفظ الملف',
-    overlayInteractive: 'الوضع التفاعلي',
-    overlayClickThrough: 'وضع المرور عبر النقرات',
-    overlayMonitor: 'الشاشة',
-    overlayModeHotkey: 'تبديل وضع أوفرلاي الدردشة',
-    overlayFullscreenLimit: 'قد تمنع بعض الألعاب المحمية أو وضع ملء الشاشة الحصري ظهور الأوفرلاي؛ استخدم Borderless عند الحاجة.',
-    overlayModeChanged: 'تم تغيير وضع الأوفرلاي',
-    notifications: 'الإشعارات',
-    fullscreen: 'تكبير الشاشة',
-    exitFullscreen: 'تصغير الشاشة',
-    pip: 'PiP فوق التطبيقات',
-    roomId: 'كود الروم',
-    mic: 'المايك',
-    speaker: 'السماعة',
-    defaultDevice: 'الافتراضي',
-    lowInternet: 'وضع النت الضعيف',
-    lowPc: 'وضع الجهاز الضعيف',
-    audioOnlyHint: 'وضع الصوت فقط مفعّل: غيّر جودة الشاشة إذا تريد مشاركة الشاشة.',
-    micPermission: 'تعذر تشغيل المايك. تأكد من السماح بالوصول للمايك.',
-    screenPermission: 'تعذر بدء مشاركة الشاشة. اختر نافذة/شاشة تدعم مشاركة الصوت إذا تريد صوت الفيديو.',
-    roomOpened: 'تم فتح الغرفة. الاتصال يبدأ تلقائياً عند دخول الأصدقاء.',
-    micAutoStart: 'اسمح للمايك حتى يبدأ الاتصال الصوتي تلقائياً.',
-    micJoinTitle: 'تشغيل المايك؟',
-    micJoinDesc: 'اختر هل تريد تفعيل المايك الآن أو البقاء مكتوماً داخل الروم.',
-    activateMicNow: 'تفعيل المايك',
-    stayMuted: 'البقاء ميوت',
-    historyForNewMembers: 'إظهار الرسائل القديمة للأعضاء الجدد',
-    historySyncedToNewMember: 'تم إرسال سجل الرسائل للعضو الجديد.',
-    cameraWillStartWithStream: 'سيتم تشغيل الكاميرا تلقائياً عند بدء البث.',
-    cameraNeedsStream: 'وضع الكاميرا مع البث يعمل فقط أثناء مشاركة الشاشة.',
-    invalidRoom: 'اكتب كود غرفة صحيح مثل MHLKO-7K9A-X2QF',
-    confirmEndCall: 'هل أنت متأكد تريد غلق الاتصال؟',
-    confirmCloseApp: 'هل أنت متأكد تريد غلق البرنامج؟',
-    chatDisconnected: 'الشات غير متصل حالياً.',
-    fileTypes: 'يمكن إرسال الصور والفيديو والصوت والملفات حتى 1GB.',
-    sendingFile: 'جاري إرسال الملف...',
-    fileFailed: 'تعذر إرسال الملف، الشات غير متصل.',
-    fileTooLarge: 'الملف أكبر من حد 1GB أو لا يمكن إرساله بأمان.',
-    fileSent: 'تم إرسال الملف.',
-    voiceFailed: 'تعذر إرسال الرسالة الصوتية.',
-    recordingStarted: 'بدأ تسجيل رسالة صوتية. اضغط مرة ثانية للإرسال.',
-    recordingProblem: 'حدثت مشكلة أثناء تسجيل الرسالة الصوتية.',
-    recordingDenied: 'تعذر تسجيل الصوت. تأكد من السماح للمايك.',
-    copied: 'تم نسخ كود الغرفة.',
-    dataProblem: 'تعذر تشغيل قاعدة البيانات المحلية. أعد فتح البرنامج.',
-    chatCleared: 'تم حذف سجل هذه الغرفة من الجهاز.',
-    confirmWipe: 'هل تريد حذف كل البيانات المحلية؟',
-    dataWiped: 'تم حذف كل البيانات المحلية.',
-    pipUnsupported: 'Picture in Picture غير مدعوم على هذا الجهاز.',
-    pipStartFirst: 'شغل بث الشاشة أولاً ثم جرّب PiP.',
-    placeholderEmail: 'اختياري',
-    privateLabel: 'خاص',
-    mediaLabel: 'وسائط',
-    fileLabel: 'ملف',
-    emojiTitle: 'إيموجي',
-    attachTitle: 'صورة/فيديو/صوت',
-    voiceTitle: 'رسالة صوتية',
-    ownerBadge: 'صاحب الروم',
-    me: 'أنا',
-    state_idle: 'غير متصل',
-    state_connecting: 'جاري الاتصال',
-    state_connected: 'متصل',
-    state_room_ready: 'الروم متصل - بانتظار الأعضاء',
-    state_peer_connecting: 'جاري ربط الأعضاء',
-    state_reconnecting: 'إعادة اتصال',
-    state_disconnected: 'منقطع',
-    state_failed: 'فشل الاتصال',
-    typingOne: 'يكتب الآن...',
-    typingMany: 'يكتبون الآن...',
-    error_bad_signal: 'وصلت رسالة اتصال غير مفهومة.',
-    error_signaling: 'تعذر الاتصال بخدمة الربط. تأكد من الإنترنت.',
-    error_prepare_connection: 'تعذر تجهيز الاتصال، حاول مرة أخرى.',
-    error_repair_connection: 'تعذر إصلاح الاتصال تلقائياً. جرّب الخروج والدخول للروم.',
-    error_data_channel: 'حدثت مشكلة في قناة الشات.',
-    error_bad_chat: 'وصلت رسالة شات غير مفهومة.',
-    error_incomplete_file: 'ملف وصل ناقص بسبب ضعف الشبكة.',
-    minimizeTitle: 'تصغير للتاسك بار',
-    maximizeTitle: 'تكبير/تصغير',
-    trayTitle: 'إخفاء للسستم تراي',
-    deletedMessage: 'تم حذف الرسالة',
-    deleteMessage: 'حذف',
-    confirmDeleteMessage: 'هل تريد حذف هذه الرسالة؟',
-    sendQueued: 'إرسال الصور/الملفات المحددة',
-    pasteImage: 'تمت إضافة الصورة للإرسال.',
-    openImage: 'فتح الصورة',
-    download: 'تحميل',
-    log_info: 'معلومة',
-    log_error: 'خطأ',
-    privateP2PRoom: 'غرفة خاصة P2P',
-    chatOverlayEmpty: 'أوفرلاي المحادثة',
-    videoPreview: 'معاينة الفيديو',
-    dropFilesHere: 'أفلت الملفات هنا لإضافتها للإرسال',
-    attachmentQueued: 'تمت إضافة الملف إلى الطابور.',
-    bannedMembers: 'الأعضاء المطرودين',
-    unban: 'السماح بالعودة',
-    noBannedMembers: 'لا يوجد أعضاء مطرودين.',
-    settingsPanel: 'الإعدادات',
-    openSettings: 'فتح الإعدادات',
-    closeSettings: 'إغلاق الإعدادات',
-    screenAudioLimit: 'ملاحظة: عزل صوت برنامج معيّن من صوت الجهاز يحتاج دعم نظام تشغيل/تعريف صوت. تم فصل صوت البث عن صوت المكالمة داخل التطبيق قدر الإمكان.',
-    closeTitle: 'خروج',
-    state_waiting_approval: 'بانتظار موافقة المدير',
-    joinRequests: 'طلبات الانضمام',
-    noJoinRequests: 'لا توجد طلبات حالياً.',
-    approve: 'قبول',
-    reject: 'رفض',
-    joinAccepted: 'تمت الموافقة على الدخول.',
-    joinRejected: 'تم رفض طلب الدخول.',
-    promoteModerator: 'إعطاء إشراف',
-    moderatorBadge: 'مشرف',
-    promotedMember: 'تم إعطاء الإشراف للعضو.',
-    settingsButton: 'الإعدادات',
-    adminBadge: 'ادمن',
-    hotkeys: 'الاختصارات',
-    errorLog: 'سجل الأحداث',
-    noErrors: 'لا توجد أخطاء مسجلة.',
-    clearLog: 'مسح اللوغ',
-    close: 'إغلاق',
-    pressHotkey: 'اضغط الاختصار الآن',
-    clearHotkey: 'حذف الاختصار',
-    hotkeySaved: 'تم حفظ الاختصار وتفعيله.',
-    hotkeyDuplicate: 'هذا الاختصار مستخدم بالفعل',
-    muteMicHotkey: 'كتم/فتح المايك',
-    shareScreenHotkey: 'تشغيل/إيقاف البث',
-    endCallHotkey: 'غلق الاتصال',
-    fullscreenHotkey: 'تكبير/تصغير البث',
-    toggleSettingsHotkey: 'فتح/إغلاق الإعدادات',
-    holdVoiceHint: 'اضغط مطولاً للتسجيل، اترك الزر للمعاينة ثم اضغط إرسال.',
-    voicePreview: 'رسالة صوتية جاهزة للإرسال',
-    discardVoice: 'حذف التسجيل',
-    streamVolume: 'صوت البث',
-    playScreenOn: 'تم تشغيل البث',
-    playScreenOff: 'تم إيقاف البث',
-    userJoined: 'دخل عضو جديد',
-    messageSending: 'جاري الإرسال...',
-    messageSent: 'تم الإرسال',
-    messageDelivered: 'تم التسليم',
-    messageSeen: 'تمت المشاهدة',
-    troubleshootConnection: 'إصلاح الاتصال',
-    waitingApprovalTitle: 'بانتظار موافقة المدير',
-    waitingApprovalDesc: 'تم إرسال طلب الانضمام. ابقَ هنا إلى أن يوافق المدير.',
-    restartConnectionStarted: 'تمت إعادة تشغيل الاتصال بدون حذف الرسائل.',
-    restartWatchedStream: 'إعادة تشغيل البث',
-    watchedStreamRestarted: 'تمت إعادة تشغيل مسار البث فقط بدون الخروج من الروم.',
-    nativeVoiceEngine: 'محرك الصوت Native',
-    nativeVoiceEngineGroundwork: '0.8.5: يعمل صوت المكالمات داخل محرك MHTalkVoice مستقل ويُستثنى بالكامل من صوت بث النظام.',
-    echoGuardActive: 'حماية الإيكو مفعلة: بث صوت النظام يستثني صوت الاتصال Native بدون كتم أعضاء المكالمة.',
-    updateBootChecking: 'جاري فحص التحديثات قبل فتح البرنامج...',
-    updateAutoInstalling: 'يوجد تحديث جديد. جاري التحديث تلقائياً...',
-    checkUpdates: 'فحص التحديثات',
-    checkingUpdates: 'جاري فحص التحديثات...',
-    updateNone: 'لا يوجد تحديث جديد.',
-    updateAvailable: 'يوجد تحديث جديد',
-    updateInstall: 'تحديث الآن',
-    updateInstalling: 'جاري تنزيل وتثبيت التحديث...',
-    updateReady: 'تم تثبيت التحديث. سيتم إعادة تشغيل البرنامج.',
-    updateFailed: 'فشل التحديث. تأكد من إعداد GitHub Releases و latest.json.',
-    updateTimeout: 'انتهى وقت فحص التحديثات، سيتم فتح البرنامج بوضع offline.',
-    updateRetry: 'إعادة المحاولة',
-    continueOffline: 'المتابعة بدون اتصال',
-    updateProgress: 'تقدم التحديث',
-    updateRequiredTitle: 'تحديث إجباري متوفر',
-    updateRequiredDesc: 'يجب تحديث MHTalk قبل المتابعة. اضغط تحديث الآن وسيتم التنزيل والتثبيت وإعادة التشغيل تلقائياً.',
-    voiceSolutionsTitle: 'حلول إصلاح الصوت Native',
-    voiceSolutionsHint: 'جرّب حل 1 ثم 2 ثم 3 ثم 4 أثناء الاتصال أو اختبار المايك، وبعدها خليك على الأفضل لصوت جهازك.',
-    voiceSolutionApplied: 'تم تطبيق حل الصوت',
-    voiceSolutionFailed: 'تعذر تطبيق حل الصوت',
-    voiceEnhanceOn: 'Voice Enhance',
-    voiceEnhanceOff: 'إيقاف تحسين الصوت',
-    voiceEnhanceEnabled: 'تحسين الصوت مفعل',
-    voiceEnhanceDisabled: 'تحسين الصوت مغلق',
-    voiceEnhanceHint: 'يشغّل تقوية الصوت والوضوح والـ compressor للأعضاء. إذا صار تقطيع أو ثقل، أطفئه ويرجع الصوت الأساسي Native كما هو.',
-    micTest: 'اختبار المايك',
-    micTestStart: 'تشغيل اختبار المايك',
-    micTestStop: 'إيقاف اختبار المايك',
-    micTestHint: 'ستسمع صوت مايكك من السماعة المختارة. يفضل استخدام سماعات رأس حتى لا يصير صدى.',
-    micTestFailed: 'تعذر تشغيل اختبار المايك. تأكد من السماح للمايك واختيار جهاز صحيح.',
-    micLevel: 'مستوى المايك',
-    closeStream: 'إغلاق البث',
-    downloadLog: 'تحميل السجل TXT',
-    logDownloaded: 'تم تحميل سجل الأحداث.',
-    streamStarted: 'بدأ بث الشاشة.',
-    streamEnded: 'انتهى بث الشاشة.',
-    liveBadge: 'يبث',
-    openFile: 'فتح الملف',
-    status_sending: 'جاري الإرسال',
-    status_receiving: 'جاري الاستلام',
-    status_completed: 'مكتمل',
-    status_failed: 'فشل',
-    status_canceled: 'ملغي',
-    youtubeVideo: 'فيديو يوتيوب',
-    originalMessageMissing: 'الرسالة الأصلية غير موجودة في هذا السجل.',
-    openStream: 'فتح البث',
-    switchStream: 'تبديل البث',
-    watchingStream: 'تتم المشاهدة',
-    streamStopped: 'توقف البث',
-    muteAllMembers: 'كتم كل الأعضاء',
-    unmuteAllMembers: 'فتح كتم كل الأعضاء',
-    raiseHand: 'رفع اليد',
-    requestToSpeak: 'طلب الكلام',
-    requestedPermissionToSpeak: 'طلب إذن الكلام',
-    allowToSpeak: 'السماح بالكلام',
-    rejectSpeakRequest: 'رفض الطلب',
-    speakRequestCooldown: 'يمكنك طلب الكلام كل 15 ثانية',
-    adminAllowedSpeak: 'سمح الأدمن للعضو بالكلام',
-    adminRejectedSpeak: 'رفض الأدمن طلب الكلام',
-    clearVoicePriority: 'أولوية وضوح الصوت',
-    mutedByAdmin: 'تم كتمك من الأدمن',
-    memberMutedByAdmin: 'مكتوم من الأدمن',
-    muteForEveryone: 'كتمه للجميع',
-    unmuteForEveryone: 'فتح كتمه للجميع',
-    showChatOverlay: 'إظهار المحادثات على الشاشة',
-    hideChatOverlay: 'إخفاء المحادثات من الشاشة',
-    voiceAutoQuality: 'جودة الصوت تلقائية',
-    streamAutoQuality: 'جودة البث تلقائية',
-    networkWeakAdapting: 'الشبكة ضعيفة، يتم تعديل الجودة تلقائياً',
-    streamQualityLimitedNetwork: 'تم تقليل جودة البث بسبب الشبكة',
-    streamQualityLimitedDevice: 'تم تقليل جودة البث بسبب الجهاز',
-    streamViewerClosed: 'تم إغلاق نافذة مشاهدة البث',
-    streamViewerOpened: 'تم فتح نافذة مشاهدة البث',
-    voiceProfileChanged: 'تم تغيير جودة الصوت تلقائياً',
-    adminMutedAll: 'الأدمن كتم كل الأعضاء',
-    chatOverlayShown: 'تم إظهار محادثات الشاشة',
-    chatOverlayHidden: 'تم إخفاء محادثات الشاشة',
-    waitingForMembers: 'بانتظار الأعضاء',
-    roomReady: 'الروم جاهز',
-    autoMaxQuality: 'تلقائي حسب الشاشة والشبكة',
-    audioOnly: 'صوت فقط',
-    chatOverlayCustomize: 'تخصيص أوفرلاي الدردشة',
-    overlayEditorTitle: 'تعديل أوفرلاي الدردشة',
-    overlayEditorHint: 'هذه مساحة تحاكي الشاشة. اسحب المربع وغير حجمه ومظهره كما تريد.',
-    overlayOpacity: 'شفافية الأوفرلاي',
-    overlayBorderRadius: 'حواف الأوفرلاي',
-    overlayShowText: 'عرض الرسائل النصية',
-    overlayShowImages: 'عرض الصور والوسائط',
-    overlayShowAudio: 'عرض الصوتيات',
-    overlayReset: 'إعادة ضبط الأوفرلاي',
-    camera: 'الكاميرا',
-    cameraSource: 'مصدر الكاميرا',
-    cameraToggle: 'تشغيل/إيقاف الكاميرا',
-    cameraUnavailable: 'الكاميرا غير متوفرة أو لم يتم السماح بها.',
-    cameraMirror: 'عكس صورة الكاميرا',
-    cameraOverlayHint: 'اسحب نافذة الكاميرا وغيّر حجمها داخل البث.',
-    voicePriorityMax: 'أولوية الصوت القصوى',
-    voicePriorityMaxHint: 'عند الضغط، يتم تخفيف البث والكاميرا والأوفرلاي قبل التأثير على الصوت.',
-    cameraSettings: 'إعدادات الكاميرا',
-    cameraModeTitle: 'اختر وضع الكاميرا',
-    cameraModeHint: 'اختر هل تريد الكاميرا وحدها في مساحة البث أو مع بث الشاشة.',
-    cameraWithStream: 'كاميرا مع البث',
-    cameraOnlyMode: 'كاميرا بوحدها',
-    cameraModeBack: 'رجوع',
-    cameraOverlayCustomize: 'تخصيص مكان الكاميرا',
-    cameraFitMode: 'طريقة عرض الكاميرا',
-    cameraFitCover: 'ملء الإطار مع القص',
-    cameraFitContain: 'إظهار الكاميرا كاملة',
-    cameraCropX: 'موضع القص الأفقي',
-    cameraCropY: 'موضع القص العمودي',
-    cameraOpacity: 'شفافية الكاميرا',
-    cameraEditorTitle: 'تعديل مربع الكاميرا',
-    cameraEditorHint: 'حدد مكان وحجم الكاميرا داخل مساحة البث.',
-    cameraStart: 'تشغيل الكاميرا',
-    cameraStop: 'إيقاف الكاميرا',
-    cameraOnly: 'الكاميرا فقط',
-    viewCamera: 'مشاهدة الكاميرا',
-    viewStream: 'مشاهدة البث',
-    viewStreamOrCamera: 'اختر ما تريد مشاهدته',
-    overlayPersisted: 'تم حفظ تخصيص الأوفرلاي.',
-    attachmentReady: 'الملف جاهز للإرسال. اضغط Enter أو إرسال.',
-    attachmentRejected: 'لا يمكن إرسال هذا الملف.',
-    mediaCheckPassed: 'تم فحص الملف بسرعة وهو جاهز.',
-    logInfo: 'معلومة',
-    mediaDownloadToDesktop: 'تحميل إلى سطح المكتب',
-    mediaCopy: 'نسخ',
-    mediaSavedToDesktop: 'تم حفظ الوسائط على سطح المكتب.',
-    mediaCopied: 'تم نسخ الوسائط.',
-    mediaCopyFailed: 'تعذر نسخ الوسائط.',
-    mediaDownloadFailed: 'تعذر تحميل الوسائط.',
-    previewMyMedia: 'معاينة بثي/كامرتي',
-    myMediaPreview: 'معاينة بثي وكامرتي',
-    myScreenPreview: 'معاينة بث الشاشة',
-    myCameraPreview: 'معاينة الكاميرا',
-    myAudioPreview: 'اختبار الصوت',
-    noSelfMediaPreview: 'شغّل البث أو الكاميرا حتى تظهر المعاينة.',
-    localScreenPreviewHint: 'هذه معاينة محلية لبث الشاشة الحالي.',
-    videoAttachment: 'فيديو',
-    openVideo: 'تشغيل الفيديو',
-    mediaContextTitle: 'خيارات الوسائط',
-    friendFallback: 'صديق',
-    typingSeparator: ' و ',
-  },
-  en: {
-    boot: 'Starting MHTalk...',
-    connection: 'Call',
-    startRoom: 'Start a private room',
-    startRoomDesc: 'Create a room and send the code to your friend, or enter a room code you received. After joining, choose whether to enable the microphone or stay muted.',
-    createRoom: 'Create Room',
-    joinRoom: 'Join Room',
-    waiting: 'Waiting for friends...',
-    choosePeer: 'Select a friend from the circles above to view their screen share here',
-    copyCode: 'Copy code',
-    endCall: 'End call',
-    stopVoice: 'Stop voice',
-    startVoice: 'Start voice',
-    muteMic: 'Mute mic',
-    unmuteMic: 'Unmute mic',
-    stopShare: 'Stop screen share',
-    shareScreen: 'Share screen',
-    refreshAudio: 'Refresh audio devices',
-    screenQuality: 'Screen quality',
-    screenFps: 'FPS',
-    applySettings: 'Save / Apply',
-    settingsSaved: 'Settings saved.',
-    unsavedSettings: 'Unsaved changes',
-    saveChat: 'Save chats locally',
-    friendsInRoom: 'People in room',
-    nobody: 'No one is connected yet.',
-    showStream: 'Show stream',
-    privateMessage: 'Private message',
-    kickMember: 'Kick from room',
-    kickConfirm: 'Do you want to kick this member from the room?',
-    kickedOut: 'You were kicked from the room.',
-    kickedMember: 'Member was kicked from the room.',
-    ownerOnly: 'Only the room owner can use this option.',
-    callVolume: 'Call volume',
-    screenVolume: 'Screen volume',
-    muteCall: 'Mute call sound',
-    unmuteCall: 'Unmute call sound',
-    muteScreen: 'Mute stream sound',
-    unmuteScreen: 'Unmute stream sound',
-    deleteRoomHistory: 'Delete room history',
-    deleteAllLocalData: 'Delete all local data',
-    reply: 'Reply',
-    edit: 'Edit',
-    edited: 'Edited',
-    saveEdit: 'Save edit',
-    cancel: 'Cancel',
-    send: 'Send',
-    writeMessage: 'Write a message...',
-    privateTo: 'Private message to',
-    replyTo: 'Replying to',
-    editingMessage: 'Editing message',
-    profileSettings: 'Account settings',
-    localAccount: 'Edit local account',
-    name: 'Name',
-    email: 'Email / Account',
-    status: 'Status',
-    bio: 'Bio',
-    avatar: 'Avatar',
-    profileImageTooLarge: 'Profile images must be smaller than 32MB.',
-    banner: 'Banner',
-    language: 'Language',
-    screenRecorder: 'Screen Recorder',
-    screenRecorderTitle: 'Screen & Broadcast Recorder',
-    screenRecorderHint: 'Record your current screen broadcast directly to your device with lightweight, adaptive settings.',
-    screenRecorderIdle: 'Ready to record',
-    screenRecorderStarting: 'Starting recorder…',
-    screenRecorderRecording: 'Recording',
-    screenRecorderPaused: 'Recording paused',
-    screenRecorderStopping: 'Saving recording…',
-    screenRecorderError: 'Recording error',
-    screenRecorderQuality: 'Recording quality',
-    screenRecorderQualityAdaptive: 'Adaptive to device',
-    screenRecorderQualityHigh: 'High quality',
-    screenRecorderQualityBalanced: 'Balanced',
-    screenRecorderQualityPerformance: 'Performance saver',
-    screenRecorderFps: 'Recording frame rate',
-    screenRecorderFpsMatch: 'Match broadcast',
-    screenRecorderCodec: 'Video codec',
-    screenRecorderCodecAuto: 'Automatic (recommended)',
-    screenRecorderIncludeAudio: 'Record broadcast audio',
-    screenRecorderAutoStart: 'Start automatically with screen share',
-    screenRecorderSource: 'Broadcast source',
-    screenRecorderSourceUnavailable: 'Start screen sharing',
-    screenRecorderEstimatedSize: 'Estimated size',
-    screenRecorderAdaptiveEstimate: 'Calculated on start',
-    screenRecorderStart: 'Start recording',
-    screenRecorderPause: 'Pause',
-    screenRecorderResume: 'Resume',
-    screenRecorderStop: 'Stop and save',
-    screenRecorderOpenFolder: 'Open recordings folder',
-    screenRecorderSaveSettings: 'Save settings',
-    screenRecorderSettingsSaved: 'Screen recorder settings saved.',
-    screenRecorderNeedsStream: 'Start screen sharing before recording the broadcast.',
-    screenRecorderSaved: 'Recording saved',
-    screenRecorderSaveFailed: 'Could not record or save the broadcast',
-    screenRecorderLocalOnly: 'Saved locally only',
-    screenRecorderAudioUnavailable: 'The current broadcast has no audio track, so the video will be recorded without audio.',
-    screenRecorderFile: 'Recording file',
-    screenRecorderPerformanceNote: 'The recorder reuses the current screen stream without starting a second capture and adapts frame rate and bitrate to reduce device load.',
-    screenRecorderSettingsOnly: 'This window is only for recording settings. Start or stop recording from the button beside Screen Share.',
-    screenRecorderToolbarStart: 'Start broadcast recording',
-    screenRecorderToolbarStop: 'Stop recording and save MP4',
-    screenRecorderArmed: 'Starting screen share and recording…',
-    screenRecorderMp4Hint: 'When recording or screen sharing stops, capture closes first and is then converted automatically to MP4.',
-    screenRecorderRepair: 'Repair interrupted recording',
-    screenRecorderRepairTitle: 'Recover an incomplete recording',
-    screenRecorderRepairHint: 'Continue the previous recording in a new safe segment, or stop it and repair the saved segments into an MP4 file.',
-    screenRecorderNoRecovery: 'There are no incomplete recordings to repair.',
-    screenRecorderResumePrevious: 'Continue previous recording',
-    screenRecorderStopAndSaveMp4: 'Stop it and save MP4',
-    screenRecorderRecoveryDate: 'Last saved',
-    screenRecorderRecoverySize: 'Saved size',
-    screenRecorderRecoverySegments: 'segments',
-    screenRecorderRecoveryStarted: 'The previous recording is being continued.',
-    screenRecorderRecoverySaved: 'Recording repaired and saved as MP4',
-    screenRecorderRepairFailed: 'Could not repair the recording',
-    screenRecorderFinalizingMp4: 'Preparing MP4…',
-    screenRecorderDependencyPreparing: 'The MP4 converter is being prepared quietly in the background.',
-    screenRecorderDependencyReady: 'The MP4 converter is ready.',
-    screenRecorderDependencyFailed: 'The MP4 converter could not be prepared automatically.',
-    recorderMyMic: 'My microphone',
-    recorderMembers: 'Other members’ voices',
-    recorderSystem: 'System / game audio',
-    recorderAutoDuck: 'Automatically lower system audio while voices are active',
-    recorderMicDevice: 'Recording microphone',
-    recorderOutputDevice: 'Members’ output device',
-    recorderMasterMeter: 'Final mix level',
-    recorderMuteSource: 'Mute this source',
-    recorderFinalizationSafe: 'A safe recording was saved immediately; MP4 is being prepared in the background.',
-    fileActions: 'File actions',
-    downloadToDesktop: 'Download to Desktop',
-    saveAs: 'Save As',
-    downloadProgress: 'Save progress',
-    fileSaved: 'File saved',
-    fileSaveFailed: 'Could not save file',
-    overlayInteractive: 'Interactive mode',
-    overlayClickThrough: 'Click-through mode',
-    overlayMonitor: 'Monitor',
-    overlayModeHotkey: 'Toggle chat overlay mode',
-    overlayFullscreenLimit: 'Protected games and exclusive fullscreen may block overlays; use Borderless when needed.',
-    overlayModeChanged: 'Overlay mode changed',
-    notifications: 'Notifications',
-    fullscreen: 'Fullscreen',
-    exitFullscreen: 'Exit fullscreen',
-    pip: 'PiP over apps',
-    roomId: 'Room ID',
-    mic: 'Microphone',
-    speaker: 'Speaker / Headphones',
-    defaultDevice: 'Default',
-    lowInternet: 'Low Internet Mode',
-    lowPc: 'Low PC Mode',
-    audioOnlyHint: 'Audio only is enabled. Change screen quality if you want to share the screen.',
-    micPermission: 'Could not start the microphone. Allow microphone access and try again.',
-    screenPermission: 'Could not start screen sharing. Choose a screen/window that supports audio if you need video sound.',
-    roomOpened: 'Room opened. Voice starts automatically when friends join.',
-    micAutoStart: 'Allow microphone access to start voice automatically.',
-    micJoinTitle: 'Turn on microphone?',
-    micJoinDesc: 'Choose whether to enable your microphone now or stay muted in the room.',
-    activateMicNow: 'Enable microphone',
-    stayMuted: 'Stay muted',
-    historyForNewMembers: 'Show previous messages to new members',
-    historySyncedToNewMember: 'Previous messages were sent to the new member.',
-    cameraWillStartWithStream: 'Camera will start automatically when screen sharing starts.',
-    cameraNeedsStream: 'Camera with stream works only while screen sharing is active.',
-    invalidRoom: 'Enter a valid room code like MHLKO-7K9A-X2QF',
-    confirmEndCall: 'Are you sure you want to end the call?',
-    confirmCloseApp: 'Are you sure you want to close the app?',
-    chatDisconnected: 'Chat is not connected right now.',
-    fileTypes: 'You can send images, videos, audio, and files up to 1GB.',
-    sendingFile: 'Sending file...',
-    fileFailed: 'Could not send the file. Chat is not connected.',
-    fileTooLarge: 'File is larger than the 1GB limit or cannot be sent safely.',
-    fileSent: 'File sent.',
-    voiceFailed: 'Could not send the voice message.',
-    recordingStarted: 'Voice recording started. Press again to send.',
-    recordingProblem: 'A problem happened while recording the voice message.',
-    recordingDenied: 'Could not record audio. Make sure microphone access is allowed.',
-    copied: 'Room code copied.',
-    dataProblem: 'Could not start the local database. Restart the app.',
-    chatCleared: 'This room history was deleted from this device.',
-    confirmWipe: 'Do you want to delete all local data?',
-    dataWiped: 'All local data deleted.',
-    pipUnsupported: 'Picture in Picture is not supported on this device.',
-    pipStartFirst: 'Start screen sharing first, then try PiP.',
-    placeholderEmail: 'Optional',
-    privateLabel: 'Private',
-    mediaLabel: 'Media',
-    fileLabel: 'File',
-    emojiTitle: 'Emoji',
-    attachTitle: 'Image/video/audio',
-    voiceTitle: 'Voice message',
-    ownerBadge: 'Room owner',
-    me: 'Me',
-    state_idle: 'Disconnected',
-    state_connecting: 'Connecting',
-    state_connected: 'Connected',
-    state_room_ready: 'Room connected - waiting for members',
-    state_peer_connecting: 'Connecting members',
-    state_reconnecting: 'Reconnecting',
-    state_disconnected: 'Disconnected',
-    state_failed: 'Failed',
-    typingOne: 'is typing...',
-    typingMany: 'are typing...',
-    error_bad_signal: 'Received an invalid signaling message.',
-    error_signaling: 'Could not connect to signaling. Check your internet.',
-    error_prepare_connection: 'Could not prepare the connection. Try again.',
-    error_repair_connection: 'Could not repair the connection automatically. Try leaving and joining again.',
-    error_data_channel: 'There is a problem with the chat channel.',
-    error_bad_chat: 'Received an invalid chat message.',
-    error_incomplete_file: 'The file arrived incomplete because of weak network.',
-    minimizeTitle: 'Minimize to taskbar',
-    maximizeTitle: 'Maximize/restore',
-    trayTitle: 'Hide to system tray',
-    deletedMessage: 'Message deleted',
-    deleteMessage: 'Delete',
-    confirmDeleteMessage: 'Delete this message?',
-    sendQueued: 'Send selected images/files',
-    pasteImage: 'Image added to send.',
-    openImage: 'Open image',
-    download: 'Download',
-    log_info: 'Info',
-    log_error: 'Error',
-    privateP2PRoom: 'Private P2P Room',
-    chatOverlayEmpty: 'Chat overlay',
-    videoPreview: 'Video preview',
-    dropFilesHere: 'Drop files here to add them to the send queue',
-    attachmentQueued: 'File added to send queue.',
-    bannedMembers: 'Banned members',
-    unban: 'Allow return',
-    noBannedMembers: 'No banned members.',
-    settingsPanel: 'Settings',
-    openSettings: 'Open settings',
-    closeSettings: 'Close settings',
-    screenAudioLimit: 'Note: excluding one app from full system audio needs OS/audio-driver support. Stream audio and call audio are separated inside the app as much as WebRTC allows.',
-    closeTitle: 'Close',
-    state_waiting_approval: 'Waiting for admin approval',
-    joinRequests: 'Join requests',
-    noJoinRequests: 'No requests right now.',
-    approve: 'Approve',
-    reject: 'Reject',
-    joinAccepted: 'Join request approved.',
-    joinRejected: 'Join request rejected.',
-    promoteModerator: 'Make moderator',
-    moderatorBadge: 'Moderator',
-    promotedMember: 'Moderator role granted.',
-    settingsButton: 'Settings',
-    adminBadge: 'Admin',
-    hotkeys: 'Hotkeys',
-    errorLog: 'Event log',
-    noErrors: 'No errors recorded.',
-    clearLog: 'Clear log',
-    close: 'Close',
-    pressHotkey: 'Press the shortcut now',
-    clearHotkey: 'Clear shortcut',
-    hotkeySaved: 'Hotkey saved and activated.',
-    hotkeyDuplicate: 'This hotkey is already assigned',
-    muteMicHotkey: 'Mute/unmute mic',
-    shareScreenHotkey: 'Start/stop screen share',
-    endCallHotkey: 'End call',
-    fullscreenHotkey: 'Fullscreen/restore stream',
-    toggleSettingsHotkey: 'Open/close settings',
-    holdVoiceHint: 'Hold to record, release to preview, then press Send.',
-    voicePreview: 'Voice message ready to send',
-    discardVoice: 'Delete recording',
-    streamVolume: 'Stream sound',
-    playScreenOn: 'Screen share started',
-    playScreenOff: 'Screen share stopped',
-    userJoined: 'A member joined',
-    messageSending: 'Sending...',
-    messageSent: 'Sent',
-    messageDelivered: 'Delivered',
-    messageSeen: 'Seen',
-    troubleshootConnection: 'Troubleshoot connection',
-    waitingApprovalTitle: 'Waiting for admin approval',
-    waitingApprovalDesc: 'Your join request was sent. Stay here until an admin approves it.',
-    restartConnectionStarted: 'Connection restarted without clearing messages.',
-    restartWatchedStream: 'Restart stream',
-    watchedStreamRestarted: 'Stream path is being restarted without leaving the room.',
-    nativeVoiceEngine: 'Native Voice Engine',
-    nativeVoiceEngineGroundwork: '0.8.5: Call audio runs in the isolated MHTalkVoice engine and is excluded from system broadcast audio.',
-    echoGuardActive: 'Native echo guard is active: system-audio screen sharing excludes call audio without muting call members.',
-    updateBootChecking: 'Checking for updates before opening the app...',
-    updateAutoInstalling: 'A new update is available. Updating automatically...',
-    checkUpdates: 'Check for updates',
-    checkingUpdates: 'Checking for updates...',
-    updateNone: 'No update available.',
-    updateAvailable: 'Update available',
-    updateInstall: 'Update now',
-    updateInstalling: 'Downloading and installing update...',
-    updateReady: 'Update installed. MHTalk will restart.',
-    updateFailed: 'Update failed. Check GitHub Releases and latest.json setup.',
-    updateTimeout: 'Update check timed out, continuing offline.',
-    updateRetry: 'Retry',
-    continueOffline: 'Continue Offline',
-    updateProgress: 'Update progress',
-    updateRequiredTitle: 'Required update available',
-    updateRequiredDesc: 'You must update MHTalk before continuing. Press Update now and it will download, install, and restart automatically.',
-    voiceSolutionsTitle: 'Native voice repair solutions',
-    voiceSolutionsHint: 'Try Solution 1, then 2, then 3, then 4 during a call or mic test, then keep the best one for your device.',
-    voiceSolutionApplied: 'Voice solution applied',
-    voiceSolutionFailed: 'Could not apply voice solution',
-    voiceEnhanceOn: 'Voice Enhance',
-    voiceEnhanceOff: 'Turn off Voice Enhance',
-    voiceEnhanceEnabled: 'Voice Enhance enabled',
-    voiceEnhanceDisabled: 'Voice Enhance off',
-    voiceEnhanceHint: 'Enables native voice boost, clarity, compressor and limiter for member audio. Turn it off if a device has trouble; the base Native voice path stays unchanged.',
-    micTest: 'Mic test',
-    micTestStart: 'Start mic test',
-    micTestStop: 'Stop mic test',
-    micTestHint: 'You will hear your mic through the selected speaker. Headphones are recommended to avoid echo.',
-    micTestFailed: 'Could not start mic test. Check mic permission and selected device.',
-    micLevel: 'Mic level',
-    closeStream: 'Close stream',
-    downloadLog: 'Download TXT log',
-    logDownloaded: 'Event log downloaded.',
-    streamStarted: 'Screen stream started.',
-    streamEnded: 'Screen stream ended.',
-    liveBadge: 'LIVE',
-    openFile: 'Open file',
-    status_sending: 'Sending',
-    status_receiving: 'Receiving',
-    status_completed: 'Completed',
-    status_failed: 'Failed',
-    status_canceled: 'Canceled',
-    youtubeVideo: 'YouTube video',
-    originalMessageMissing: 'Original message is not in this history.',
-    openStream: 'Open Stream',
-    switchStream: 'Switch Stream',
-    watchingStream: 'Watching',
-    streamStopped: 'Stream stopped',
-    muteAllMembers: 'Mute All Members',
-    unmuteAllMembers: 'Unmute All Members',
-    raiseHand: 'Raise Hand',
-    requestToSpeak: 'Request to speak',
-    requestedPermissionToSpeak: 'Requested permission to speak',
-    allowToSpeak: 'Allow to speak',
-    rejectSpeakRequest: 'Reject request',
-    speakRequestCooldown: 'You can request permission every 15 seconds',
-    adminAllowedSpeak: 'Admin allowed member to speak',
-    adminRejectedSpeak: 'Admin rejected the speak request',
-    clearVoicePriority: 'Clear Voice Priority',
-    mutedByAdmin: 'Muted by admin',
-    memberMutedByAdmin: 'Muted by admin',
-    muteForEveryone: 'Mute for everyone',
-    unmuteForEveryone: 'Unmute for everyone',
-    showChatOverlay: 'Show Chat Overlay',
-    hideChatOverlay: 'Hide Chat Overlay',
-    voiceAutoQuality: 'Voice Auto Quality',
-    streamAutoQuality: 'Stream Auto Quality',
-    networkWeakAdapting: 'Network weak, adapting quality',
-    streamQualityLimitedNetwork: 'Stream quality limited by network',
-    streamQualityLimitedDevice: 'Stream quality limited by device',
-    streamViewerClosed: 'Stream viewer panel closed',
-    streamViewerOpened: 'Stream viewer panel opened',
-    voiceProfileChanged: 'Voice profile changed',
-    adminMutedAll: 'Admin muted all members',
-    chatOverlayShown: 'Chat overlay shown',
-    chatOverlayHidden: 'Chat overlay hidden',
-    waitingForMembers: 'Waiting for members',
-    roomReady: 'Room ready',
-    autoMaxQuality: 'Auto Max for your display and network',
-    audioOnly: 'Audio only',
-    chatOverlayCustomize: 'Customize Chat Overlay',
-    overlayEditorTitle: 'Chat Overlay Editor',
-    overlayEditorHint: 'This area simulates your screen. Drag and resize the overlay box and tune its appearance.',
-    overlayOpacity: 'Overlay opacity',
-    overlayBorderRadius: 'Overlay corners',
-    overlayShowText: 'Show text messages',
-    overlayShowImages: 'Show images and media',
-    overlayShowAudio: 'Show voice/audio messages',
-    overlayReset: 'Reset overlay',
-    camera: 'Camera',
-    cameraSource: 'Camera source',
-    cameraToggle: 'Toggle camera',
-    cameraUnavailable: 'Camera is unavailable or permission was denied.',
-    cameraMirror: 'Mirror camera preview',
-    cameraOverlayHint: 'Drag and resize the camera window inside the stream.',
-    voicePriorityMax: 'Maximum Voice Priority',
-    voicePriorityMaxHint: 'Under pressure, stream, camera, and overlay load are reduced before voice is affected.',
-    cameraSettings: 'Camera Settings',
-    cameraModeTitle: 'Choose camera mode',
-    cameraModeHint: 'Choose whether to show camera alone in the stream area or together with screen sharing.',
-    cameraWithStream: 'Camera with stream',
-    cameraOnlyMode: 'Camera only',
-    cameraModeBack: 'Back',
-    cameraOverlayCustomize: 'Customize Camera Position',
-    cameraFitMode: 'Camera framing',
-    cameraFitCover: 'Fill frame with crop',
-    cameraFitContain: 'Show full camera',
-    cameraCropX: 'Horizontal crop focus',
-    cameraCropY: 'Vertical crop focus',
-    cameraOpacity: 'Camera opacity',
-    cameraEditorTitle: 'Camera Box Editor',
-    cameraEditorHint: 'Place and resize the camera box inside the stream area.',
-    cameraStart: 'Start Camera',
-    cameraStop: 'Stop Camera',
-    cameraOnly: 'Camera only',
-    viewCamera: 'Watch camera',
-    viewStream: 'Watch stream',
-    viewStreamOrCamera: 'Choose what to watch',
-    overlayPersisted: 'Overlay customization saved.',
-    attachmentReady: 'File is ready. Press Enter or Send to upload.',
-    attachmentRejected: 'This file cannot be sent.',
-    mediaCheckPassed: 'Quick file check passed.',
-    logInfo: 'Info',
-    mediaDownloadToDesktop: 'Download to Desktop',
-    mediaCopy: 'Copy',
-    mediaSavedToDesktop: 'Media saved to Desktop.',
-    mediaCopied: 'Media copied.',
-    mediaCopyFailed: 'Could not copy media.',
-    mediaDownloadFailed: 'Could not download media.',
-    previewMyMedia: 'Preview my stream/camera',
-    myMediaPreview: 'My stream and camera preview',
-    myScreenPreview: 'Screen stream preview',
-    myCameraPreview: 'Camera preview',
-    myAudioPreview: 'Audio test',
-    noSelfMediaPreview: 'Start screen sharing or camera to show the preview.',
-    localScreenPreviewHint: 'This is a local preview of the current screen stream.',
-    videoAttachment: 'Video',
-    openVideo: 'Play video',
-    mediaContextTitle: 'Media options',
-    friendFallback: 'Friend',
-    typingSeparator: ' and ',
-  },
-  tr: {
-    boot: 'MHTalk başlatılıyor...',
-    connection: 'Arama',
-    startRoom: 'Özel oda başlat',
-    startRoomDesc: 'Bir oda oluşturup kodu arkadaşına gönder veya gelen oda kodunu gir. Katıldıktan sonra mikrofonu açmayı ya da sessiz kalmayı seç.',
-    createRoom: 'Oda oluştur',
-    joinRoom: 'Odaya katıl',
-    waiting: 'Arkadaşlar bekleniyor...',
-    choosePeer: 'Ekran yayınını görmek için üstteki dairelerden bir arkadaş seç',
-    copyCode: 'Kodu kopyala',
-    endCall: 'Aramayı bitir',
-    stopVoice: 'Sesi durdur',
-    startVoice: 'Sesi başlat',
-    muteMic: 'Mikrofonu kapat',
-    unmuteMic: 'Mikrofonu aç',
-    stopShare: 'Ekran paylaşımını durdur',
-    shareScreen: 'Ekran paylaş',
-    refreshAudio: 'Ses aygıtlarını yenile',
-    screenQuality: 'Ekran kalitesi',
-    screenFps: 'FPS',
-    applySettings: 'Kaydet / Uygula',
-    settingsSaved: 'Ayarlar kaydedildi.',
-    unsavedSettings: 'Kaydedilmemiş değişiklikler',
-    saveChat: 'Sohbetleri yerel olarak kaydet',
-    friendsInRoom: 'Odadaki kişiler',
-    nobody: 'Henüz kimse bağlı değil.',
-    showStream: 'Yayını göster',
-    privateMessage: 'Özel mesaj',
-    kickMember: 'Odadan at',
-    kickConfirm: 'Do you want to kick this member from the room?',
-    kickedOut: 'You were kicked from the room.',
-    kickedMember: 'Member was kicked from the room.',
-    ownerOnly: 'Only the room owner can use this option.',
-    callVolume: 'Arama sesi',
-    screenVolume: 'Ekran sesi',
-    muteCall: 'Arama sesini kapat',
-    unmuteCall: 'Arama sesini aç',
-    muteScreen: 'Yayın sesini kapat',
-    unmuteScreen: 'Yayın sesini aç',
-    deleteRoomHistory: 'Oda geçmişini sil',
-    deleteAllLocalData: 'Tüm yerel verileri sil',
-    reply: 'Yanıtla',
-    edit: 'Düzenle',
-    edited: 'Edited',
-    saveEdit: 'Düzenlemeyi kaydet',
-    cancel: 'İptal',
-    send: 'Gönder',
-    writeMessage: 'Mesaj yaz...',
-    privateTo: 'Private message to',
-    replyTo: 'Yanıtlanan',
-    editingMessage: 'Mesaj düzenleniyor',
-    profileSettings: 'Hesap ayarları',
-    localAccount: 'Edit local account',
-    name: 'Ad',
-    email: 'E-posta / hesap',
-    status: 'Durum',
-    bio: 'Hakkında',
-    avatar: 'Profil resmi',
-    profileImageTooLarge: 'Profil görselleri 32MB boyutundan küçük olmalıdır.',
-    banner: 'Kapak resmi',
-    language: 'Dil',
-    screenRecorder: 'Ekran Kaydedici',
-    screenRecorderTitle: 'Ekran ve Yayın Kaydedici',
-    screenRecorderHint: 'Mevcut ekran yayınını hafif ve uyarlanabilir ayarlarla doğrudan cihazınıza kaydedin.',
-    screenRecorderIdle: 'Kayda hazır',
-    screenRecorderStarting: 'Kayıt başlatılıyor…',
-    screenRecorderRecording: 'Kaydediliyor',
-    screenRecorderPaused: 'Kayıt duraklatıldı',
-    screenRecorderStopping: 'Kayıt kaydediliyor…',
-    screenRecorderError: 'Kayıt hatası',
-    screenRecorderQuality: 'Kayıt kalitesi',
-    screenRecorderQualityAdaptive: 'Cihaza uyarlanmış',
-    screenRecorderQualityHigh: 'Yüksek kalite',
-    screenRecorderQualityBalanced: 'Dengeli',
-    screenRecorderQualityPerformance: 'Performans tasarrufu',
-    screenRecorderFps: 'Kayıt kare hızı',
-    screenRecorderFpsMatch: 'Yayınla eşleştir',
-    screenRecorderCodec: 'Video kodlayıcı',
-    screenRecorderCodecAuto: 'Otomatik (önerilen)',
-    screenRecorderIncludeAudio: 'Yayın sesini kaydet',
-    screenRecorderAutoStart: 'Ekran paylaşımıyla otomatik başlat',
-    screenRecorderSource: 'Yayın kaynağı',
-    screenRecorderSourceUnavailable: 'Ekran paylaşımını başlatın',
-    screenRecorderEstimatedSize: 'Tahmini boyut',
-    screenRecorderAdaptiveEstimate: 'Başlatılınca hesaplanır',
-    screenRecorderStart: 'Kaydı başlat',
-    screenRecorderPause: 'Duraklat',
-    screenRecorderResume: 'Devam et',
-    screenRecorderStop: 'Durdur ve kaydet',
-    screenRecorderOpenFolder: 'Kayıtlar klasörünü aç',
-    screenRecorderSaveSettings: 'Ayarları kaydet',
-    screenRecorderSettingsSaved: 'Ekran kaydedici ayarları kaydedildi.',
-    screenRecorderNeedsStream: 'Yayını kaydetmeden önce ekran paylaşımını başlatın.',
-    screenRecorderSaved: 'Kayıt kaydedildi',
-    screenRecorderSaveFailed: 'Yayın kaydedilemedi veya saklanamadı',
-    screenRecorderLocalOnly: 'Yalnızca yerel olarak kaydedilir',
-    screenRecorderAudioUnavailable: 'Mevcut yayında ses parçası yok; video sessiz kaydedilecek.',
-    screenRecorderFile: 'Kayıt dosyası',
-    screenRecorderPerformanceNote: 'Kaydedici ikinci bir yakalama başlatmadan mevcut ekran akışını kullanır ve cihaz yükünü azaltmak için kare hızını ve bit hızını uyarlar.',
-    screenRecorderSettingsOnly: 'Bu pencere yalnızca kayıt ayarları içindir. Kaydı Ekran Paylaşımı düğmesinin yanındaki düğmeden başlatın veya durdurun.',
-    screenRecorderToolbarStart: 'Yayın kaydını başlat',
-    screenRecorderToolbarStop: 'Kaydı durdur ve MP4 kaydet',
-    screenRecorderArmed: 'Ekran paylaşımı ve kayıt başlatılıyor…',
-    screenRecorderMp4Hint: 'Kayıt veya ekran paylaşımı durduğunda önce yakalama kapanır, ardından otomatik olarak MP4 biçimine dönüştürülür.',
-    screenRecorderRepair: 'Kesilen kaydı onar',
-    screenRecorderRepairTitle: 'Eksik kaydı kurtar',
-    screenRecorderRepairHint: 'Önceki kayda yeni ve güvenli bir bölümde devam edin veya durdurup kaydedilmiş bölümleri MP4 dosyasına onarın.',
-    screenRecorderNoRecovery: 'Onarılması gereken eksik kayıt yok.',
-    screenRecorderResumePrevious: 'Önceki kayda devam et',
-    screenRecorderStopAndSaveMp4: 'Durdur ve MP4 kaydet',
-    screenRecorderRecoveryDate: 'Son kayıt',
-    screenRecorderRecoverySize: 'Kaydedilen boyut',
-    screenRecorderRecoverySegments: 'bölüm',
-    screenRecorderRecoveryStarted: 'Önceki kayda devam ediliyor.',
-    screenRecorderRecoverySaved: 'Kayıt onarıldı ve MP4 olarak kaydedildi',
-    screenRecorderRepairFailed: 'Kayıt onarılamadı',
-    screenRecorderFinalizingMp4: 'MP4 hazırlanıyor…',
-    screenRecorderDependencyPreparing: 'MP4 dönüştürücü sizi rahatsız etmeden arka planda hazırlanıyor.',
-    screenRecorderDependencyReady: 'MP4 dönüştürücü hazır.',
-    screenRecorderDependencyFailed: 'MP4 dönüştürücü otomatik olarak hazırlanamadı.',
-    recorderMyMic: 'Mikrofonum',
-    recorderMembers: 'Diğer üyelerin sesleri',
-    recorderSystem: 'Sistem / oyun sesi',
-    recorderAutoDuck: 'Konuşma sırasında sistem sesini otomatik azalt',
-    recorderMicDevice: 'Kayıt mikrofonu',
-    recorderOutputDevice: 'Üye sesleri çıkışı',
-    recorderMasterMeter: 'Son karışım seviyesi',
-    recorderMuteSource: 'Bu kaynağı sessize al',
-    recorderFinalizationSafe: 'Güvenli kayıt hemen kaydedildi; MP4 arka planda hazırlanıyor.',
-    fileActions: 'Dosya seçenekleri',
-    downloadToDesktop: 'Masaüstüne indir',
-    saveAs: 'Farklı kaydet',
-    downloadProgress: 'Kaydetme ilerlemesi',
-    fileSaved: 'Dosya kaydedildi',
-    fileSaveFailed: 'Dosya kaydedilemedi',
-    overlayInteractive: 'Etkileşimli mod',
-    overlayClickThrough: 'Tıklamaları geçiren mod',
-    overlayMonitor: 'Monitör',
-    overlayModeHotkey: 'Sohbet kaplaması modunu değiştir',
-    overlayFullscreenLimit: 'Korumalı oyunlar ve özel tam ekran kaplamayı engelleyebilir; gerektiğinde Kenarlıksız kullanın.',
-    overlayModeChanged: 'Kaplama modu değiştirildi',
-    notifications: 'Bildirimler',
-    fullscreen: 'Tam ekran',
-    exitFullscreen: 'Tam ekrandan çık',
-    pip: 'PiP over apps',
-    roomId: 'Oda kodu',
-    mic: 'Mikrofon',
-    speaker: 'Hoparlör / Kulaklık',
-    defaultDevice: 'Varsayılan',
-    lowInternet: 'Zayıf internet modu',
-    lowPc: 'Zayıf bilgisayar modu',
-    audioOnlyHint: 'Audio only is enabled. Change screen quality if you want to share the screen.',
-    micPermission: 'Could not start the microphone. Allow microphone access and try again.',
-    screenPermission: 'Could not start screen sharing. Choose a screen/window that supports audio if you need video sound.',
-    roomOpened: 'Room opened. Voice starts automatically when friends join.',
-    micAutoStart: 'Allow microphone access to start voice automatically.',
-    micJoinTitle: 'Turn on microphone?',
-    micJoinDesc: 'Choose whether to enable your microphone now or stay muted in the room.',
-    activateMicNow: 'Enable microphone',
-    stayMuted: 'Stay muted',
-    historyForNewMembers: 'Yeni üyeler önceki mesajları görsün',
-    historySyncedToNewMember: 'Previous messages were sent to the new member.',
-    cameraWillStartWithStream: 'Camera will start automatically when screen sharing starts.',
-    cameraNeedsStream: 'Camera with stream works only while screen sharing is active.',
-    invalidRoom: 'Enter a valid room code like MHLKO-7K9A-X2QF',
-    confirmEndCall: 'Are you sure you want to end the call?',
-    confirmCloseApp: 'Are you sure you want to close the app?',
-    chatDisconnected: 'Chat is not connected right now.',
-    fileTypes: 'You can send images, videos, audio, and files up to 1GB.',
-    sendingFile: 'Sending file...',
-    fileFailed: 'Could not send the file. Chat is not connected.',
-    fileTooLarge: 'File is larger than the 1GB limit or cannot be sent safely.',
-    fileSent: 'File sent.',
-    voiceFailed: 'Could not send the voice message.',
-    recordingStarted: 'Voice recording started. Press again to send.',
-    recordingProblem: 'A problem happened while recording the voice message.',
-    recordingDenied: 'Could not record audio. Make sure microphone access is allowed.',
-    copied: 'Room code copied.',
-    dataProblem: 'Could not start the local database. Restart the app.',
-    chatCleared: 'This room history was deleted from this device.',
-    confirmWipe: 'Do you want to delete all local data?',
-    dataWiped: 'All local data deleted.',
-    pipUnsupported: 'Picture in Picture is not supported on this device.',
-    pipStartFirst: 'Start screen sharing first, then try PiP.',
-    placeholderEmail: 'Optional',
-    privateLabel: 'Private',
-    mediaLabel: 'Media',
-    fileLabel: 'File',
-    emojiTitle: 'Emoji',
-    attachTitle: 'Resim/video/ses',
-    voiceTitle: 'Sesli mesaj',
-    ownerBadge: 'Room owner',
-    me: 'Me',
-    state_idle: 'Disconnected',
-    state_connecting: 'Connecting',
-    state_connected: 'Connected',
-    state_room_ready: 'Room connected - waiting for members',
-    state_peer_connecting: 'Connecting members',
-    state_reconnecting: 'Reconnecting',
-    state_disconnected: 'Disconnected',
-    state_failed: 'Failed',
-    typingOne: 'is typing...',
-    typingMany: 'are typing...',
-    error_bad_signal: 'Received an invalid signaling message.',
-    error_signaling: 'Could not connect to signaling. Check your internet.',
-    error_prepare_connection: 'Could not prepare the connection. Try again.',
-    error_repair_connection: 'Could not repair the connection automatically. Try leaving and joining again.',
-    error_data_channel: 'There is a problem with the chat channel.',
-    error_bad_chat: 'Received an invalid chat message.',
-    error_incomplete_file: 'The file arrived incomplete because of weak network.',
-    minimizeTitle: 'Minimize to taskbar',
-    maximizeTitle: 'Maximize/restore',
-    trayTitle: 'Hide to system tray',
-    deletedMessage: 'Message deleted',
-    deleteMessage: 'Sil',
-    confirmDeleteMessage: 'Delete this message?',
-    sendQueued: 'Send selected images/files',
-    pasteImage: 'Image added to send.',
-    openImage: 'Open image',
-    download: 'Download',
-    log_info: 'Info',
-    log_error: 'Error',
-    privateP2PRoom: 'Özel P2P Odası',
-    chatOverlayEmpty: 'Sohbet kaplaması',
-    videoPreview: 'Video preview',
-    dropFilesHere: 'Drop files here to add them to the send queue',
-    attachmentQueued: 'File added to send queue.',
-    bannedMembers: 'Yasaklanan üyeler',
-    unban: 'Allow return',
-    noBannedMembers: 'No banned members.',
-    settingsPanel: 'Ayarlar',
-    openSettings: 'Ayarları aç',
-    closeSettings: 'Ayarları kapat',
-    screenAudioLimit: 'Note: excluding one app from full system audio needs OS/audio-driver support. Stream audio and call audio are separated inside the app as much as WebRTC allows.',
-    closeTitle: 'Çıkış',
-    state_waiting_approval: 'Waiting for admin approval',
-    joinRequests: 'Join requests',
-    noJoinRequests: 'No requests right now.',
-    approve: 'Onayla',
-    reject: 'Reddet',
-    joinAccepted: 'Join request approved.',
-    joinRejected: 'Join request rejected.',
-    promoteModerator: 'Make moderator',
-    moderatorBadge: 'Moderator',
-    promotedMember: 'Moderator role granted.',
-    settingsButton: 'Settings',
-    adminBadge: 'Admin',
-    hotkeys: 'Kısayollar',
-    errorLog: 'Olay günlüğü',
-    noErrors: 'Kayıtlı hata yok.',
-    clearLog: 'Günlüğü temizle',
-    close: 'Kapat',
-    pressHotkey: 'Kısayola şimdi bas',
-    clearHotkey: 'Kısayolu temizle',
-    hotkeySaved: 'Kısayol kaydedildi ve etkinleştirildi.',
-    hotkeyDuplicate: 'Bu kısayol zaten kullanılıyor',
-    muteMicHotkey: 'Mute/unmute mic',
-    shareScreenHotkey: 'Start/stop screen share',
-    endCallHotkey: 'End call',
-    fullscreenHotkey: 'Fullscreen/restore stream',
-    toggleSettingsHotkey: 'Open/close settings',
-    holdVoiceHint: 'Kaydetmek için basılı tut, önizleme için bırak, sonra Gönder’e bas.',
-    voicePreview: 'Sesli mesaj gönderime hazır',
-    discardVoice: 'Kaydı sil',
-    streamVolume: 'Yayın sesi',
-    playScreenOn: 'Ekran paylaşımı başladı',
-    playScreenOff: 'Ekran paylaşımı durdu',
-    userJoined: 'A member joined',
-    messageSending: 'Sending...',
-    messageSent: 'Sent',
-    messageDelivered: 'Delivered',
-    messageSeen: 'Seen',
-    troubleshootConnection: 'Troubleshoot connection',
-    waitingApprovalTitle: 'Yönetici onayı bekleniyor',
-    waitingApprovalDesc: 'Katılma isteğin gönderildi. Yönetici onaylayana kadar bekle.',
-    restartConnectionStarted: 'Connection restarted without clearing messages.',
-    restartWatchedStream: 'Yayını yeniden başlat',
-    watchedStreamRestarted: 'Yayın yolu odadan çıkmadan yeniden başlatılıyor.',
-    nativeVoiceEngine: 'Native Ses Motoru',
-    nativeVoiceEngineGroundwork: '0.8.5: Arama sesi ayrı MHTalkVoice motorunda çalışır ve sistem yayın sesinden tamamen hariç tutulur.',
-    echoGuardActive: 'Yankı koruması aktif: sistem sesi paylaşımı, arama üyelerini susturmadan arama sesini dışarıda bırakır.',
-    updateBootChecking: 'Checking for updates before opening the app...',
-    updateAutoInstalling: 'A new update is available. Updating automatically...',
-    checkUpdates: 'Güncellemeleri kontrol et',
-    checkingUpdates: 'Checking for updates...',
-    updateNone: 'No update available.',
-    updateAvailable: 'Update available',
-    updateInstall: 'Şimdi güncelle',
-    updateInstalling: 'Downloading and installing update...',
-    updateReady: 'Update installed. MHTalk will restart.',
-    updateFailed: 'Update failed. Check GitHub Releases and latest.json setup.',
-    updateTimeout: 'Update check timed out, continuing offline.',
-    updateRetry: 'Retry',
-    continueOffline: 'Continue Offline',
-    updateProgress: 'Update progress',
-    updateRequiredTitle: 'Required update available',
-    updateRequiredDesc: 'You must update MHTalk before continuing. Press Update now and it will download, install, and restart automatically.',
-    voiceSolutionsTitle: 'Native voice repair solutions',
-    voiceSolutionsHint: 'Try Solution 1, then 2, then 3, then 4 during a call or mic test, then keep the best one for your device.',
-    voiceSolutionApplied: 'Voice solution applied',
-    voiceSolutionFailed: 'Could not apply voice solution',
-    voiceEnhanceOn: 'Voice Enhance',
-    voiceEnhanceOff: 'Voice Enhance kapat',
-    voiceEnhanceEnabled: 'Voice Enhance açık',
-    voiceEnhanceDisabled: 'Voice Enhance kapalı',
-    voiceEnhanceHint: 'Enables native voice boost, clarity, compressor and limiter for member audio. Turn it off if a device has trouble; the base Native voice path stays unchanged.',
-    micTest: 'Mikrofon testi',
-    micTestStart: 'Mikrofon testini başlat',
-    micTestStop: 'Mikrofon testini durdur',
-    micTestHint: 'Mikrofonunu seçilen hoparlörden duyacaksın. Yankı olmaması için kulaklık önerilir.',
-    micTestFailed: 'Mikrofon testi başlatılamadı. İzinleri ve aygıtı kontrol et.',
-    micLevel: 'Mikrofon seviyesi',
-    closeStream: 'Yayını kapat',
-    downloadLog: 'TXT günlüğünü indir',
-    logDownloaded: 'Event log downloaded.',
-    streamStarted: 'Screen stream started.',
-    streamEnded: 'Screen stream ended.',
-    liveBadge: 'LIVE',
-    openFile: 'Open file',
-    status_sending: 'Sending',
-    status_receiving: 'Receiving',
-    status_completed: 'Completed',
-    status_failed: 'Failed',
-    status_canceled: 'Canceled',
-    youtubeVideo: 'YouTube video',
-    originalMessageMissing: 'Original message is not in this history.',
-    openStream: 'Open Stream',
-    switchStream: 'Switch Stream',
-    watchingStream: 'Watching',
-    streamStopped: 'Stream stopped',
-    muteAllMembers: 'Mute All Members',
-    unmuteAllMembers: 'Unmute All Members',
-    raiseHand: 'Raise Hand',
-    requestToSpeak: 'Request to speak',
-    requestedPermissionToSpeak: 'Requested permission to speak',
-    allowToSpeak: 'Allow to speak',
-    rejectSpeakRequest: 'Reject request',
-    speakRequestCooldown: 'You can request permission every 15 seconds',
-    adminAllowedSpeak: 'Admin allowed member to speak',
-    adminRejectedSpeak: 'Admin rejected the speak request',
-    clearVoicePriority: 'Clear Voice Priority',
-    mutedByAdmin: 'Muted by admin',
-    memberMutedByAdmin: 'Muted by admin',
-    muteForEveryone: 'Mute for everyone',
-    unmuteForEveryone: 'Unmute for everyone',
-    showChatOverlay: 'Show Chat Overlay',
-    hideChatOverlay: 'Hide Chat Overlay',
-    voiceAutoQuality: 'Voice Auto Quality',
-    streamAutoQuality: 'Stream Auto Quality',
-    networkWeakAdapting: 'Network weak, adapting quality',
-    streamQualityLimitedNetwork: 'Stream quality limited by network',
-    streamQualityLimitedDevice: 'Stream quality limited by device',
-    streamViewerClosed: 'Stream viewer panel closed',
-    streamViewerOpened: 'Stream viewer panel opened',
-    voiceProfileChanged: 'Voice profile changed',
-    adminMutedAll: 'Admin muted all members',
-    chatOverlayShown: 'Chat overlay shown',
-    chatOverlayHidden: 'Chat overlay hidden',
-    waitingForMembers: 'Waiting for members',
-    roomReady: 'Room ready',
-    autoMaxQuality: 'Auto Max for your display and network',
-    audioOnly: 'Audio only',
-    chatOverlayCustomize: 'Sohbet kaplamasını özelleştir',
-    overlayEditorTitle: 'Sohbet kaplaması düzenleyici',
-    overlayEditorHint: 'Bu alan ekranını simüle eder. Kaplama kutusunu sürükle, boyutlandır ve görünümünü ayarla.',
-    overlayOpacity: 'Kaplama saydamlığı',
-    overlayBorderRadius: 'Kaplama köşeleri',
-    overlayShowText: 'Metin mesajlarını göster',
-    overlayShowImages: 'Görselleri ve medyayı göster',
-    overlayShowAudio: 'Sesli mesajları göster',
-    overlayReset: 'Kaplamayı sıfırla',
-    camera: 'Kamera',
-    cameraSource: 'Kamera kaynağı',
-    cameraToggle: 'Toggle camera',
-    cameraUnavailable: 'Camera is unavailable or permission was denied.',
-    cameraMirror: 'Kamera önizlemesini aynala',
-    cameraOverlayHint: 'Drag and resize the camera window inside the stream.',
-    voicePriorityMax: 'Maximum Voice Priority',
-    voicePriorityMaxHint: 'Under pressure, stream, camera, and overlay load are reduced before voice is affected.',
-    cameraSettings: 'Kamera ayarları',
-    cameraModeTitle: 'Kamera modu seç',
-    cameraModeHint: 'Kamerayı tek başına mı yoksa ekran paylaşımıyla birlikte mi göstereceğini seç.',
-    cameraWithStream: 'Yayınla birlikte kamera',
-    cameraOnlyMode: 'Sadece kamera',
-    cameraModeBack: 'Back',
-    cameraOverlayCustomize: 'Kamera konumunu özelleştir',
-    cameraFitMode: 'Kamera çerçevesi',
-    cameraFitCover: 'Kırparak çerçeveyi doldur',
-    cameraFitContain: 'Kameranın tamamını göster',
-    cameraCropX: 'Yatay kırpma odağı',
-    cameraCropY: 'Dikey kırpma odağı',
-    cameraOpacity: 'Kamera saydamlığı',
-    cameraEditorTitle: 'Kamera kutusu düzenleyici',
-    cameraEditorHint: 'Kamera kutusunu yayın alanına yerleştir ve boyutlandır.',
-    cameraStart: 'Kamerayı başlat',
-    cameraStop: 'Kamerayı durdur',
-    cameraOnly: 'Sadece kamera',
-    viewCamera: 'Watch camera',
-    viewStream: 'Watch stream',
-    viewStreamOrCamera: 'Choose what to watch',
-    overlayPersisted: 'Overlay customization saved.',
-    attachmentReady: 'File is ready. Press Enter or Send to upload.',
-    attachmentRejected: 'This file cannot be sent.',
-    mediaCheckPassed: 'Quick file check passed.',
-    logInfo: 'Info',
-    mediaDownloadToDesktop: 'Masaüstüne indir',
-    mediaCopy: 'Kopyala',
-    mediaSavedToDesktop: 'Medya masaüstüne kaydedildi.',
-    mediaCopied: 'Medya kopyalandı.',
-    mediaCopyFailed: 'Medya kopyalanamadı.',
-    mediaDownloadFailed: 'Medya indirilemedi.',
-    previewMyMedia: 'Yayınımı/kameramı önizle',
-    myMediaPreview: 'Yayın ve kamera önizlemem',
-    myScreenPreview: 'Ekran yayını önizlemesi',
-    myCameraPreview: 'Kamera önizlemesi',
-    myAudioPreview: 'Ses testi',
-    noSelfMediaPreview: 'Önizleme için yayın veya kamerayı başlat.',
-    localScreenPreviewHint: 'Bu, mevcut ekran yayınının yerel önizlemesidir.',
-    videoAttachment: 'Video',
-    openVideo: 'Play video',
-    mediaContextTitle: 'Medya seçenekleri',
-    friendFallback: 'Arkadaş',
-    typingSeparator: ' ve ',
-  },
-};
-
-const ALL_APP_LANGUAGES: AppLanguage[] = ['ar', 'en', 'tr'];
-// 0.7.6: every language pack is resolved from its own dictionary only.
-// No Arabic/English inheritance is applied at runtime, so selecting a language
-// can no longer silently mix another language into visible UI strings.
-const TEXT: Record<AppLanguage, Record<string, string>> = Object.fromEntries(
-  ALL_APP_LANGUAGES.map((language) => [language, { ...(LOCALIZED_TEXT[language] || {}) }])
-) as Record<AppLanguage, Record<string, string>>;
-
-const COMPLETE_LANGUAGES = new Set<AppLanguage>(ALL_APP_LANGUAGES);
-// 0.6.8: restore all language choices and validate that every visible language has every key.
-const LANGUAGE_OPTIONS: Array<{ value: AppLanguage; label: string }> = [
-  { value: 'ar', label: 'العربية' },
-  { value: 'en', label: 'English' },
-  { value: 'tr', label: 'Türkçe' }
-];
-
-const RTL_LANGUAGES: AppLanguage[] = ['ar'];
 
 type PeerVolume = { voice: number; screen: number; voiceMuted: boolean; screenMuted: boolean };
 type PendingAttachment = { id: string; file: File; preview?: string };
+type OutgoingAttachmentSource = {
+  file: File;
+  targetPeerId?: string;
+  replyTo?: Pick<ChatMessage, 'id' | 'body' | 'senderName'>;
+};
 type CameraBox = { x: number; y: number; width: number; height: number };
 
 type MediaPreview = { src: string; name?: string; kind: 'image' | 'video'; localPath?: string };
@@ -1374,10 +101,12 @@ type SelfMediaMenu = { x: number; y: number };
 type BannedMember = { peerId: string; displayName: string; kickedAt: number };
 type JoinRequest = { peerId: string; displayName: string; requestedAt: number };
 type SpeakRequest = { peerId: string; displayName: string; requestedAt: number };
+type SettingsTab = 'voice' | 'camera' | 'recorder' | 'hotkeys' | 'others';
+const SETTINGS_TAB_ORDER: SettingsTab[] = ['voice', 'camera', 'recorder', 'hotkeys', 'others'];
 type RoomRole = 'owner' | 'moderator' | 'member';
 type HotkeyAction = 'muteMic' | 'toggleScreen' | 'endCall' | 'toggleFullscreen' | 'toggleSettings' | 'toggleOverlayMode';
 type PendingVoiceMessage = { blob: Blob; dataUrl: string; waveform: number[] };
-type LogEntry = { id: string; at: number; level: 'error' | 'info'; message: string };
+type LogEntry = DiagnosticEntry;
 type VoiceEngineStatus = { supported: boolean; ready: boolean; phase: string; processName: string; note: string; voiceEnhanceEnabled?: boolean };
 
 let currentVoiceMessageAudio: HTMLAudioElement | null = null;
@@ -1801,12 +530,14 @@ type OverlayMessageItem = { senderName: string; body: string; kind?: string; dat
 function clampOverlaySettings(settings?: Partial<ChatOverlaySettings>): ChatOverlaySettings {
   const base = DEFAULT_SETTINGS.chatOverlay;
   const merged = { ...base, ...(settings || {}) };
+  const widthPercent = Math.min(90, Math.max(12, Number(merged.widthPercent)));
+  const heightPercent = Math.min(60, Math.max(8, Number(merged.heightPercent)));
   return {
     ...merged,
-    xPercent: Math.min(95, Math.max(0, Number(merged.xPercent))),
-    yPercent: Math.min(95, Math.max(0, Number(merged.yPercent))),
-    widthPercent: Math.min(90, Math.max(12, Number(merged.widthPercent))),
-    heightPercent: Math.min(60, Math.max(8, Number(merged.heightPercent))),
+    xPercent: Math.min(100 - widthPercent, Math.max(0, Number(merged.xPercent))),
+    yPercent: Math.min(100 - heightPercent, Math.max(0, Number(merged.yPercent))),
+    widthPercent,
+    heightPercent,
     opacity: Math.min(1, Math.max(0.15, Number(merged.opacity))),
     borderRadius: Math.min(40, Math.max(0, Number(merged.borderRadius)))
   };
@@ -1816,17 +547,23 @@ function clampOverlaySettings(settings?: Partial<ChatOverlaySettings>): ChatOver
 function clampCameraSettings(settings?: Partial<CameraOverlaySettings>): CameraOverlaySettings {
   const base = DEFAULT_CAMERA_OVERLAY;
   const merged = { ...base, ...(settings || {}) };
+  const widthPercent = Math.min(70, Math.max(10, Number(merged.widthPercent)));
+  const heightPercent = Math.min(70, Math.max(10, Number(merged.heightPercent)));
   return {
     ...merged,
-    xPercent: Math.min(95, Math.max(0, Number(merged.xPercent))),
-    yPercent: Math.min(95, Math.max(0, Number(merged.yPercent))),
-    widthPercent: Math.min(70, Math.max(10, Number(merged.widthPercent))),
-    heightPercent: Math.min(70, Math.max(10, Number(merged.heightPercent))),
+    xPercent: Math.min(100 - widthPercent, Math.max(0, Number(merged.xPercent))),
+    yPercent: Math.min(100 - heightPercent, Math.max(0, Number(merged.yPercent))),
+    widthPercent,
+    heightPercent,
     borderRadius: Math.min(50, Math.max(0, Number(merged.borderRadius))),
     mirror: merged.mirror !== false,
     fitMode: merged.fitMode === 'contain' ? 'contain' : 'cover',
     cropXPercent: Math.min(100, Math.max(0, Number(merged.cropXPercent))),
     cropYPercent: Math.min(100, Math.max(0, Number(merged.cropYPercent))),
+    cropTopPercent: Math.min(40, Math.max(0, Number(merged.cropTopPercent))),
+    cropRightPercent: Math.min(40, Math.max(0, Number(merged.cropRightPercent))),
+    cropBottomPercent: Math.min(40, Math.max(0, Number(merged.cropBottomPercent))),
+    cropLeftPercent: Math.min(40, Math.max(0, Number(merged.cropLeftPercent))),
     opacity: Math.min(1, Math.max(0.1, Number(merged.opacity)))
   };
 }
@@ -1909,7 +646,7 @@ function ChatOverlayWindow() {
   }, []);
   return <main className={`desktop-chat-overlay-window ${overlaySettings.interactive ? 'interactive' : 'click-through'}`} aria-label="MHTalk Chat Overlay" style={{ opacity: overlaySettings.opacity, borderRadius: `${overlaySettings.borderRadius}px`, pointerEvents: overlaySettings.interactive ? 'auto' : 'none' }}>
     {overlaySettings.interactive && <div className="desktop-overlay-mode-badge">MHTalk • Interactive</div>}
-    {items.length === 0 && <div className="desktop-chat-overlay-empty"><b>MHTalk</b><span>{TEXT.en.chatOverlayEmpty}</span></div>}
+    {items.length === 0 && <div className="desktop-chat-overlay-empty"><b>MHTalk</b><span>{TEXT.chatOverlayEmpty}</span></div>}
     {items.map((message, index) => <div key={`${message.senderName}-${index}`} className={`overlay-item ${message.kind || 'text'}`}><b>{message.senderName}</b>{message.kind === 'image' ? <img src={message.dataUrl} alt={message.body || 'media'} /> : message.kind === 'audio' ? <span>🎙️ {message.body}</span> : <span>{message.body}</span>}</div>)}
   </main>;
 }
@@ -1975,19 +712,29 @@ function mediaSrcFromMessage(message: ChatMessage): string | undefined {
   return undefined;
 }
 
-function renderMessageContent(message: ChatMessage, args?: { onImageOpen?: (preview: ImagePreview) => void; onMediaContextMenu?: (event: ReactMouseEvent<HTMLElement>, media: MediaPreview) => void; onFileMenu?: (event: ReactMouseEvent<HTMLElement>, message: ChatMessage) => void; t?: (key: string) => string }) {
+function renderMessageContent(message: ChatMessage, args?: { onImageOpen?: (preview: ImagePreview) => void; onMediaContextMenu?: (event: ReactMouseEvent<HTMLElement>, media: MediaPreview) => void; onFileMenu?: (event: ReactMouseEvent<HTMLElement>, message: ChatMessage) => void; onRetryFile?: (message: ChatMessage) => void; onCancelFile?: (message: ChatMessage) => void; t?: (key: string) => string }) {
   if (message.deletedAt) return <p className="deleted-message">{args?.t?.('deletedMessage') || 'Message deleted'}</p>;
   const mediaSrc = mediaSrcFromMessage(message);
+  const transferStatus = message.fileStatus;
+  const canCancelTransfer = Boolean(transferStatus && ['queued', 'preparing', 'sending', 'receiving', 'retrying'].includes(transferStatus));
+  const transferState = transferStatus && transferStatus !== 'completed'
+    ? <div className={`media-transfer-state ${transferStatus}`}>
+        <span>{args?.t?.(`status_${transferStatus}`) || transferStatus}</span>
+        {message.fileError && <small>{message.fileError}</small>}
+        {canCancelTransfer && <button className="cancel-transfer-btn" onClick={() => args?.onCancelFile?.(message)}>{args?.t?.('stopTransfer') || 'Stop transfer'}</button>}
+        {transferStatus === 'failed' && message.sender === 'me' && message.retryable && <button onClick={() => args?.onRetryFile?.(message)}>{args?.t?.('retry') || 'Retry'}</button>}
+      </div>
+    : null;
   const isVoiceMessage = Boolean(message.dataUrl) && (message.kind === 'audio' || Boolean(message.waveform?.length) || Boolean(message.mimeType?.startsWith('audio/')) || /^voice-\d+\.webm$/i.test(message.fileName || ''));
   if (isVoiceMessage) return <VoiceMessagePlayer message={message} />;
   const isImageMessage = message.kind === 'image' || Boolean(message.mimeType?.startsWith('image/'));
   const isVideoMessage = message.kind === 'video' || Boolean(message.mimeType?.startsWith('video/')) || /\.(mp4|webm|mov|mkv|avi|m4v)$/i.test(message.fileName || '');
   if (isImageMessage && mediaSrc) {
     const media: MediaPreview = { src: mediaSrc, name: message.fileName, kind: 'image', localPath: message.localPath };
-    return <button className="media-open image-context-target" data-image-context="true" onClick={() => args?.onImageOpen?.({ src: mediaSrc, name: message.fileName })} onContextMenu={(event) => args?.onMediaContextMenu?.(event, media)} title={args?.t?.('openImage') || 'Open image'}><img className="chat-media" src={mediaSrc} alt={message.fileName || 'image'} /></button>;
+    return <div className="chat-media-transfer"><button className="media-open image-context-target" data-image-context="true" onClick={() => args?.onImageOpen?.({ src: mediaSrc, name: message.fileName })} onContextMenu={(event) => args?.onMediaContextMenu?.(event, media)} title={args?.t?.('openImage') || 'Open image'}><img className="chat-media" src={mediaSrc} alt={message.fileName || 'image'} /></button>{transferState}</div>;
   }
   if (isVideoMessage && mediaSrc) {
-    return <div className="chat-video-wrap"><video className="chat-media chat-video-player" src={mediaSrc} controls playsInline preload="metadata" /></div>;
+    return <div className="chat-media-transfer"><div className="chat-video-wrap"><video className="chat-media chat-video-player" src={mediaSrc} controls playsInline preload="metadata" /></div>{transferState}</div>;
   }
   if (message.localPath || message.transferId || typeof message.fileSize === 'number') {
     const status = message.fileStatus || (message.localPath ? 'completed' : 'sending');
@@ -1996,6 +743,9 @@ function renderMessageContent(message: ChatMessage, args?: { onImageOpen?: (prev
       <div className="file-transfer-head"><strong>{message.fileName || message.body || (args?.t?.('fileLabel') || 'file')}</strong>{status === 'completed' && <button className="file-kebab" aria-label={args?.t?.('fileActions') || 'File actions'} title={args?.t?.('fileActions') || 'File actions'} onClick={(event) => args?.onFileMenu?.(event, message)}>⋮</button>}</div>
       <small>{formatBytes(message.transferredBytes || 0)} / {formatBytes(message.fileSize || 0)} • {args?.t?.(`status_${status}`) || status}</small>
       {status !== 'completed' && <div className="file-progress"><i style={{ width: `${progress}%` }} /></div>}
+      {message.fileError && <small className="file-transfer-error">{message.fileError}</small>}
+      {canCancelTransfer && <button className="cancel-transfer-btn" onClick={() => args?.onCancelFile?.(message)}>{args?.t?.('stopTransfer') || 'Stop transfer'}</button>}
+      {status === 'failed' && message.sender === 'me' && message.retryable && <button onClick={() => args?.onRetryFile?.(message)}>{args?.t?.('retry') || 'Retry'}</button>}
       {message.localPath && status === 'completed' && <button onClick={() => invoke('open_received_file', { path: message.localPath }).catch(() => undefined)}>{args?.t?.('openFile') || 'Open'}</button>}
     </div>;
   }
@@ -2011,7 +761,9 @@ function peerInitial(peer?: PeerProfile | null) {
 export default function App() {
   if (new URLSearchParams(window.location.search).get('overlay') === 'chat') return <ChatOverlayWindow />;
   const queryClient = useQueryClient();
-  const roomRef = useRef<RealtimeRoom | null>(null);
+  const roomRef = useRef<RoomSession | null>(null);
+  const activeRoomIdRef = useRef('');
+  const commandGateRef = useRef(new AsyncCommandGate());
   const activeVideoRef = useRef<HTMLVideoElement | null>(null);
   const mediaBoxRef = useRef<HTMLDivElement | null>(null);
   const joinBellRef = useRef<HTMLButtonElement | null>(null);
@@ -2037,6 +789,9 @@ export default function App() {
   const micTestErrorUnlistenRef = useRef<(() => void) | null>(null);
   const autoOpenedJoinRequestIdsRef = useRef<Set<string>>(new Set());
   const pendingAttachmentKeysRef = useRef<Set<string>>(new Set());
+  const outgoingAttachmentSourcesRef = useRef<Map<string, OutgoingAttachmentSource>>(new Map());
+  const canceledAttachmentIdsRef = useRef<Set<string>>(new Set());
+  const attachmentReceiptTimersRef = useRef<Map<string, number>>(new Map());
   const sendingAttachmentsRef = useRef(false);
   const shutdownInProgressRef = useRef(false);
   const allowWindowCloseRef = useRef(false);
@@ -2051,7 +806,10 @@ export default function App() {
   const globalMuteSnapshotRef = useRef<Record<string, boolean> | null>(null);
   const globalMuteActiveRef = useRef(false);
   const seenReceiptSentRef = useRef<Set<string>>(new Set());
+  const receivedMessageIdsRef = useRef(new BoundedMessageIdCache(5_000));
   const messagesRef = useRef<ChatMessage[]>([]);
+  const outboxFlushInFlightRef = useRef(false);
+  const outboxAckChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const historySyncedPeerIdsRef = useRef<Set<string>>(new Set());
   const micPromptShownForRoomRef = useRef(false);
   const cameraWithStreamArmedRef = useRef(false);
@@ -2095,6 +853,7 @@ export default function App() {
   const [toast, setToast] = useState('');
   const [busy, setBusy] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [selectedProfilePeerId, setSelectedProfilePeerId] = useState('');
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
@@ -2115,6 +874,7 @@ export default function App() {
   const [selfPreviewOpen, setSelfPreviewOpen] = useState(false);
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('voice');
   const [bannedMembers, setBannedMembers] = useState<BannedMember[]>([]);
   const [banModalOpen, setBanModalOpen] = useState(false);
   const [speakingPeers, setSpeakingPeers] = useState<Record<string, boolean>>({});
@@ -2124,8 +884,10 @@ export default function App() {
   const [pendingVoice, setPendingVoice] = useState<PendingVoiceMessage | null>(null);
   const [hotkeysOpen, setHotkeysOpen] = useState(false);
   const [learningHotkey, setLearningHotkey] = useState<HotkeyAction | null>(null);
+  const [hotkeyDraft, setHotkeyDraft] = useState<Record<HotkeyAction, string>>({ ...DEFAULT_HOTKEYS });
+  const [hotkeyValidationError, setHotkeyValidationError] = useState('');
   const [errorLogOpen, setErrorLogOpen] = useState(false);
-  const [errorLog, setErrorLog] = useState<LogEntry[]>([]);
+  const [errorLog, setErrorLog] = useState<LogEntry[]>(() => loadDiagnostics());
   const [streamVolumeOpen, setStreamVolumeOpen] = useState(false);
   const [pipPeerId, setPipPeerId] = useState('');
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -2145,6 +907,7 @@ export default function App() {
   const [cameraModeChoiceOpen, setCameraModeChoiceOpen] = useState(false);
   const [cameraMode, setCameraMode] = useState<'camera-only' | 'camera-with-stream'>('camera-only');
   const [cameraDraft, setCameraDraft] = useState<CameraOverlaySettings | null>(null);
+  const [cameraCustomizationMode, setCameraCustomizationMode] = useState<'resize' | 'crop'>('resize');
   const [activeMediaMode, setActiveMediaMode] = useState<'screen' | 'camera'>('screen');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraWithStreamArmed, setCameraWithStreamArmed] = useState(false);
@@ -2155,6 +918,7 @@ export default function App() {
   const [screenRecorderBytes, setScreenRecorderBytes] = useState(0);
   const [screenRecorderElapsed, setScreenRecorderElapsed] = useState(0);
   const [screenRecorderSavedPath, setScreenRecorderSavedPath] = useState('');
+  const [screenRecorderPlayerOpen, setScreenRecorderPlayerOpen] = useState(false);
   const [screenRecorderError, setScreenRecorderError] = useState('');
   const [screenRecorderArmed, setScreenRecorderArmed] = useState(false);
   const [screenRecorderRecoveryOpen, setScreenRecorderRecoveryOpen] = useState(false);
@@ -2181,9 +945,13 @@ export default function App() {
   const speakingTimersRef = useRef<Record<string, number>>({});
 
   const activeSettings = useMemo(() => settings ? applyLowMode(settings) : null, [settings]);
+  const hotkeysDirty = useMemo(
+    () => JSON.stringify(hotkeyDraft) !== JSON.stringify(settings?.hotkeys || DEFAULT_HOTKEYS),
+    [hotkeyDraft, settings?.hotkeys]
+  );
   const selectedInputLabel = useCallback((deviceId?: string) => devices.inputs.find((device) => device.deviceId === deviceId)?.label || '', [devices.inputs]);
   const selectedOutputLabel = useCallback((deviceId?: string) => devices.outputs.find((device) => device.deviceId === deviceId)?.label || '', [devices.outputs]);
-  const startRoomVoice = useCallback((room: RealtimeRoom) => room.startVoice(
+  const startRoomVoice = useCallback((room: RoomSession) => room.startVoice(
     activeSettings?.audioInputId || undefined,
     activeSettings?.audioOutputId || undefined,
     selectedInputLabel(activeSettings?.audioInputId),
@@ -2191,10 +959,9 @@ export default function App() {
     Boolean(activeSettings?.voiceEnhanceEnabled)
   ), [activeSettings?.audioInputId, activeSettings?.audioOutputId, activeSettings?.voiceEnhanceEnabled, selectedInputLabel, selectedOutputLabel]);
 
-  const lang: AppLanguage = settings?.language || 'ar';
-  const isRtl = RTL_LANGUAGES.includes(lang);
-  const t = (key: string) => TEXT[lang]?.[key] ?? key;
+  const t = (key: string) => TEXT[key] ?? key;
   const peerList = useMemo(() => Object.values(peers), [peers]);
+  const selectedProfilePeer = selectedProfilePeerId ? peers[selectedProfilePeerId] || null : null;
   const profileAssetDescriptors = useMemo(
     () => peerList.map((peer) => ({ peerId: peer.peerId, avatarVersion: peer.avatarVersion })).sort((left, right) => left.peerId.localeCompare(right.peerId)),
     [peerList]
@@ -2246,6 +1013,7 @@ export default function App() {
           queryClient.invalidateQueries({ queryKey: ['profile-assets', roomId] }).catch(() => undefined);
         },
         onError: (error) => {
+          lastPublishedProfileAssetRef.current = '';
           addLog(`Profile asset publish failed: ${String((error as Error)?.message || error)}`, 'error');
         }
       }
@@ -2290,11 +1058,26 @@ export default function App() {
   }, [messages, settings?.chatOverlay, voicePressure]);
   const availableQualityOptions = useMemo(() => qualityOptionsForScreen(), []);
   const availableFpsOptions = useMemo(() => fpsOptionsForScreen(), []);
+  const availableRecorderResolutions = useMemo(() => {
+    const trackSettings = localScreenStream?.getVideoTracks()[0]?.getSettings();
+    const width = Number(trackSettings?.width || window.screen.width || 1920);
+    const height = Number(trackSettings?.height || window.screen.height || 1080);
+    return supportedRecorderResolutions(width, height);
+  }, [localScreenStream, screenRecorderOpen]);
   const settingsForm = draftSettings || settings || DEFAULT_SETTINGS;
   const settingsDirty = Boolean(settings && JSON.stringify(settingsForm) !== JSON.stringify(settings));
   useEffect(() => {
     if (!screenRecorderOpen && settings?.screenRecorder) setScreenRecorderDraft({ ...settings.screenRecorder });
   }, [settings?.screenRecorder, screenRecorderOpen]);
+
+  useEffect(() => {
+    if (!cameraSettingsOpen) setCameraCustomizationMode('resize');
+  }, [cameraSettingsOpen]);
+
+  useEffect(() => {
+    if (!screenRecorderOpen || availableRecorderResolutions.includes(screenRecorderDraft.resolution || 'auto')) return;
+    setScreenRecorderDraft((current) => ({ ...current, resolution: 'auto' }));
+  }, [availableRecorderResolutions, screenRecorderDraft.resolution, screenRecorderOpen]);
 
   useEffect(() => {
     if (!['recording', 'paused'].includes(screenRecorderState)) return;
@@ -2465,7 +1248,7 @@ export default function App() {
         setDevices(await listMediaDevices());
         setReady(true);
       } catch (error) {
-        setToast(TEXT[settings?.language || 'ar']?.dataProblem ?? 'dataProblem');
+        setToast(TEXT.dataProblem ?? 'dataProblem');
         console.error(error);
       }
     })();
@@ -2474,6 +1257,12 @@ export default function App() {
   }, []);
 
   useEffect(() => { messagesRef.current = messages; chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  useEffect(() => {
+    if (!roomId) return;
+    const timer = window.setInterval(() => flushMessageOutbox(roomId), 5_000);
+    return () => window.clearInterval(timer);
+  }, [roomId]);
   useEffect(() => () => { Object.values(speakingTimersRef.current).forEach((timer) => window.clearTimeout(timer)); }, []);
   useEffect(() => {
     if (isRoomOwner && forcedMutedByAdmin) {
@@ -2617,16 +1406,11 @@ export default function App() {
     };
   }, [mediaContextMenu, fileContextMenu, selfMediaMenu]);
 
-  useEffect(() => {
-    const onError = (event: ErrorEvent) => addLog(event.message || 'Unknown window error', 'error');
-    const onUnhandled = (event: PromiseRejectionEvent) => addLog(String(event.reason?.message || event.reason || 'Unhandled promise rejection'), 'error');
-    window.addEventListener('error', onError);
-    window.addEventListener('unhandledrejection', onUnhandled);
-    return () => {
-      window.removeEventListener('error', onError);
-      window.removeEventListener('unhandledrejection', onUnhandled);
-    };
-  }, []);
+  useEffect(() => subscribeDiagnostics((entry) => {
+    setErrorLog((current) => current.some((item) => item.id === entry.id)
+      ? current
+      : [entry, ...current].slice(0, 300));
+  }), []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -2731,6 +1515,7 @@ export default function App() {
   }, [joinRequestsOpen]);
 
   hotkeyActionHandlerRef.current = (action: HotkeyAction) => {
+    if (document.hasFocus() && isTypingTarget(document.activeElement)) return;
     if (action === 'muteMic') toggleMicMute().catch(() => undefined);
     if (action === 'toggleScreen') toggleScreen().catch(() => undefined);
     if (action === 'endCall') leaveRoom(true).catch(() => undefined);
@@ -2819,16 +1604,16 @@ export default function App() {
         setLearningHotkey(null);
         return;
       }
-      const combo = formatHotkeyEvent(event);
-      if (!combo || !settings) return;
-      persistHotkey(learningHotkey, combo).catch((error) => {
-        addLog(`Hotkey save failed: ${String((error as Error)?.message || error)}`, 'error');
-      });
+      const combo = normalizeHotkeyCombo(formatHotkeyEvent(event));
+      if (!combo) return;
+      const candidate = { ...hotkeyDraft, [learningHotkey]: combo };
+      setHotkeyDraft(candidate);
+      setHotkeyValidationError(validateHotkeyMap(candidate) || '');
       setLearningHotkey(null);
     };
     window.addEventListener('keydown', onKeyDown, true);
     return () => window.removeEventListener('keydown', onKeyDown, true);
-  }, [learningHotkey, settings]);
+  }, [learningHotkey, hotkeyDraft]);
 
 
   useEffect(() => {
@@ -2848,7 +1633,20 @@ export default function App() {
   }
 
   function addLog(message: string, level: LogEntry['level'] = 'info') {
-    setErrorLog((current) => [{ id: nowId(), at: Date.now(), level, message }, ...current].slice(0, 1200));
+    appendDiagnostic(message, level);
+  }
+
+  async function runGuardedCommand(command: string, action: () => Promise<void>): Promise<void> {
+    if (!commandGateRef.current.tryEnter(command)) return;
+    try {
+      await action();
+    } catch (error) {
+      const message = String((error as Error)?.message || error || `${command} failed`);
+      addLog(`${command}: ${message}`, 'error');
+      displayToast(message);
+    } finally {
+      commandGateRef.current.leave(command);
+    }
   }
 
   function logLevelText(level: LogEntry['level']) {
@@ -2857,7 +1655,7 @@ export default function App() {
 
   function localizeLogMessage(message: string) {
     const raw = String(message || '');
-    const direct = TEXT[lang]?.[raw];
+    const direct = TEXT[raw];
     if (direct) return direct;
     const common: Array<[RegExp, string]> = [
       [/^File transfer cancel requested$/i, t('fileFailed')],
@@ -3153,7 +1951,7 @@ export default function App() {
     setScreenRecorderRecoveryOpen(true);
   }
 
-  async function toggleScreenRecorderToolbar() {
+  async function toggleScreenRecorderToolbarCommand() {
     const controller = screenRecorderControllerRef.current;
     const active = controller && ['recording', 'paused', 'starting', 'stopping'].includes(controller.getState());
     if (active) {
@@ -3176,6 +1974,10 @@ export default function App() {
       screenRecorderManualStartRef.current = false;
       setScreenRecorderArmed(false);
     }
+  }
+
+  async function toggleScreenRecorderToolbar() {
+    await runGuardedCommand('toggle-screen-recorder', toggleScreenRecorderToolbarCommand);
   }
 
   async function resumeRecoverableRecording(recording: RecoverableScreenRecording) {
@@ -3278,6 +2080,7 @@ export default function App() {
 
   async function installRequiredUpdate(updateArg?: any) {
     if (updateBusy && !updateArg) return;
+    if (!commandGateRef.current.tryEnter('install-update')) return;
     setUpdateBusy(true);
     setUpdateGateChecked(false);
     setUpdateProgress(t('updateInstalling'));
@@ -3317,11 +2120,14 @@ export default function App() {
       setUpdateProgress(t('updateFailed'));
       setUpdateGateChecked(true);
       setUpdateBusy(false);
+    } finally {
+      commandGateRef.current.leave('install-update');
     }
   }
 
   async function checkForUpdates(manual = false) {
     if (updateBusy) return;
+    if (!commandGateRef.current.tryEnter('check-update')) return;
     setUpdateBusy(true);
     if (manual) setUpdateProgress(t('checkingUpdates'));
     try {
@@ -3351,6 +2157,8 @@ export default function App() {
       setUpdateProgress(isTimeout ? t('updateTimeout') : '');
       setUpdateGateChecked(true);
       setUpdateBusy(false);
+    } finally {
+      commandGateRef.current.leave('check-update');
     }
   }
 
@@ -3466,9 +2274,34 @@ export default function App() {
     }, 350);
   }
 
-  function sendSeenReceiptFor(message: ChatMessage) {
-    if (message.sender !== 'peer' || !message.peerId || message.deletedAt) return;
+  function clearAttachmentReceiptTimer(messageId: string) {
+    const timer = attachmentReceiptTimersRef.current.get(messageId);
+    if (timer) window.clearTimeout(timer);
+    attachmentReceiptTimersRef.current.delete(messageId);
+  }
+
+  function scheduleAttachmentReceiptTimeout(messageId: string) {
+    clearAttachmentReceiptTimer(messageId);
+    const timer = window.setTimeout(() => {
+      attachmentReceiptTimersRef.current.delete(messageId);
+      setMessages((current) => {
+        const next = current.map((message) => {
+          if (message.id !== messageId || message.sender !== 'me' || message.fileStatus !== 'awaiting-delivery') return message;
+          return { ...message, fileStatus: 'failed' as const, fileError: 'Delivery confirmation timed out.', retryable: true };
+        });
+        const updated = next.find((message) => message.id === messageId);
+        if (updated?.fileStatus === 'failed' && settings?.saveChat) saveMessage(updated).catch(() => undefined);
+        return next;
+      });
+    }, 30_000);
+    attachmentReceiptTimersRef.current.set(messageId, timer);
+  }
+
+  function sendSeenReceiptFor(message: ChatMessage): boolean {
+    if (message.sender !== 'peer' || !message.peerId || message.deletedAt) return false;
+    if (message.kind !== 'text' && message.fileStatus && message.fileStatus !== 'completed') return false;
     roomRef.current?.sendSeenReceipt(message.id, message.peerId);
+    return true;
   }
 
 
@@ -3483,8 +2316,7 @@ export default function App() {
         if (!id || seenReceiptSentRef.current.has(id)) continue;
         const message = messages.find((item) => item.id === id);
         if (!message) continue;
-        seenReceiptSentRef.current.add(id);
-        sendSeenReceiptFor(message);
+        if (sendSeenReceiptFor(message)) seenReceiptSentRef.current.add(id);
       }
     }, { threshold: [0.55] });
     for (const message of candidates) {
@@ -3590,7 +2422,7 @@ export default function App() {
     setDraftSettings((current) => ({ ...(current || settings || DEFAULT_SETTINGS), ...patch }));
   }
 
-  async function applySettingsChanges() {
+  async function applySettingsChangesCommand() {
     if (!draftSettings) return;
     const next: AppSettings = {
       ...draftSettings,
@@ -3603,6 +2435,10 @@ export default function App() {
     await updateSettings(next);
     setDraftSettings({ ...next });
     showToast(t('settingsSaved'));
+  }
+
+  async function applySettingsChanges() {
+    await runGuardedCommand('apply-settings', applySettingsChangesCommand);
   }
 
   async function toggleVoiceEnhance() {
@@ -3621,35 +2457,49 @@ export default function App() {
     }
   }
 
-  async function persistHotkey(action: HotkeyAction, combo: string) {
-    if (!settings) return;
-    const normalized = normalizeHotkeyCombo(combo);
-    const duplicate = (Object.entries(settings.hotkeys || {}) as Array<[HotkeyAction, string]>)
-      .find(([otherAction, value]) => otherAction !== action && value && normalizeHotkeyCombo(value) === normalized);
-    if (normalized && duplicate) {
-      showToast(`${t('hotkeyDuplicate')}: ${displayHotkey(duplicate[1])}`);
-      return;
-    }
+  function openHotkeysEditor() {
+    setHotkeyDraft({ ...(settings?.hotkeys || DEFAULT_HOTKEYS) });
+    setHotkeyValidationError('');
+    setLearningHotkey(null);
+    setHotkeysOpen(true);
+  }
 
-    const nextHotkeys = { ...(settings.hotkeys || {}), [action]: normalized };
-    const next = { ...settings, hotkeys: nextHotkeys };
-    await updateSettings(next);
-    setDraftSettings((current) => current ? { ...current, hotkeys: { ...nextHotkeys } } : current);
-    showToast(t('hotkeySaved'));
+  function closeHotkeysEditor() {
+    if (hotkeysDirty && !window.confirm(t('discardHotkeyChanges'))) return;
+    setHotkeysOpen(false);
+    setHotkeyValidationError('');
+    setLearningHotkey(null);
   }
 
   function clearHotkey(action: HotkeyAction) {
-    if (!settings) return;
-    persistHotkey(action, '').catch((error) => {
-      addLog(`Hotkey clear failed: ${String((error as Error)?.message || error)}`, 'error');
-    });
+    const next = { ...hotkeyDraft, [action]: '' };
+    setHotkeyDraft(next);
+    setHotkeyValidationError(validateHotkeyMap(next) || '');
     if (learningHotkey === action) setLearningHotkey(null);
   }
 
+  async function saveHotkeys() {
+    if (!settings || !hotkeysDirty) return;
+    const normalized = Object.fromEntries(
+      (Object.entries(hotkeyDraft) as Array<[HotkeyAction, string]>).map(([action, combo]) => [action, normalizeHotkeyCombo(combo)])
+    ) as Record<HotkeyAction, string>;
+    const validationError = validateHotkeyMap(normalized);
+    setHotkeyValidationError(validationError || '');
+    if (validationError) return;
+    await runGuardedCommand('save-hotkeys', async () => {
+      const next = { ...settings, hotkeys: normalized };
+      await updateSettings(next);
+      setHotkeyDraft({ ...normalized });
+      setDraftSettings((current) => current ? { ...current, hotkeys: { ...normalized } } : current);
+      showToast(t('hotkeySaved'));
+    });
+  }
+
   async function updateProfile(next: UserProfile) {
-    setProfile(next);
-    await saveProfile(next);
-    roomRef.current?.updateProfile(next);
+    const versioned = { ...next, updated_at: Date.now() };
+    setProfile(versioned);
+    roomRef.current?.updateProfile(versioned);
+    await saveProfile(versioned);
   }
 
   function defaultVolume(): PeerVolume { return { voice: 1, screen: 1, voiceMuted: false, screenMuted: false }; }
@@ -3700,12 +2550,51 @@ export default function App() {
 
   function syncHistoryToPeer(peerId: string) {
     if (!roomRef.current || !settings?.showHistoryForNewMembers || !isRoomOwnerRef.current) return;
-    const items = messagesRef.current.filter((message) => message.sender !== 'system' && !message.deletedAt).slice(-80);
+    const items = messagesRef.current
+      .filter((message) => message.sender !== 'system' && !message.deletedAt && !message.privateTo && !message.privateFrom)
+      .slice(-80);
     let sentCount = 0;
     for (const message of items) {
       if (roomRef.current.sendExistingMessageToPeer(message, peerId)) sentCount += 1;
     }
     if (sentCount > 0) addLog(`${t('historySyncedToNewMember')} ${sentCount}`, 'info');
+  }
+
+  async function flushMessageOutbox(expectedRoomId: string, connectedPeerIds?: string[]) {
+    const room = roomRef.current;
+    if (!room || !expectedRoomId || outboxFlushInFlightRef.current) return;
+    outboxFlushInFlightRef.current = true;
+    try {
+      const connected = connectedPeerIds || [...previousPeerIdsRef.current];
+      if (activeRoomIdRef.current !== expectedRoomId) return;
+      const entries = connectedPeerIds
+        ? await loadMessageOutbox(expectedRoomId, 100)
+        : await loadDueMessageOutbox(expectedRoomId);
+      for (const entry of entries) {
+        if (roomRef.current !== room || activeRoomIdRef.current !== expectedRoomId) break;
+        let recipients = entry.recipientPeerIds;
+        if (!recipients.length && connected.length) {
+          recipients = await setMessageOutboxRecipients(entry.messageId, connected);
+          if (recipients.length) {
+            setMessages((current) => current.map((message) => message.id === entry.messageId
+              ? { ...message, targetPeerIds: recipients, targetCount: recipients.length }
+              : message));
+          }
+        }
+        const pending = pendingOutboxRecipients(recipients, entry.acknowledgedPeerIds, connected);
+        let sent = 0;
+        for (const peerId of pending) {
+          if (room.sendExistingMessageToPeer({ ...entry.message, targetPeerIds: recipients, targetCount: recipients.length }, peerId)) sent += 1;
+        }
+        const attempts = entry.attempts + 1;
+        await markMessageOutboxAttempt(entry.messageId, attempts, Date.now() + outboxRetryDelayMs(attempts));
+        if (sent > 0) addLog(`Pending message retried to ${sent} member${sent === 1 ? '' : 's'}`, 'info');
+      }
+    } catch (error) {
+      addLog(`Message recovery failed: ${String((error as Error)?.message || error)}`, 'error');
+    } finally {
+      outboxFlushInFlightRef.current = false;
+    }
   }
 
   useEffect(() => {
@@ -3719,13 +2608,32 @@ export default function App() {
 
   async function openRoom(id: string) {
     if (!profile || !activeSettings || !settings) return;
+    if (!commandGateRef.current.tryEnter('open-room')) return;
     setBusy(true);
     try {
       await stopScreenRecording(false);
       roomRef.current?.close();
       const cleanId = normalizeRoomId(id);
+      activeRoomIdRef.current = cleanId;
       setRoomId(cleanId);
-      setMessages(settings.saveChat ? await loadMessages(cleanId) : []);
+      const [savedMessages, pendingOutbox] = await Promise.all([
+        settings.saveChat ? loadMessages(cleanId) : Promise.resolve([]),
+        loadMessageOutbox(cleanId)
+      ]);
+      const restoredMessages = new Map(savedMessages.map((message) => [message.id, message]));
+      for (const entry of pendingOutbox) {
+        restoredMessages.set(entry.messageId, {
+          ...entry.message,
+          targetPeerIds: entry.recipientPeerIds,
+          targetCount: entry.recipientPeerIds.length || entry.message.targetCount,
+          deliveredTo: entry.acknowledgedPeerIds,
+          deliveryStatus: entry.acknowledgedPeerIds.length ? 'delivered' : 'sending'
+        });
+      }
+      const initialMessages = [...restoredMessages.values()].sort((a, b) => a.createdAt - b.createdAt);
+      receivedMessageIdsRef.current.clear();
+      initialMessages.forEach((message) => receivedMessageIdsRef.current.remember(message.id));
+      setMessages(initialMessages);
       setPeers({});
       setPeerMedia({});
       setScreenStreams({});
@@ -3740,6 +2648,10 @@ export default function App() {
       setHighlightedMessageId('');
       setPendingAttachments([]);
       pendingAttachmentKeysRef.current.clear();
+      outgoingAttachmentSourcesRef.current.clear();
+      canceledAttachmentIdsRef.current.clear();
+      for (const timer of attachmentReceiptTimersRef.current.values()) window.clearTimeout(timer);
+      attachmentReceiptTimersRef.current.clear();
       setBannedMembers([]);
       setBanModalOpen(false);
       setSettingsOpen(false);
@@ -3774,7 +2686,7 @@ export default function App() {
       setVoiceActive(false);
       setMicEnabled(false);
 
-      let room: RealtimeRoom;
+      let room: RoomSession;
       const openMicPromptOnce = () => {
         if (micPromptShownForRoomRef.current) return;
         micPromptShownForRoomRef.current = true;
@@ -3782,7 +2694,7 @@ export default function App() {
         addLog('Room microphone prompt opened', 'info');
       };
 
-      room = new RealtimeRoom({
+      room = await createRoomSession({
         roomId: cleanId,
         signalingUrl: activeSettings.signalingUrl,
         profile,
@@ -3792,6 +2704,10 @@ export default function App() {
             if (label) setConnectionLabel(label);
           },
           onMessage: async (message) => {
+            if (receivedMessageIdsRef.current.remember(message.id)) {
+              if (message.peerId) room.sendSeenReceipt(message.id, message.peerId);
+              return;
+            }
             setMessages((current) => [...current, message]);
             notifyIncoming(message);
             if (windowFocused) window.setTimeout(() => sendSeenReceiptFor(message), 80);
@@ -3808,6 +2724,12 @@ export default function App() {
             }
             previousPeerIdsRef.current = nextIds;
             setPeers(mapped);
+            setMessages((current) => current.map((message) => {
+              if (message.sender !== 'peer' || !message.peerId || !mapped[message.peerId]) return message;
+              const nextName = mapped[message.peerId].displayName;
+              return message.senderName === nextName ? message : { ...message, senderName: nextName };
+            }));
+            window.setTimeout(() => flushMessageOutbox(cleanId, [...nextIds]), 100);
             nextPeers.forEach((peer) => {
               ensurePeerVolume(peer.peerId);
               if (globalMuteActiveRef.current && !previous.has(peer.peerId)) {
@@ -3852,7 +2774,7 @@ export default function App() {
               else setActivePeerId((current) => current === peerId && activeMediaMode === 'screen' ? '' : current);
             }
           },
-          onError: (message) => showError(TEXT[lang]?.[message] ?? message),
+          onError: (message) => showError(TEXT[message] ?? message),
           onLog: (message, level = 'info') => addLog(message, level),
           onLocalMedia: (media) => {
             if (typeof media.screenSharing === 'boolean') {
@@ -3923,18 +2845,45 @@ export default function App() {
             if (settings.saveChat) markMessageDeleted(messageId, deletedAt).catch(() => undefined);
           },
           onMessageReceipt: (messageId, peerId, status) => {
+            outboxAckChainRef.current = outboxAckChainRef.current
+              .then(() => acknowledgeMessageOutbox(messageId, peerId))
+              .catch(() => undefined);
             setMessages((current) => {
-              const next = current.map((message) => message.id === messageId ? withReceipt(message, peerId, status) : message);
+              const next = current.map((message) => {
+                if (message.id !== messageId) return message;
+                const received = withReceipt(message, peerId, status);
+                if (message.kind !== 'text' && (status === 'delivered' || status === 'seen')) {
+                  return { ...received, fileStatus: 'completed' as const, fileError: undefined, retryable: false, uploadProgress: 100 };
+                }
+                return received;
+              });
               const updated = next.find((message) => message.id === messageId);
+              if (updated?.fileStatus === 'completed') {
+                clearAttachmentReceiptTimer(messageId);
+                outgoingAttachmentSourcesRef.current.delete(messageId);
+              }
               if (updated && settings.saveChat) saveMessage(updated).catch(() => undefined);
               return next;
             });
           },
           onFileProgress: (patch) => {
             setMessages((current) => {
+              if (canceledAttachmentIdsRef.current.has(patch.id) && patch.fileStatus !== 'canceled') return current;
               const exists = current.some((message) => message.id === patch.id);
-              const next = exists ? current.map((message) => message.id === patch.id ? { ...message, ...patch, sender: message.sender, senderName: patch.senderName || message.senderName, createdAt: message.createdAt || patch.createdAt } : message) : [...current, patch];
+              const next = exists ? current.map((message) => message.id === patch.id ? {
+                ...message,
+                ...patch,
+                sender: message.sender,
+                senderName: patch.senderName || message.senderName,
+                body: patch.body || message.body,
+                kind: message.kind || patch.kind,
+                fileName: patch.fileName || message.fileName,
+                mimeType: patch.mimeType || message.mimeType,
+                fileSize: patch.fileSize ?? message.fileSize,
+                createdAt: message.createdAt || patch.createdAt
+              } : message) : [...current, patch];
               const updated = next.find((message) => message.id === patch.id);
+              if (updated?.fileStatus === 'failed' || updated?.fileStatus === 'canceled') clearAttachmentReceiptTimer(patch.id);
               if (updated && settings.saveChat) saveMessage(updated).catch(() => undefined);
               return next;
             });
@@ -4045,7 +2994,17 @@ export default function App() {
       setLocalPeerId(room.getLocalPeerId());
       setMessages((current) => [...current, systemMessage(cleanId, t('roomOpened'))]);
       await room.connect();
+      window.setTimeout(() => flushMessageOutbox(cleanId), 500);
+    } catch (error) {
+      roomRef.current?.close();
+      roomRef.current = null;
+      activeRoomIdRef.current = '';
+      setRoomId('');
+      setConnection('failed');
+      setConnectionLabel('state_failed');
+      showError(String((error as Error)?.message || error || 'Could not open the room'));
     } finally {
+      commandGateRef.current.leave('open-room');
       setBusy(false);
     }
   }
@@ -4061,11 +3020,12 @@ export default function App() {
     await openRoom(clean);
   }
 
-  async function leaveRoom(ask = true) {
+  async function leaveRoomCommand(ask = true) {
     if (ask && !window.confirm(t('confirmEndCall'))) return;
     await stopScreenRecording(true);
     await roomRef.current?.cleanDisconnect();
     roomRef.current = null;
+    activeRoomIdRef.current = '';
     setRoomId('');
     setConnection('idle');
     setConnectionLabel('state_idle');
@@ -4111,7 +3071,11 @@ export default function App() {
     seenReceiptSentRef.current = new Set();
   }
 
-  async function sendChat() {
+  async function leaveRoom(ask = true) {
+    await runGuardedCommand('leave-room', () => leaveRoomCommand(ask));
+  }
+
+  async function sendChatCommand() {
     if (editingMessage) {
       const result = roomRef.current?.editMessage(editingMessage.id, draft, editingMessage.privateTo || undefined);
       if (!result) {
@@ -4148,8 +3112,10 @@ export default function App() {
       setReplyTo(null);
       const pendingSent = { ...sent, deliveryStatus: 'sending' as const };
       setMessages((current) => [...current, pendingSent]);
+      await enqueueMessageOutbox(pendingSent);
       if (settings?.saveChat) await saveMessage(pendingSent);
       markOutgoingSentSoon(sent.id);
+      window.setTimeout(() => flushMessageOutbox(sent.roomId), 1_100);
     }
 
     if (hasFiles) {
@@ -4161,6 +3127,10 @@ export default function App() {
       await sendVoiceBlob(voice.blob, voice.waveform);
     }
     messageInputRef.current?.focus();
+  }
+
+  async function sendChat() {
+    await runGuardedCommand('send-chat', sendChatCommand);
   }
 
   async function queueAttachment(file: File) {
@@ -4279,14 +3249,16 @@ export default function App() {
       for (let index = 0; index < queued.length; index += 1) {
         const item = queued[index];
         const key = `${item.file.name}|${item.file.size}|${item.file.lastModified}`;
+        outgoingAttachmentSourcesRef.current.set(item.id, { file: item.file, targetPeerId, replyTo: replyPreview });
         try {
           const sent = await room.sendFile(item.file.name, item.file.type || 'application/octet-stream', item.file, targetPeerId, {
             messageId: item.id,
             createdAt: startedAt + index,
             fileSize: item.file.size,
             replyTo: replyPreview,
+            isCanceled: () => canceledAttachmentIdsRef.current.has(item.id),
             onProgress: (progress) => {
-              if (roomRef.current !== room) return;
+              if (roomRef.current !== room || canceledAttachmentIdsRef.current.has(item.id)) return;
               setMessages((current) => current.map((message) => message.id === item.id ? {
                 ...message,
                 fileStatus: 'sending',
@@ -4296,37 +3268,134 @@ export default function App() {
             }
           });
           if (roomRef.current !== room) continue;
+          if (canceledAttachmentIdsRef.current.has(item.id) || sent?.fileStatus === 'canceled') {
+            setMessages((current) => current.map((message) => message.id === item.id
+              ? { ...message, fileStatus: 'canceled', fileError: t('transferCanceled'), retryable: false }
+              : message));
+            continue;
+          }
           if (!sent) {
-            setMessages((current) => current.map((message) => message.id === item.id ? { ...message, fileStatus: 'failed', deliveryStatus: 'sent' } : message));
+            setMessages((current) => current.map((message) => message.id === item.id ? { ...message, fileStatus: 'failed', fileError: 'The attachment could not be sent.', retryable: true, deliveryStatus: 'sent' } : message));
             showToast(t('fileFailed'));
             continue;
           }
-          const localPreviewUrl = (item.file.type.startsWith('image/') || item.file.type.startsWith('video/') || item.file.type.startsWith('audio/')) && !sent.dataUrl && !sent.localPath && sent.fileStatus === 'completed'
+          const localPreviewUrl = (item.file.type.startsWith('image/') || item.file.type.startsWith('video/') || item.file.type.startsWith('audio/')) && !sent.dataUrl && !sent.localPath && sent.fileStatus !== 'failed'
             ? URL.createObjectURL(item.file)
             : undefined;
-          const completed = { ...sent, dataUrl: sent.dataUrl || localPreviewUrl, deliveryStatus: sent.fileStatus === 'canceled' ? 'sent' as const : 'sending' as const };
+          const completed = { ...sent, dataUrl: sent.dataUrl || localPreviewUrl, deliveryStatus: 'sending' as const };
           setMessages((current) => {
             const exists = current.some((message) => message.id === item.id);
             return exists
               ? current.map((message) => message.id === item.id ? { ...message, ...completed, createdAt: message.createdAt } : message)
               : [...current, completed];
           });
-          if (sent.fileStatus !== 'canceled') {
+          if (sent.fileStatus === 'failed') {
             if (settings?.saveChat) await saveMessage(sent);
+            showToast(t('fileFailed'));
+          } else {
+            if (settings?.saveChat) await saveMessage(completed);
             markOutgoingSentSoon(sent.id);
+            if (sent.fileStatus === 'awaiting-delivery') scheduleAttachmentReceiptTimeout(sent.id);
           }
         } catch (error) {
           addLog(`File upload failed: ${item.file.name}: ${String((error as Error)?.message || error)}`, 'error');
           if (roomRef.current === room) {
-            setMessages((current) => current.map((message) => message.id === item.id ? { ...message, fileStatus: 'failed', deliveryStatus: 'sent' } : message));
+            setMessages((current) => current.map((message) => message.id === item.id ? { ...message, fileStatus: 'failed', fileError: String((error as Error)?.message || error), retryable: true, deliveryStatus: 'sent' } : message));
             showToast(t('fileFailed'));
           }
         } finally {
           pendingAttachmentKeysRef.current.delete(key);
+          canceledAttachmentIdsRef.current.delete(item.id);
         }
       }
     } finally {
       sendingAttachmentsRef.current = false;
+    }
+  }
+
+  async function cancelAttachmentTransfer(message: ChatMessage, persist = true) {
+    if (!message.id) return;
+    canceledAttachmentIdsRef.current.add(message.id);
+    clearAttachmentReceiptTimer(message.id);
+    await roomRef.current?.cancelFileTransfer(message.id).catch((error) => {
+      addLog(`File cancellation failed: ${String((error as Error)?.message || error)}`, 'error');
+    });
+    let canceled: ChatMessage | undefined;
+    setMessages((current) => current.map((item) => {
+      if (item.id !== message.id) return item;
+      canceled = {
+        ...item,
+        fileStatus: 'canceled',
+        fileError: t('transferCanceled'),
+        retryable: false,
+        deliveryStatus: item.deliveryStatus || 'sent'
+      };
+      return canceled;
+    }));
+    if (persist && settings?.saveChat) {
+      const saved = canceled || { ...message, fileStatus: 'canceled' as const, fileError: t('transferCanceled'), retryable: false };
+      await saveMessage(saved).catch(() => undefined);
+    }
+    showToast(t('transferCanceled'));
+  }
+
+  async function retryAttachment(message: ChatMessage) {
+    const source = outgoingAttachmentSourcesRef.current.get(message.id);
+    if (!source || !roomRef.current) {
+      showToast(t('retryAttachmentUnavailable'));
+      return;
+    }
+    canceledAttachmentIdsRef.current.delete(message.id);
+    try {
+      await runGuardedCommand(`retry-attachment:${message.id}`, async () => {
+      const room = roomRef.current;
+      if (!room) throw new Error(t('chatDisconnected'));
+      clearAttachmentReceiptTimer(message.id);
+      setMessages((current) => current.map((item) => item.id === message.id
+        ? { ...item, fileStatus: 'retrying', fileError: undefined, uploadProgress: 0, transferredBytes: 0 }
+        : item));
+      const sent = await room.sendFile(
+        source.file.name,
+        source.file.type || message.mimeType || 'application/octet-stream',
+        source.file,
+        source.targetPeerId,
+        {
+          messageId: message.id,
+          createdAt: message.createdAt,
+          fileSize: source.file.size,
+          replyTo: source.replyTo,
+          isCanceled: () => canceledAttachmentIdsRef.current.has(message.id),
+          onProgress: (progress) => setMessages((current) => current.map((item) => item.id === message.id
+            ? canceledAttachmentIdsRef.current.has(message.id) ? item : {
+                ...item,
+                fileStatus: 'sending',
+                uploadProgress: progress,
+                transferredBytes: Math.min(source.file.size, Math.round((source.file.size * progress) / 100))
+              }
+            : item))
+        }
+      );
+      if (sent?.fileStatus === 'canceled' || canceledAttachmentIdsRef.current.has(message.id)) {
+        setMessages((current) => current.map((item) => item.id === message.id
+          ? { ...item, fileStatus: 'canceled', fileError: t('transferCanceled'), retryable: false }
+          : item));
+        return;
+      }
+      if (!sent || sent.fileStatus === 'failed') {
+        const reason = sent?.fileError || 'The attachment retry failed.';
+        setMessages((current) => current.map((item) => item.id === message.id
+          ? { ...item, fileStatus: 'failed', fileError: reason, retryable: true }
+          : item));
+        throw new Error(reason);
+      }
+      setMessages((current) => current.map((item) => item.id === message.id
+        ? { ...item, ...sent, dataUrl: item.dataUrl || sent.dataUrl, createdAt: item.createdAt, deliveryStatus: 'sending' }
+        : item));
+      if (settings?.saveChat) await saveMessage({ ...message, ...sent, deliveryStatus: 'sending' });
+      scheduleAttachmentReceiptTimeout(message.id);
+      });
+    } finally {
+      canceledAttachmentIdsRef.current.delete(message.id);
     }
   }
 
@@ -4531,21 +3600,45 @@ export default function App() {
 
   async function refreshDevices() { setDevices(await listMediaDevices()); }
 
-  async function clearCurrentChat() {
+  async function clearCurrentChatCommand() {
     if (!roomId) return;
     await clearRoomMessages(roomId);
     setMessages([systemMessage(roomId, t('chatCleared'))]);
   }
 
-  async function wipeData() {
+  async function clearCurrentChat() {
+    await runGuardedCommand('clear-chat', clearCurrentChatCommand);
+  }
+
+  async function wipeDataCommand() {
     if (!window.confirm(t('confirmWipe'))) return;
     await roomRef.current?.cleanDisconnect();
     await clearAllLocalData();
+    clearDiagnostics();
+    setErrorLog([]);
     const [loadedProfile, loadedSettings] = await Promise.all([loadProfile(), loadSettings()]);
     setProfile(loadedProfile);
     setSettingsState(loadedSettings);
     await leaveRoom(false);
     showToast(t('dataWiped'));
+  }
+
+  async function wipeData() {
+    await runGuardedCommand('wipe-data', wipeDataCommand);
+  }
+
+  function handleSettingsTabKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>, tab: SettingsTab) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = SETTINGS_TAB_ORDER.indexOf(tab);
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? SETTINGS_TAB_ORDER.length - 1
+        : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + SETTINGS_TAB_ORDER.length) % SETTINGS_TAB_ORDER.length;
+    const next = SETTINGS_TAB_ORDER[nextIndex];
+    setSettingsTab(next);
+    window.requestAnimationFrame(() => document.getElementById(`settings-tab-${next}`)?.focus());
   }
 
   async function toggleFullscreen() {
@@ -4556,6 +3649,17 @@ export default function App() {
   }
 
   async function openPictureInPicture() {
+    if (document.pictureInPictureElement && document.exitPictureInPicture) {
+      try { await document.exitPictureInPicture(); } catch { /* already closing */ }
+      try {
+        const appWindow = getCurrentWindow();
+        await appWindow.show();
+        await appWindow.unminimize();
+        await appWindow.setFocus();
+      } catch { /* window is already visible */ }
+      setPipPeerId('');
+      return;
+    }
     const video = activeVideoRef.current as HTMLVideoElement & { requestPictureInPicture?: () => Promise<PictureInPictureWindow> };
     if (!video || !video.requestPictureInPicture) {
       showToast(t('pipUnsupported'));
@@ -4564,7 +3668,14 @@ export default function App() {
     try {
       await video.requestPictureInPicture();
       setPipPeerId(activePeer?.peerId || '');
-      video.onleavepictureinpicture = () => setPipPeerId('');
+      video.onleavepictureinpicture = () => {
+        setPipPeerId('');
+        const appWindow = getCurrentWindow();
+        appWindow.show()
+          .then(() => appWindow.unminimize())
+          .then(() => appWindow.setFocus())
+          .catch(() => undefined);
+      };
     }
     catch { showToast(t('pipStartFirst')); }
   }
@@ -4632,6 +3743,9 @@ export default function App() {
   async function deleteChatMessage(message: ChatMessage) {
     if (message.sender !== 'me' || message.deletedAt) return;
     if (!window.confirm(t('confirmDeleteMessage'))) return;
+    if (message.fileStatus && ['queued', 'preparing', 'sending', 'receiving', 'retrying'].includes(message.fileStatus)) {
+      await cancelAttachmentTransfer(message, false);
+    }
     const result = roomRef.current?.deleteMessage(message.id, message.privateTo || undefined);
     if (!result) {
       showToast(t('chatDisconnected'));
@@ -4863,6 +3977,112 @@ export default function App() {
       const next = clampCameraSettings({ ...(current || settings?.cameraOverlay || DEFAULT_CAMERA_OVERLAY), ...partial });
       if (cameraOpen && cameraMode === 'camera-with-stream') roomRef.current?.updateCameraOverlay(next);
       return next;
+    });
+  }
+
+  function cameraPreviewStyle(draft: CameraOverlaySettings): CSSProperties {
+    const visibleWidth = Math.max(20, 100 - draft.cropLeftPercent - draft.cropRightPercent);
+    const visibleHeight = Math.max(20, 100 - draft.cropTopPercent - draft.cropBottomPercent);
+    return {
+      objectFit: draft.fitMode,
+      position: 'absolute',
+      width: `${10000 / visibleWidth}%`,
+      height: `${10000 / visibleHeight}%`,
+      left: `${-draft.cropLeftPercent * 100 / visibleWidth}%`,
+      top: `${-draft.cropTopPercent * 100 / visibleHeight}%`
+    };
+  }
+
+  function cameraEdgePointer(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    edge: 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw'
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    const box = event.currentTarget.parentElement;
+    const mock = box?.parentElement;
+    if (!box || !mock) return;
+    const rect = mock.getBoundingClientRect();
+    const start = clampCameraSettings(cameraDraft || settings?.cameraOverlay || DEFAULT_CAMERA_OVERLAY);
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const includes = (direction: string) => edge.includes(direction);
+    const onMove = (moveEvent: PointerEvent) => {
+      const dx = ((moveEvent.clientX - startX) / Math.max(1, rect.width)) * 100;
+      const dy = ((moveEvent.clientY - startY) / Math.max(1, rect.height)) * 100;
+      if (cameraCustomizationMode === 'crop') {
+        const cropFromVisualLeft = includes('w') ? dx : 0;
+        const cropFromVisualRight = includes('e') ? -dx : 0;
+        updateCameraDraft({
+          cropTopPercent: includes('n') ? start.cropTopPercent + dy : start.cropTopPercent,
+          cropRightPercent: start.cropRightPercent + (start.mirror ? cropFromVisualLeft : cropFromVisualRight),
+          cropBottomPercent: includes('s') ? start.cropBottomPercent - dy : start.cropBottomPercent,
+          cropLeftPercent: start.cropLeftPercent + (start.mirror ? cropFromVisualRight : cropFromVisualLeft)
+        });
+        return;
+      }
+
+      const isCorner = edge.length === 2;
+      if (isCorner) {
+        const ratio = start.widthPercent / Math.max(1, start.heightPercent);
+        const horizontalWidth = includes('w') ? start.widthPercent - dx : start.widthPercent + dx;
+        const verticalWidth = (includes('n') ? start.heightPercent - dy : start.heightPercent + dy) * ratio;
+        const requestedWidth = Math.abs(horizontalWidth - start.widthPercent) >= Math.abs(verticalWidth - start.widthPercent)
+          ? horizontalWidth
+          : verticalWidth;
+        const horizontalSpace = includes('w') ? start.xPercent + start.widthPercent : 100 - start.xPercent;
+        const verticalSpace = includes('n') ? start.yPercent + start.heightPercent : 100 - start.yPercent;
+        const maximumWidth = Math.min(70, horizontalSpace, verticalSpace * ratio);
+        const width = Math.min(maximumWidth, Math.max(10, requestedWidth));
+        const height = Math.min(70, Math.max(10, width / ratio));
+        updateCameraDraft({
+          widthPercent: width,
+          heightPercent: height,
+          xPercent: includes('w') ? start.xPercent + start.widthPercent - width : start.xPercent,
+          yPercent: includes('n') ? start.yPercent + start.heightPercent - height : start.yPercent
+        });
+        return;
+      }
+
+      if (edge === 'w') {
+        const x = Math.min(start.xPercent + start.widthPercent - 10, Math.max(0, start.xPercent + dx));
+        updateCameraDraft({ xPercent: x, widthPercent: start.xPercent + start.widthPercent - x });
+      } else if (edge === 'e') {
+        updateCameraDraft({ widthPercent: Math.min(70, 100 - start.xPercent, Math.max(10, start.widthPercent + dx)) });
+      } else if (edge === 'n') {
+        const y = Math.min(start.yPercent + start.heightPercent - 10, Math.max(0, start.yPercent + dy));
+        updateCameraDraft({ yPercent: y, heightPercent: start.yPercent + start.heightPercent - y });
+      } else {
+        updateCameraDraft({ heightPercent: Math.min(70, 100 - start.yPercent, Math.max(10, start.heightPercent + dy)) });
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  function resetCameraCustomization() {
+    setCameraCustomizationMode('resize');
+    setCameraDraft({ ...DEFAULT_CAMERA_OVERLAY });
+  }
+
+  function nudgeOverlayDraft(dx: number, dy: number) {
+    const draft = clampOverlaySettings(overlayDraft || settings?.chatOverlay || DEFAULT_SETTINGS.chatOverlay);
+    updateOverlayDraft({ xPercent: draft.xPercent + dx, yPercent: draft.yPercent + dy });
+  }
+
+  function growOverlayDraft() {
+    const draft = clampOverlaySettings(overlayDraft || settings?.chatOverlay || DEFAULT_SETTINGS.chatOverlay);
+    const ratio = draft.widthPercent / Math.max(1, draft.heightPercent);
+    const nextWidth = Math.min(90, draft.widthPercent + 4);
+    const nextHeight = Math.min(60, nextWidth / ratio);
+    updateOverlayDraft({
+      widthPercent: nextWidth,
+      heightPercent: nextHeight,
+      yPercent: Math.max(0, draft.yPercent - (nextHeight - draft.heightPercent))
     });
   }
 
@@ -5117,17 +4337,17 @@ export default function App() {
 
   function typingLabel() {
     if (!typingNames.length) return '';
-    if (typingNames.length === 1) return lang === 'ar' ? `${typingNames[0]} ${t('typingOne')}` : `${typingNames[0]} ${t('typingOne')}`;
+    if (typingNames.length === 1) return `${typingNames[0]} ${t('typingOne')}`;
     const names = typingNames.slice(0, 2).join(t('typingSeparator'));
-    return lang === 'ar' ? `${names} ${t('typingMany')}` : `${names} ${t('typingMany')}`;
+    return `${names} ${t('typingMany')}`;
   }
 
   if (!ready || !profile || !settings || !activeSettings) {
-    return <main className="boot" dir={isRtl ? 'rtl' : 'ltr'}><div className="loader" /> <span>{t('boot')}</span></main>;
+    return <main className="boot" dir="ltr"><div className="loader" /> <span>{t('boot')}</span></main>;
   }
 
   if (!updateGateChecked || requiredUpdate) {
-    return <main className="boot forced-update-page" dir={isRtl ? 'rtl' : 'ltr'}>
+    return <main className="boot forced-update-page" dir="ltr">
       <div className="profile-modal forced-update-modal startup-update-modal">
         <div className="forced-update-icon">↻</div>
         <h2>{requiredUpdate ? t('updateRequiredTitle') : t('checkingUpdates')}</h2>
@@ -5141,7 +4361,7 @@ export default function App() {
   }
 
   return (
-    <main className={`app lang-${lang} ${isRtl ? 'rtl-app' : 'ltr-app'}`} dir={isRtl ? 'rtl' : 'ltr'}>
+    <main className="app lang-en ltr-app" dir="ltr">
       <header className="titlebar" data-tauri-drag-region onMouseDown={startWindowDrag}>
         <div className={`pill state-${connection}`}>{displayConnectionLabel}</div>
         {roomId && connectionLabel !== 'state_waiting_approval' && ['connecting', 'reconnecting', 'disconnected', 'failed'].includes(connection) && <button className="troubleshoot-btn" onClick={troubleshootConnection}>{t('troubleshootConnection')}</button>}
@@ -5211,10 +4431,10 @@ export default function App() {
               <div className={`top-stage ${mediaPanelOpen ? 'viewer-open' : 'viewer-hidden'}`}>
                 {mediaPanelOpen && <div className="media-box" ref={mediaBoxRef}>
                   <MediaVideo stream={streamViewerOpen ? activeStream : undefined} active={streamViewerOpen && activeHasMedia} videoRef={activeVideoRef} audioEnabled={Boolean(activePeer?.peerId && pipPeerId === activePeer.peerId)} muted={activePeerVolume.screenMuted} volume={activePeerVolume.screen} outputId={settings.audioOutputId} refreshToken={activePeer?.peerId ? streamRefreshTokens[activePeer.peerId] || 0 : 0} />
-                  {streamViewerOpen && <div className="screen-overlay"><button onClick={toggleFullscreen}>{isFullscreen ? t('exitFullscreen') : t('fullscreen')}</button><button onClick={openPictureInPicture}>{t('pip')}</button><button onClick={restartWatchedStream}>{t('restartWatchedStream')}</button><button onClick={closeCurrentStream}>{t('closeStream')}</button>{activePeer?.peerId && (() => { const volume = peerVolumes[activePeer.peerId] || defaultVolume(); return <div className={`stream-volume-control ${streamVolumeOpen ? 'open' : ''}`}><button onClick={() => setStreamVolumeOpen((open) => !open)} title={t('streamVolume')}>{volume.screenMuted ? '🔇' : '🔊'}</button><div className="stream-volume-pop"><button className="tiny-mute" onClick={() => setVolume(activePeer.peerId, 'screenMuted', !volume.screenMuted)}>{volume.screenMuted ? t('unmuteScreen') : t('muteScreen')}</button><input type="range" min="0" max="2" step="0.05" value={volume.screen} onChange={(e) => setVolume(activePeer.peerId, 'screen', Number(e.target.value))} /><small>{Math.round(volume.screen * 100)}%</small></div></div>; })()}</div>}
+                  {streamViewerOpen && <div className="screen-overlay"><button onClick={toggleFullscreen}>{isFullscreen ? t('exitFullscreen') : t('fullscreen')}</button><button className={pipPeerId ? 'pip-active' : ''} onClick={openPictureInPicture}>{pipPeerId ? t('pipBackToApp') : t('pip')}</button><button onClick={restartWatchedStream}>{t('restartWatchedStream')}</button><button onClick={closeCurrentStream}>{t('closeStream')}</button>{activePeer?.peerId && (() => { const volume = peerVolumes[activePeer.peerId] || defaultVolume(); return <div className={`stream-volume-control ${streamVolumeOpen ? 'open' : ''}`}><button onClick={() => setStreamVolumeOpen((open) => !open)} title={t('streamVolume')}>{volume.screenMuted ? '🔇' : '🔊'}</button><div className="stream-volume-pop"><button className="tiny-mute" onClick={() => setVolume(activePeer.peerId, 'screenMuted', !volume.screenMuted)}>{volume.screenMuted ? t('unmuteScreen') : t('muteScreen')}</button><input type="range" min="0" max="2" step="0.05" value={volume.screen} onChange={(e) => setVolume(activePeer.peerId, 'screen', Number(e.target.value))} /><small>{Math.round(volume.screen * 100)}%</small></div></div>; })()}</div>}
                   {!streamViewerOpen && localCameraPanelOpen && <div className="camera-only-stage"><span>{t('cameraOnly')}</span></div>}
                   {cameraOpen && cameraStream && cameraMode === 'camera-only' && <div className="camera-overlay-box" style={{ left: `${cameraBox.x}%`, top: `${cameraBox.y}%`, width: `${cameraBox.width}%`, height: `${cameraBox.height}%`, borderRadius: `${settings.cameraOverlay.borderRadius}px` }} onPointerDown={(event) => startCameraDrag(event, 'move')}>
-                    <video ref={cameraVideoRef} autoPlay playsInline muted className={settings.cameraOverlay.mirror ? 'mirrored-camera' : ''} />
+                    <video ref={cameraVideoRef} autoPlay playsInline muted className={settings.cameraOverlay.mirror ? 'mirrored-camera' : ''} style={cameraPreviewStyle(clampCameraSettings(settings.cameraOverlay))} />
                     <button className="camera-close" onPointerDown={(e) => e.stopPropagation()} onClick={() => toggleCameraOverlay(cameraMode)}>×</button>
                     <span className="camera-resize" onPointerDown={(event) => startCameraDrag(event, 'resize')} />
                   </div>}
@@ -5240,7 +4460,7 @@ export default function App() {
                     </div>;
                   })}
                 </div>
-                {peerMenuId && peers[peerMenuId] && (() => { const peer = peers[peerMenuId]; const volume = peerVolumes[peer.peerId] || defaultVolume(); const action = streamActionLabel(peer.peerId); return <div className="member-popover"><div className="member-popover-head">{renderAvatar(peer)}<strong>{peer.displayName}</strong><button onClick={() => setPeerMenuId('')}>×</button></div>{peerMedia[peer.peerId]?.screenSharing && <button onClick={() => showPeerStream(peer.peerId)}>{t('viewStream')}</button>}{peerMedia[peer.peerId]?.cameraSharing && <button onClick={() => showPeerCamera(peer.peerId)}>{t('viewCamera')}</button>}{action && activePeerId === peer.peerId && streamViewerOpen && <button onClick={closeCurrentStream}>{t('closeStream')}</button>}<button onClick={() => { setPrivateTarget(peer.peerId); setPeerMenuId(''); }}>{t('privateMessage')}</button>{canModerate && peer.peerId !== localPeerId && <button onClick={() => togglePublicMutePeer(peer.peerId)}>{adminMutedPeers[peer.peerId] ? t('unmuteForEveryone') : t('muteForEveryone')}</button>}{canModerate && peer.peerId !== localPeerId && <button className="danger" onClick={() => kickPeer(peer.peerId)}>{t('kickMember')}</button>}{isRoomOwner && roomRoles[peer.peerId] !== 'moderator' && <button onClick={() => promotePeer(peer.peerId)}>{t('promoteModerator')}</button>}<label>{t('callVolume')} {Math.round(volume.voice * 100)}%</label><input type="range" min="0" max="2" step="0.05" value={volume.voice} onChange={(e) => setVolume(peer.peerId, 'voice', Number(e.target.value))} /><button onClick={() => setVolume(peer.peerId, 'voiceMuted', !volume.voiceMuted)}>{volume.voiceMuted ? t('unmuteCall') : t('muteCall')}</button><label>{t('screenVolume')} {Math.round(volume.screen * 100)}%</label><input type="range" min="0" max="2" step="0.05" value={volume.screen} onChange={(e) => setVolume(peer.peerId, 'screen', Number(e.target.value))} /><button onClick={() => setVolume(peer.peerId, 'screenMuted', !volume.screenMuted)}>{volume.screenMuted ? t('unmuteScreen') : t('muteScreen')}</button></div>; })()}
+                {peerMenuId && peers[peerMenuId] && (() => { const peer = peers[peerMenuId]; const volume = peerVolumes[peer.peerId] || defaultVolume(); const action = streamActionLabel(peer.peerId); return <div className="member-popover"><div className="member-popover-head">{renderAvatar(peer)}<strong>{peer.displayName}</strong><button onClick={() => setPeerMenuId('')}>×</button></div><button onClick={() => { setSelectedProfilePeerId(peer.peerId); setPeerMenuId(''); }}>{t('showProfile')}</button>{peerMedia[peer.peerId]?.screenSharing && <button onClick={() => showPeerStream(peer.peerId)}>{t('viewStream')}</button>}{peerMedia[peer.peerId]?.cameraSharing && <button onClick={() => showPeerCamera(peer.peerId)}>{t('viewCamera')}</button>}{action && activePeerId === peer.peerId && streamViewerOpen && <button onClick={closeCurrentStream}>{t('closeStream')}</button>}<button onClick={() => { setPrivateTarget(peer.peerId); setPeerMenuId(''); }}>{t('privateMessage')}</button>{canModerate && peer.peerId !== localPeerId && <button onClick={() => togglePublicMutePeer(peer.peerId)}>{adminMutedPeers[peer.peerId] ? t('unmuteForEveryone') : t('muteForEveryone')}</button>}{canModerate && peer.peerId !== localPeerId && <button className="danger" onClick={() => kickPeer(peer.peerId)}>{t('kickMember')}</button>}{isRoomOwner && roomRoles[peer.peerId] !== 'moderator' && <button onClick={() => promotePeer(peer.peerId)}>{t('promoteModerator')}</button>}<label>{t('callVolume')} {Math.round(volume.voice * 100)}%</label><input type="range" min="0" max="2" step="0.05" value={volume.voice} onChange={(e) => setVolume(peer.peerId, 'voice', Number(e.target.value))} /><button onClick={() => setVolume(peer.peerId, 'voiceMuted', !volume.voiceMuted)}>{volume.voiceMuted ? t('unmuteCall') : t('muteCall')}</button><label>{t('screenVolume')} {Math.round(volume.screen * 100)}%</label><input type="range" min="0" max="2" step="0.05" value={volume.screen} onChange={(e) => setVolume(peer.peerId, 'screen', Number(e.target.value))} /><button onClick={() => setVolume(peer.peerId, 'screenMuted', !volume.screenMuted)}>{volume.screenMuted ? t('unmuteScreen') : t('muteScreen')}</button></div>; })()}
               </div>
 
               <div className="chat">
@@ -5254,7 +4474,7 @@ export default function App() {
                     >
                       <span>{message.senderName}{message.privateTo || message.privateFrom ? ` • ${t('privateLabel')}` : ''}{message.editedAt ? ` • ${t('edited')}` : ''}</span>
                       {message.replyToId && <button className="reply-preview clickable" onClick={() => scrollToMessage(message.replyToId)}><b>{message.replyToSender}</b><em>{message.replyToBody}</em></button>}
-                      {renderMessageContent(message, { onImageOpen: setImagePreview, onMediaContextMenu: openMediaContext, onFileMenu: openFileContext, t })}
+                      {renderMessageContent(message, { onImageOpen: setImagePreview, onMediaContextMenu: openMediaContext, onFileMenu: openFileContext, onRetryFile: retryAttachment, onCancelFile: cancelAttachmentTransfer, t })}
                       {message.sender === 'me' && !message.deletedAt && !['sending', 'failed', 'canceled'].includes(message.fileStatus || '') && <div className={`delivery-status ${message.deliveryStatus === 'seen' ? 'seen' : ''}`}>
                         <span>{message.deliveryStatus === 'sending' ? '…' : message.deliveryStatus === 'sent' ? '✓' : '✓✓'}</span> {messageStatusText(message)}
                       </div>}
@@ -5306,16 +4526,22 @@ export default function App() {
         {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}>
           <div className="profile-modal settings-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head"><h3>{t('settingsPanel')}</h3><button onClick={() => setSettingsOpen(false)}>×</button></div>
-            <label>{t('language')}</label>
-            <select value={settingsForm.language} onChange={(e) => updateDraftSettings({ language: e.target.value as AppLanguage })}>
-              {LANGUAGE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-            <button className="screen-recorder-open-btn" onClick={() => openScreenRecorderPanel().catch(() => undefined)}>
+            <div className="settings-top-tabs" role="tablist" aria-label={t('settingsPanel')}>
+              {([
+                ['voice', t('voiceSettings')],
+                ['camera', t('cameraSettings')],
+                ['recorder', t('screenRecorder')],
+                ['hotkeys', t('hotkeys')],
+                ['others', t('otherSettings')]
+              ] as Array<[SettingsTab, string]>).map(([tab, label]) => <button key={tab} id={`settings-tab-${tab}`} role="tab" aria-controls={`settings-panel-${tab}`} aria-selected={settingsTab === tab} tabIndex={settingsTab === tab ? 0 : -1} className={settingsTab === tab ? 'active' : ''} onKeyDown={(event) => handleSettingsTabKeyDown(event, tab)} onClick={() => setSettingsTab(tab)}>{label}</button>)}
+            </div>
+            {settingsTab === 'recorder' && <div id="settings-panel-recorder" className="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-recorder"><button className="screen-recorder-open-btn" onClick={() => openScreenRecorderPanel().catch(() => undefined)}>
               <span className="screen-recorder-button-icon">●</span>
               <span><strong>{t('screenRecorder')}</strong><small>{t('screenRecorderSettingsOnly')}</small></span>
               {recoverableScreenRecordings.length > 0 && <em>{recoverableScreenRecordings.length}</em>}
-            </button>
-            <div className="toggle-row"><span>{t('notifications')}</span><input type="checkbox" checked={settingsForm.notificationsEnabled} onChange={(e) => updateDraftSettings({ notificationsEnabled: e.target.checked })} /></div>
+            </button><p className="mini">{t('screenRecorderTabHint')}</p><button onClick={openScreenRecorderFolder}>{t('screenRecorderOpenFolder')}</button></div>}
+            {settingsTab === 'hotkeys' && <div id="settings-panel-hotkeys" className="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-hotkeys"><p className="mini">{t('hotkeyTabHint')}</p><button className="primary" onClick={openHotkeysEditor}>{t('configureHotkeys')}</button></div>}
+            {settingsTab === 'voice' && <div id="settings-panel-voice" className="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-voice">
             <button onClick={refreshDevices}>{t('refreshAudio')}</button>
             <label>{t('mic')}</label>
             <select value={settingsForm.audioInputId} onChange={(e) => updateDraftSettings({ audioInputId: e.target.value })}>
@@ -5326,11 +4552,6 @@ export default function App() {
             <select value={settingsForm.audioOutputId} onChange={(e) => updateDraftSettings({ audioOutputId: e.target.value })}>
               <option value="">{t('defaultDevice')}</option>
               {devices.outputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Speaker ${device.deviceId.slice(0, 5)}`}</option>)}
-            </select>
-            <label>{t('cameraSource')}</label>
-            <select value={settingsForm.cameraInputId || ''} onChange={(e) => updateDraftSettings({ cameraInputId: e.target.value })}>
-              <option value="">{t('defaultDevice')}</option>
-              {devices.cameras.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Camera ${device.deviceId.slice(0, 5)}`}</option>)}
             </select>
             <div className="mic-test-card">
               <div className="mic-test-head"><strong>{t('micTest')}</strong><button onClick={toggleMicTest}>{micTestActive ? t('micTestStop') : t('micTestStart')}</button></div>
@@ -5347,6 +4568,18 @@ export default function App() {
               <span className="voice-enhance-state">{settingsForm.voiceEnhanceEnabled ? t('voiceEnhanceEnabled') : t('voiceEnhanceDisabled')}</span>
             </div>
             {screenSharing && <p className="mini echo-guard-note">{t('echoGuardActive')}</p>}
+            </div>}
+            {settingsTab === 'camera' && <div id="settings-panel-camera" className="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-camera">
+              <button onClick={refreshDevices}>{t('refreshDevices')}</button>
+              <label>{t('cameraSource')}</label>
+              <select value={settingsForm.cameraInputId || ''} onChange={(e) => updateDraftSettings({ cameraInputId: e.target.value })}>
+                <option value="">{t('defaultDevice')}</option>
+                {devices.cameras.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Camera ${device.deviceId.slice(0, 5)}`}</option>)}
+              </select>
+              <button className="overlay-editor-open" onClick={() => { setCameraDraft(clampCameraSettings(settingsForm.cameraOverlay)); setCameraSettingsOpen(true); }}>{t('cameraOverlayCustomize')}</button>
+            </div>}
+            {settingsTab === 'others' && <div id="settings-panel-others" className="settings-tab-panel" role="tabpanel" aria-labelledby="settings-tab-others">
+            <div className="toggle-row"><span>{t('notifications')}</span><input type="checkbox" checked={settingsForm.notificationsEnabled} onChange={(e) => updateDraftSettings({ notificationsEnabled: e.target.checked })} /></div>
             <label>{t('screenQuality')}</label>
             <select value={settingsForm.screenQuality} onChange={(e) => updateDraftSettings({ screenQuality: e.target.value as ScreenQuality })}>
               {availableQualityOptions.map((quality) => <option key={quality} value={quality}>{quality === 'auto-max' ? t('autoMaxQuality') : quality === 'audio-only' ? t('audioOnly') : quality.toUpperCase()}</option>)}
@@ -5355,17 +4588,18 @@ export default function App() {
             <select value={settingsForm.screenFps} onChange={(e) => updateDraftSettings({ screenFps: Number(e.target.value) as ScreenFps })}>
               {availableFpsOptions.map((fps) => <option key={fps} value={fps}>{fps} FPS</option>)}
             </select>
-            <button className="overlay-editor-open" onClick={() => { setOverlayDraft(clampOverlaySettings(settingsForm.chatOverlay)); setOverlayEditorOpen(true); }}>{t('chatOverlayCustomize')}</button><button className="overlay-editor-open" onClick={() => { setCameraDraft(clampCameraSettings(settingsForm.cameraOverlay)); setCameraSettingsOpen(true); }}>{t('cameraOverlayCustomize')}</button>
+            <button className="overlay-editor-open" onClick={() => { setOverlayDraft(clampOverlaySettings(settingsForm.chatOverlay)); setOverlayEditorOpen(true); }}>{t('chatOverlayCustomize')}</button>
             <div className="toggle-row"><span>{t('saveChat')}</span><input type="checkbox" checked={settingsForm.saveChat} onChange={(e) => updateDraftSettings({ saveChat: e.target.checked })} /></div>
             <div className="toggle-row"><span>{t('historyForNewMembers')}</span><input type="checkbox" checked={Boolean(settingsForm.showHistoryForNewMembers)} onChange={(e) => updateDraftSettings({ showHistoryForNewMembers: e.target.checked })} /></div>
             <div className="toggle-row"><span>{t('lowInternet')}</span><input type="checkbox" checked={settingsForm.lowInternetMode} onChange={(e) => updateDraftSettings({ lowInternetMode: e.target.checked })} /></div>
             <div className="toggle-row"><span>{t('lowPc')}</span><input type="checkbox" checked={settingsForm.lowPcMode} onChange={(e) => updateDraftSettings({ lowPcMode: e.target.checked })} /></div>
-            <div className="settings-modal-actions"><button className={`apply-settings-btn ${settingsDirty ? 'dirty' : 'clean'}`} onClick={applySettingsChanges}>{t('applySettings')}</button><button onClick={() => checkForUpdates(true)} disabled={updateBusy}>{updateBusy ? t('checkingUpdates') : t('checkUpdates')}</button><button onClick={() => setHotkeysOpen(true)}>{t('hotkeys')}</button><button onClick={() => setErrorLogOpen(true)}>{t('errorLog')}</button>{canModerate && <button onClick={openBannedMembers}>{t('bannedMembers')}</button>}<button onClick={clearCurrentChat} disabled={!roomId}>{t('deleteRoomHistory')}</button><button className="danger" onClick={wipeData}>{t('deleteAllLocalData')}</button></div>
+            <div className="settings-modal-actions"><button className={`apply-settings-btn ${settingsDirty ? 'dirty' : 'clean'}`} onClick={applySettingsChanges}>{t('applySettings')}</button><button onClick={() => checkForUpdates(true)} disabled={updateBusy}>{updateBusy ? t('checkingUpdates') : t('checkUpdates')}</button><button onClick={openHotkeysEditor}>{t('hotkeys')}</button><button onClick={() => setErrorLogOpen(true)}>{t('errorLog')}</button>{canModerate && <button onClick={openBannedMembers}>{t('bannedMembers')}</button>}<button onClick={clearCurrentChat} disabled={!roomId}>{t('deleteRoomHistory')}</button><button className="danger" onClick={wipeData}>{t('deleteAllLocalData')}</button></div>
+            </div>}
             {updateProgress && <p className="mini update-progress">{updateProgress}</p>}
             <h3 className="side-title hidden-settings-ui">{t('friendsInRoom')}</h3>
             <div className="peer-list settings-peer-list hidden-settings-ui">
               {peerList.length === 0 && <p className="mini">{t('nobody')}</p>}
-              {peerList.map((peer) => { const volume = peerVolumes[peer.peerId] || defaultVolume(); const action = streamActionLabel(peer.peerId); return <div key={peer.peerId} className="peer-control"><button className="peer-control-head" onContextMenu={(event) => { event.preventDefault(); setPeerMenuId(peer.peerId); }} onClick={() => setPeerMenuId(peerMenuId === peer.peerId ? '' : peer.peerId)}>{renderAvatar(peer)}<span>{peer.displayName}</span></button>{peerMenuId === peer.peerId && <div className="peer-menu">{peerMedia[peer.peerId]?.screenSharing && <button onClick={() => showPeerStream(peer.peerId)}>{t('viewStream')}</button>}{peerMedia[peer.peerId]?.cameraSharing && <button onClick={() => showPeerCamera(peer.peerId)}>{t('viewCamera')}</button>}{action && activePeerId === peer.peerId && streamViewerOpen && <button onClick={closeCurrentStream}>{t('closeStream')}</button>}<button onClick={() => { setPrivateTarget(peer.peerId); setPeerMenuId(''); }}>{t('privateMessage')}</button>{canModerate && peer.peerId !== localPeerId && <button onClick={() => togglePublicMutePeer(peer.peerId)}>{adminMutedPeers[peer.peerId] ? t('unmuteForEveryone') : t('muteForEveryone')}</button>}{canModerate && peer.peerId !== localPeerId && <button className="danger" onClick={() => kickPeer(peer.peerId)}>{t('kickMember')}</button>}{isRoomOwner && roomRoles[peer.peerId] !== 'moderator' && <button onClick={() => promotePeer(peer.peerId)}>{t('promoteModerator')}</button>}<label>{t('callVolume')} {Math.round(volume.voice * 100)}%</label><input type="range" min="0" max="2" step="0.05" value={volume.voice} onChange={(e) => setVolume(peer.peerId, 'voice', Number(e.target.value))} /><button onClick={() => setVolume(peer.peerId, 'voiceMuted', !volume.voiceMuted)}>{volume.voiceMuted ? t('unmuteCall') : t('muteCall')}</button><label>{t('screenVolume')} {Math.round(volume.screen * 100)}%</label><input type="range" min="0" max="2" step="0.05" value={volume.screen} onChange={(e) => setVolume(peer.peerId, 'screen', Number(e.target.value))} /><button onClick={() => setVolume(peer.peerId, 'screenMuted', !volume.screenMuted)}>{volume.screenMuted ? t('unmuteScreen') : t('muteScreen')}</button></div>}</div>; })}
+              {peerList.map((peer) => { const volume = peerVolumes[peer.peerId] || defaultVolume(); const action = streamActionLabel(peer.peerId); return <div key={peer.peerId} className="peer-control"><button className="peer-control-head" onContextMenu={(event) => { event.preventDefault(); setPeerMenuId(peer.peerId); }} onClick={() => setPeerMenuId(peerMenuId === peer.peerId ? '' : peer.peerId)}>{renderAvatar(peer)}<span>{peer.displayName}</span></button>{peerMenuId === peer.peerId && <div className="peer-menu"><button onClick={() => { setSelectedProfilePeerId(peer.peerId); setPeerMenuId(''); }}>{t('showProfile')}</button>{peerMedia[peer.peerId]?.screenSharing && <button onClick={() => showPeerStream(peer.peerId)}>{t('viewStream')}</button>}{peerMedia[peer.peerId]?.cameraSharing && <button onClick={() => showPeerCamera(peer.peerId)}>{t('viewCamera')}</button>}{action && activePeerId === peer.peerId && streamViewerOpen && <button onClick={closeCurrentStream}>{t('closeStream')}</button>}<button onClick={() => { setPrivateTarget(peer.peerId); setPeerMenuId(''); }}>{t('privateMessage')}</button>{canModerate && peer.peerId !== localPeerId && <button onClick={() => togglePublicMutePeer(peer.peerId)}>{adminMutedPeers[peer.peerId] ? t('unmuteForEveryone') : t('muteForEveryone')}</button>}{canModerate && peer.peerId !== localPeerId && <button className="danger" onClick={() => kickPeer(peer.peerId)}>{t('kickMember')}</button>}{isRoomOwner && roomRoles[peer.peerId] !== 'moderator' && <button onClick={() => promotePeer(peer.peerId)}>{t('promoteModerator')}</button>}<label>{t('callVolume')} {Math.round(volume.voice * 100)}%</label><input type="range" min="0" max="2" step="0.05" value={volume.voice} onChange={(e) => setVolume(peer.peerId, 'voice', Number(e.target.value))} /><button onClick={() => setVolume(peer.peerId, 'voiceMuted', !volume.voiceMuted)}>{volume.voiceMuted ? t('unmuteCall') : t('muteCall')}</button><label>{t('screenVolume')} {Math.round(volume.screen * 100)}%</label><input type="range" min="0" max="2" step="0.05" value={volume.screen} onChange={(e) => setVolume(peer.peerId, 'screen', Number(e.target.value))} /><button onClick={() => setVolume(peer.peerId, 'screenMuted', !volume.screenMuted)}>{volume.screenMuted ? t('unmuteScreen') : t('muteScreen')}</button></div>}</div>; })}
             </div>
           </div>
         </div>}
@@ -5382,6 +4616,7 @@ export default function App() {
 
             <div className="screen-recorder-settings-grid">
               <label><span>{t('screenRecorderQuality')}</span><select value={screenRecorderDraft.quality} onChange={(e) => setScreenRecorderDraft((current) => ({ ...current, quality: e.target.value as ScreenRecorderSettings['quality'] }))}><option value="adaptive">{t('screenRecorderQualityAdaptive')}</option><option value="high">{t('screenRecorderQualityHigh')}</option><option value="balanced">{t('screenRecorderQualityBalanced')}</option><option value="performance">{t('screenRecorderQualityPerformance')}</option></select></label>
+              <label><span>{t('screenRecorderResolution')}</span><select value={screenRecorderDraft.resolution || 'auto'} onChange={(e) => setScreenRecorderDraft((current) => ({ ...current, resolution: e.target.value as ScreenRecorderSettings['resolution'] }))}>{availableRecorderResolutions.map((resolution) => <option key={resolution} value={resolution}>{resolution === 'auto' ? t('screenRecorderResolutionAuto') : resolution === '4k' ? '4K' : resolution}</option>)}</select><small>{t('screenRecorderResolutionHint')}</small></label>
               <label><span>{t('screenRecorderFps')}</span><select value={screenRecorderDraft.fps} onChange={(e) => setScreenRecorderDraft((current) => ({ ...current, fps: e.target.value === 'match' ? 'match' : Number(e.target.value) as ScreenRecorderSettings['fps'] }))}><option value="match">{t('screenRecorderFpsMatch')}</option><option value="60">60 FPS</option><option value="30">30 FPS</option><option value="15">15 FPS</option></select></label>
               <label><span>{t('screenRecorderCodec')}</span><select value={screenRecorderDraft.codec} onChange={(e) => setScreenRecorderDraft((current) => ({ ...current, codec: e.target.value as ScreenRecorderSettings['codec'] }))}><option value="auto">{t('screenRecorderCodecAuto')}</option><option value="h264">H.264 / MP4</option><option value="vp8">VP8</option><option value="vp9">VP9</option></select></label>
               <label><span>{t('recorderMicDevice')}</span><select value={screenRecorderDraft.micDeviceId} onChange={(e) => setScreenRecorderDraft((current) => ({ ...current, micDeviceId: e.target.value }))}><option value="">{t('defaultDevice')}</option>{devices.inputs.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || device.deviceId.slice(0, 8)}</option>)}</select></label>
@@ -5417,7 +4652,7 @@ export default function App() {
             </div>
             {screenRecorderFinalization && <p className="screen-recorder-note finalization-note">{screenRecorderFinalization}</p>}
             {screenRecorderError && <p className="screen-recorder-error">{screenRecorderError}</p>}
-            {screenRecorderSavedPath && <div className="screen-recorder-path"><span>{t('screenRecorderFile')}</span><code>{screenRecorderSavedPath}</code></div>}
+            {screenRecorderSavedPath && <div className="screen-recorder-path"><span>{t('screenRecorderFile')}</span><code>{screenRecorderSavedPath}</code><button className="primary" onClick={() => setScreenRecorderPlayerOpen(true)}>{t('screenRecorderPlay')}</button></div>}
 
             <div className="screen-recorder-actions">
               <button className="primary" onClick={saveScreenRecorderSettings}>{t('screenRecorderSaveSettings')}</button>
@@ -5427,6 +4662,27 @@ export default function App() {
             </div>
           </div>
         </div>}
+
+        {screenRecorderPlayerOpen && screenRecorderSavedPath && <div className="modal-backdrop screen-recorder-backdrop" onClick={() => setScreenRecorderPlayerOpen(false)}>
+          <div className="profile-modal recording-player-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-head"><div><h3>{t('screenRecorderPlaybackTitle')}</h3><p className="mini">{t('screenRecorderPlaybackHint')}</p></div><button onClick={() => setScreenRecorderPlayerOpen(false)}>×</button></div>
+            <video key={screenRecorderSavedPath} src={convertFileSrc(screenRecorderSavedPath)} controls preload="metadata" playsInline />
+            <div className="screen-recorder-path"><code>{screenRecorderSavedPath}</code></div>
+            <div className="settings-modal-actions"><button onClick={openScreenRecorderFolder}>{t('screenRecorderOpenFolder')}</button><button onClick={() => setScreenRecorderPlayerOpen(false)}>{t('close')}</button></div>
+          </div>
+        </div>}
+
+        {overlayEditorOpen && <aside className="customization-toolbar chat-customization-toolbar" aria-label={t('chatCustomizationControls')}>
+          <strong>{t('moveControls')}</strong>
+          <div className="direction-pad">
+            <button aria-label={t('moveUp')} onClick={() => nudgeOverlayDraft(0, -2)}>↑</button>
+            <button aria-label={t('moveLeft')} onClick={() => nudgeOverlayDraft(-2, 0)}>←</button>
+            <button aria-label={t('moveDown')} onClick={() => nudgeOverlayDraft(0, 2)}>↓</button>
+            <button aria-label={t('moveRight')} onClick={() => nudgeOverlayDraft(2, 0)}>→</button>
+            <button aria-label={t('enlargeTopRight')} title={t('enlargeTopRight')} onClick={growOverlayDraft}>↗</button>
+          </div>
+          <button onClick={() => setOverlayDraft({ ...DEFAULT_SETTINGS.chatOverlay })}>{t('overlayReset')}</button>
+        </aside>}
 
         {screenRecorderRecoveryOpen && <div className="modal-backdrop screen-recorder-backdrop" onClick={() => !screenRecorderRecoveryBusy && setScreenRecorderRecoveryOpen(false)}>
           <div className="profile-modal screen-recorder-recovery-modal" onClick={(event) => event.stopPropagation()}>
@@ -5457,14 +4713,69 @@ export default function App() {
 
         {cameraModeChoiceOpen && <div className="modal-backdrop" onClick={() => setCameraModeChoiceOpen(false)}><div className="profile-modal camera-mode-modal" onClick={(e) => e.stopPropagation()}><div className="modal-head"><h3>{t('cameraModeTitle')}</h3><button onClick={() => setCameraModeChoiceOpen(false)}>×</button></div><p className="mini">{t('cameraModeHint')}</p><div className="camera-mode-actions"><button className="primary" onClick={() => { setCameraMode('camera-only'); setCameraModeChoiceOpen(false); toggleCameraOverlay('camera-only').catch(() => undefined); }}>{t('cameraOnlyMode')}</button><button onClick={() => { setCameraMode('camera-with-stream'); setCameraDraft(settings?.cameraOverlay || DEFAULT_CAMERA_OVERLAY); setCameraModeChoiceOpen(false); setCameraSettingsOpen(true); }}>{t('cameraWithStream')}</button></div></div></div>}
 
-        {cameraSettingsOpen && (() => { const draft = clampCameraSettings(cameraDraft || settingsForm.cameraOverlay || DEFAULT_CAMERA_OVERLAY); return <div className="modal-backdrop" onClick={() => setCameraSettingsOpen(false)}><div className="profile-modal overlay-editor-modal camera-settings-modal" onClick={(e) => e.stopPropagation()}><div className="modal-head"><h3>{t('cameraEditorTitle')}</h3><button onClick={() => setCameraSettingsOpen(false)}>×</button></div><p className="mini">{cameraMode === 'camera-with-stream' ? t('cameraEditorHint') : t('cameraModeHint')}</p><label>{t('cameraSource')}</label><select value={draftSettings?.cameraInputId ?? settings?.cameraInputId ?? ''} onChange={(e) => updateDraftSettings({ cameraInputId: e.target.value })}><option value="">{t('defaultDevice')}</option>{devices.cameras.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Camera ${device.deviceId.slice(0, 5)}`}</option>)}</select><div className="overlay-screen-mock"><div className="overlay-edit-box camera-edit-box" style={{ left: `${draft.xPercent}%`, top: `${draft.yPercent}%`, width: `${draft.widthPercent}%`, height: `${draft.heightPercent}%`, borderRadius: `${draft.borderRadius}px`, opacity: draft.opacity }} onPointerDown={(event) => cameraMockPointer(event, 'move')}>{(cameraOpen ? cameraStream : cameraSetupPreviewStream) && <LocalMediaPreview stream={cameraOpen ? cameraStream : cameraSetupPreviewStream} className={`camera-composition-preview ${draft.mirror ? 'mirrored-camera' : ''}`} style={{ objectFit: draft.fitMode }} />}<span>{t('camera')}</span><em>{t('cameraOverlayCustomize')}</em><i onPointerDown={(event) => cameraMockPointer(event, 'resize')} /></div></div><div className="overlay-controls"><label>{t('overlayBorderRadius')} <input type="range" min="0" max="50" step="1" value={draft.borderRadius} onChange={(e) => updateCameraDraft({ borderRadius: Number(e.target.value) })} /></label><label>{t('cameraOpacity')} <input type="range" min="0.1" max="1" step="0.01" value={draft.opacity} onChange={(e) => updateCameraDraft({ opacity: Number(e.target.value) })} /></label><label>{t('cameraFitMode')}<select value={draft.fitMode} onChange={(e) => updateCameraDraft({ fitMode: e.target.value === 'contain' ? 'contain' : 'cover' })}><option value="cover">{t('cameraFitCover')}</option><option value="contain">{t('cameraFitContain')}</option></select></label>{draft.fitMode === 'cover' && <><label>{t('cameraCropX')} <input type="range" min="0" max="100" step="1" value={draft.cropXPercent} onChange={(e) => updateCameraDraft({ cropXPercent: Number(e.target.value) })} /></label><label>{t('cameraCropY')} <input type="range" min="0" max="100" step="1" value={draft.cropYPercent} onChange={(e) => updateCameraDraft({ cropYPercent: Number(e.target.value) })} /></label></>}<label><input type="checkbox" checked={draft.mirror} onChange={(e) => updateCameraDraft({ mirror: e.target.checked })} /> {t('cameraMirror')}</label></div><div className="settings-modal-actions"><button className="primary" onClick={() => toggleCameraOverlay(cameraMode)}>{cameraOpen ? t('cameraStop') : t('cameraStart')}</button><button onClick={saveCameraDraft}>{t('applySettings')}</button><button onClick={() => setCameraDraft(DEFAULT_CAMERA_OVERLAY)}>{t('overlayReset')}</button><button onClick={() => setCameraSettingsOpen(false)}>{t('cancel')}</button></div></div></div>; })()}
+        {cameraSettingsOpen && (() => {
+          const draft = clampCameraSettings(cameraDraft || settingsForm.cameraOverlay || DEFAULT_CAMERA_OVERLAY);
+          const previewStream = cameraOpen ? cameraStream : cameraSetupPreviewStream;
+          const handles = [
+            ['n', '↑'], ['ne', '↗'], ['e', '→'], ['se', '↘'],
+            ['s', '↓'], ['sw', '↙'], ['w', '←'], ['nw', '↖']
+          ] as const;
+          return <div className="modal-backdrop" onClick={() => setCameraSettingsOpen(false)}>
+            <div className="profile-modal overlay-editor-modal camera-settings-modal" onClick={(event) => event.stopPropagation()}>
+              <div className="modal-head"><h3>{t('cameraEditorTitle')}</h3><button onClick={() => setCameraSettingsOpen(false)}>×</button></div>
+              <p className="mini">{cameraCustomizationMode === 'crop' ? t('cameraCropModeHint') : t('cameraResizeModeHint')}</p>
+              <label>{t('cameraSource')}</label>
+              <select value={draftSettings?.cameraInputId ?? settings?.cameraInputId ?? ''} onChange={(event) => updateDraftSettings({ cameraInputId: event.target.value })}>
+                <option value="">{t('defaultDevice')}</option>
+                {devices.cameras.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || `Camera ${device.deviceId.slice(0, 5)}`}</option>)}
+              </select>
+              <div className="camera-edit-mode-bar" role="group" aria-label={t('cameraEditMode')}>
+                <button className={cameraCustomizationMode === 'resize' ? 'active' : ''} onClick={() => setCameraCustomizationMode('resize')}>{t('cameraResizeMode')}</button>
+                <button className={cameraCustomizationMode === 'crop' ? 'active crop-active' : ''} onClick={() => setCameraCustomizationMode('crop')}>{t('cameraCropMode')}</button>
+                <button onClick={resetCameraCustomization}>{t('restoreOriginal')}</button>
+              </div>
+              <div className={`overlay-screen-mock camera-handle-editor mode-${cameraCustomizationMode}`}>
+                <div
+                  className={`overlay-edit-box camera-edit-box ${cameraCustomizationMode === 'crop' ? 'crop-mode' : 'resize-mode'}`}
+                  style={{ left: `${draft.xPercent}%`, top: `${draft.yPercent}%`, width: `${draft.widthPercent}%`, height: `${draft.heightPercent}%`, borderRadius: `${draft.borderRadius}px`, opacity: draft.opacity }}
+                  onPointerDown={(event) => cameraMockPointer(event, 'move')}
+                >
+                  {previewStream && <div className="camera-preview-viewport">
+                    <LocalMediaPreview stream={previewStream} className={`camera-composition-preview ${draft.mirror ? 'mirrored-camera' : ''}`} style={cameraPreviewStyle(draft)} />
+                  </div>}
+                  <span>{t('camera')}</span>
+                  <em>{cameraCustomizationMode === 'crop' ? t('cameraCropping') : t('cameraDragHint')}</em>
+                  {handles.map(([edge, arrow]) => <button
+                    key={edge}
+                    type="button"
+                    className={`camera-edge-handle edge-${edge}`}
+                    aria-label={`${cameraCustomizationMode === 'crop' ? t('cameraCropMode') : t('cameraResizeMode')} ${edge}`}
+                    onPointerDown={(event) => cameraEdgePointer(event, edge)}
+                  >{arrow}</button>)}
+                </div>
+              </div>
+              <div className="overlay-controls">
+                <label>{t('overlayBorderRadius')} <input type="range" min="0" max="50" step="1" value={draft.borderRadius} onChange={(event) => updateCameraDraft({ borderRadius: Number(event.target.value) })} /></label>
+                <label>{t('cameraOpacity')} <input type="range" min="0.1" max="1" step="0.01" value={draft.opacity} onChange={(event) => updateCameraDraft({ opacity: Number(event.target.value) })} /></label>
+                <label>{t('cameraFitMode')}<select value={draft.fitMode} onChange={(event) => updateCameraDraft({ fitMode: event.target.value === 'contain' ? 'contain' : 'cover' })}><option value="cover">{t('cameraFitCover')}</option><option value="contain">{t('cameraFitContain')}</option></select></label>
+                <label><input type="checkbox" checked={draft.mirror} onChange={(event) => updateCameraDraft({ mirror: event.target.checked })} /> {t('cameraMirror')}</label>
+              </div>
+              <div className="settings-modal-actions">
+                <button className="primary" onClick={() => toggleCameraOverlay(cameraMode)}>{cameraOpen ? t('cameraStop') : t('cameraStart')}</button>
+                <button onClick={saveCameraDraft}>{t('applySettings')}</button>
+                <button onClick={resetCameraCustomization}>{t('restoreOriginal')}</button>
+                <button onClick={() => setCameraSettingsOpen(false)}>{t('cancel')}</button>
+              </div>
+            </div>
+          </div>;
+        })()}
 
         {overlayEditorOpen && (() => { const draft = clampOverlaySettings(overlayDraft || settingsForm.chatOverlay); return <div className="modal-backdrop" onClick={() => setOverlayEditorOpen(false)}><div className="profile-modal overlay-editor-modal" onClick={(e) => e.stopPropagation()}><div className="modal-head"><h3>{t('overlayEditorTitle')}</h3><button onClick={() => setOverlayEditorOpen(false)}>×</button></div><p className="mini">{t('overlayEditorHint')}</p><div className="overlay-screen-mock"><div className="overlay-edit-box" style={{ left: `${draft.xPercent}%`, top: `${draft.yPercent}%`, width: `${draft.widthPercent}%`, height: `${draft.heightPercent}%`, opacity: draft.opacity, borderRadius: `${draft.borderRadius}px` }} onPointerDown={(event) => overlayMockPointer(event, 'move')}><span>MHTalk</span><em>{t('chatOverlayCustomize')}</em><i onPointerDown={(event) => overlayMockPointer(event, 'resize')} /></div></div><div className="overlay-controls"><label>{t('overlayOpacity')} <input type="range" min="0.15" max="1" step="0.01" value={draft.opacity} onChange={(e) => updateOverlayDraft({ opacity: Number(e.target.value) })} /></label><label>{t('overlayBorderRadius')} <input type="range" min="0" max="40" step="1" value={draft.borderRadius} onChange={(e) => updateOverlayDraft({ borderRadius: Number(e.target.value) })} /></label><label><input type="checkbox" checked={draft.showText} onChange={(e) => updateOverlayDraft({ showText: e.target.checked })} /> {t('overlayShowText')}</label><label><input type="checkbox" checked={draft.showImages} onChange={(e) => updateOverlayDraft({ showImages: e.target.checked })} /> {t('overlayShowImages')}</label><label><input type="checkbox" checked={draft.showAudio} onChange={(e) => updateOverlayDraft({ showAudio: e.target.checked })} /> {t('overlayShowAudio')}</label><label><input type="checkbox" checked={draft.interactive} onChange={(e) => updateOverlayDraft({ interactive: e.target.checked })} /> {draft.interactive ? t('overlayInteractive') : t('overlayClickThrough')}</label><label>{t('overlayMonitor')}<select value={draft.monitorName} onChange={(e) => updateOverlayDraft({ monitorName: e.target.value })}><option value="">{t('defaultDevice')}</option>{overlayMonitors.map((monitor) => <option key={monitor.name} value={monitor.name}>{monitor.label}</option>)}</select></label><p className="mini overlay-limit-note">{t('overlayFullscreenLimit')}</p></div><div className="settings-modal-actions"><button className="primary" onClick={saveOverlayDraft}>{t('applySettings')}</button><button onClick={() => setOverlayDraft(DEFAULT_SETTINGS.chatOverlay)}>{t('overlayReset')}</button><button onClick={() => setOverlayEditorOpen(false)}>{t('cancel')}</button></div></div></div>; })()}
 
 
-        {hotkeysOpen && <div className="modal-backdrop" onClick={() => setHotkeysOpen(false)}><div className="profile-modal hotkey-modal" onClick={(e) => e.stopPropagation()}><div className="modal-head"><h3>{t('hotkeys')}</h3><button onClick={() => setHotkeysOpen(false)}>×</button></div>{(['muteMic','toggleScreen','endCall','toggleFullscreen','toggleSettings','toggleOverlayMode'] as HotkeyAction[]).map((action) => <div className="hotkey-row" key={action}><span>{t(action === 'muteMic' ? 'muteMicHotkey' : action === 'toggleScreen' ? 'shareScreenHotkey' : action === 'endCall' ? 'endCallHotkey' : action === 'toggleFullscreen' ? 'fullscreenHotkey' : action === 'toggleOverlayMode' ? 'overlayModeHotkey' : 'toggleSettingsHotkey')}</span><button onClick={() => setLearningHotkey(action)}>{learningHotkey === action ? t('pressHotkey') : displayHotkey(settings.hotkeys?.[action] || '')}</button><button className="hotkey-clear" title={t('clearHotkey')} onClick={() => clearHotkey(action)}>×</button></div>)}</div></div>}
+        {hotkeysOpen && <div className="modal-backdrop" onClick={closeHotkeysEditor}><div className="profile-modal hotkey-modal" onClick={(e) => e.stopPropagation()}><div className="modal-head"><h3>{t('hotkeys')}</h3><button onClick={closeHotkeysEditor}>×</button></div>{(['muteMic','toggleScreen','endCall','toggleFullscreen','toggleSettings','toggleOverlayMode'] as HotkeyAction[]).map((action) => <div className="hotkey-row" key={action}><span>{t(action === 'muteMic' ? 'muteMicHotkey' : action === 'toggleScreen' ? 'shareScreenHotkey' : action === 'endCall' ? 'endCallHotkey' : action === 'toggleFullscreen' ? 'fullscreenHotkey' : action === 'toggleOverlayMode' ? 'overlayModeHotkey' : 'toggleSettingsHotkey')}</span><button onClick={() => setLearningHotkey(action)}>{learningHotkey === action ? t('pressHotkey') : displayHotkey(hotkeyDraft[action] || '')}</button><button className="hotkey-clear" title={t('clearHotkey')} onClick={() => clearHotkey(action)}>×</button></div>)}{hotkeyValidationError && <p className="settings-validation-error" role="alert">{hotkeyValidationError}</p>}<div className="hotkey-actions"><button onClick={() => { setHotkeyDraft({ ...DEFAULT_HOTKEYS }); setHotkeyValidationError(''); }}>{t('resetHotkeys')}</button><button onClick={closeHotkeysEditor}>{t('cancel')}</button>{hotkeysDirty && <button className="primary" disabled={Boolean(hotkeyValidationError)} onClick={saveHotkeys}>{t('save')}</button>}</div></div></div>}
 
-        {errorLogOpen && <div className="modal-backdrop" onClick={() => setErrorLogOpen(false)}><div className="profile-modal error-log-modal" onClick={(e) => e.stopPropagation()}><div className="modal-head"><h3>{t('errorLog')}</h3><button onClick={() => setErrorLogOpen(false)}>×</button></div><div className="error-log-actions"><button onClick={downloadErrorLog}>{t('downloadLog')}</button><button onClick={() => setErrorLog([])}>{t('clearLog')}</button></div><div className="error-log-list">{errorLog.length === 0 ? <p className="mini">{t('noErrors')}</p> : errorLog.map((entry) => <pre key={entry.id} className={`log-${entry.level}`}>[{new Date(entry.at).toLocaleString()}] {logLevelText(entry.level)}
+        {errorLogOpen && <div className="modal-backdrop" onClick={() => setErrorLogOpen(false)}><div className="profile-modal error-log-modal" onClick={(e) => e.stopPropagation()}><div className="modal-head"><h3>{t('errorLog')}</h3><button onClick={() => setErrorLogOpen(false)}>×</button></div><div className="error-log-actions"><button onClick={downloadErrorLog}>{t('downloadLog')}</button><button onClick={() => { clearDiagnostics(); setErrorLog([]); }}>{t('clearLog')}</button></div><div className="error-log-list">{errorLog.length === 0 ? <p className="mini">{t('noErrors')}</p> : errorLog.map((entry) => <pre key={entry.id} className={`log-${entry.level}`}>[{new Date(entry.at).toLocaleString()}] {logLevelText(entry.level)}
 {localizeLogMessage(entry.message)}</pre>)}</div></div></div>}
       </section>
 
@@ -5547,6 +4858,22 @@ export default function App() {
             {bannedMembers.length === 0 && <p className="mini">{t('noBannedMembers')}</p>}
             {bannedMembers.map((member) => <div className="ban-row" key={member.peerId}><span>{member.displayName}</span><button onClick={() => unbanMember(member.peerId)}>{t('unban')}</button></div>)}
           </div>
+        </div>
+      </div>}
+
+      {selectedProfilePeerId && <div className="modal-backdrop" onClick={() => setSelectedProfilePeerId('')}>
+        <div className="profile-modal public-profile-modal" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-head"><h3>{t('showProfile')}</h3><button onClick={() => setSelectedProfilePeerId('')}>×</button></div>
+          {selectedProfilePeer ? <>
+            <div className="public-profile-avatar">{renderAvatar(selectedProfilePeer)}</div>
+            <h2>{selectedProfilePeer.displayName}</h2>
+            <p className="public-profile-status">{selectedProfilePeer.status || t('offline')}</p>
+            <p className="public-profile-bio">{selectedProfilePeer.bio || t('profileBioUnavailable')}</p>
+            <dl>
+              <div><dt>{t('memberRole')}</dt><dd>{roomRoles[selectedProfilePeer.peerId] || selectedProfilePeer.role || 'member'}</dd></div>
+              <div><dt>{t('memberId')}</dt><dd>{selectedProfilePeer.peerId.slice(0, 12)}</dd></div>
+            </dl>
+          </> : <p className="mini">{t('profileUnavailable')}</p>}
         </div>
       </div>}
 

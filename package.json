@@ -1,7 +1,7 @@
 {
   "name": "mhtalk",
   "private": true,
-  "version": "0.9.2",
+  "version": "0.9.3",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420",
@@ -16,13 +16,23 @@
     "voice:build": "powershell -ExecutionPolicy Bypass -File scripts/build-voice-sidecar.ps1",
     "worker:dev": "cd worker && npm run dev",
     "worker:deploy": "cd worker && npm run deploy",
-    "check:i18n": "node scripts/check-i18n.mjs",
+    "check:english": "node scripts/check-english-only.mjs",
+    "test:commands": "node --experimental-strip-types scripts/test-command-gate.mjs",
+    "test:hotkeys": "node --experimental-strip-types scripts/test-hotkey-policy.mjs",
+    "test:recording-quality": "node --experimental-strip-types scripts/test-recording-quality.mjs",
+    "test:outbox": "node --experimental-strip-types scripts/test-message-outbox.mjs",
+    "test:diagnostics": "node --experimental-strip-types scripts/test-diagnostics.mjs",
+    "check:message-reliability": "node scripts/check-message-reliability.mjs",
+    "check:crash-recovery": "node scripts/check-crash-recovery.mjs",
+    "test:livekit-token": "node --experimental-strip-types scripts/test-livekit-token.mjs",
+    "test:livekit-token-source": "node --experimental-strip-types scripts/test-livekit-token-source.mjs",
     "test:rtc": "node --experimental-strip-types scripts/test-rtc-policy.mjs",
     "check:rtc-architecture": "node scripts/check-rtc-architecture.mjs",
     "check:security-architecture": "node scripts/check-security-architecture.mjs",
-    "verify": "npm run check:i18n && npm run test:rtc && npm run check:rtc-architecture && npm run check:security-architecture && npm run check:production && npm run build && npm run voice:web:check && npm run worker:check",
+    "verify": "npm run check:english && npm run test:commands && npm run test:hotkeys && npm run test:recording-quality && npm run test:outbox && npm run test:diagnostics && npm run check:message-reliability && npm run check:crash-recovery && npm run test:livekit-token && npm run test:livekit-token-source && npm run test:rtc && npm run check:rtc-architecture && npm run check:security-architecture && npm run check:production && npm run build && npm run voice:web:check && npm run worker:check && npm run rust:check",
     "voice:web:check": "npm --prefix voice-app run build",
     "worker:check": "npm --prefix worker exec tsc -- --noEmit",
+    "rust:check": "powershell -ExecutionPolicy Bypass -File scripts/check-rust.ps1",
     "check:production": "node scripts/check-production-release.mjs"
   },
   "dependencies": {
@@ -34,6 +44,7 @@
     "@tauri-apps/plugin-process": "^2.3.0",
     "@tauri-apps/plugin-sql": "^2.3.0",
     "@tauri-apps/plugin-updater": "^2.9.0",
+    "livekit-client": "^2.21.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },

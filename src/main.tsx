@@ -2,6 +2,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import App from './App';
+import { AppErrorBoundary } from './components/AppErrorBoundary';
+import { installGlobalDiagnostics } from './core/diagnostics';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -10,10 +12,17 @@ const queryClient = new QueryClient({
   }
 });
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+installGlobalDiagnostics();
+
+const root = document.getElementById('root');
+if (!root) throw new Error('MHTalk root element is missing');
+
+ReactDOM.createRoot(root).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      <AppErrorBoundary>
+        <App />
+      </AppErrorBoundary>
     </QueryClientProvider>
   </React.StrictMode>
 );

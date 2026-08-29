@@ -1386,7 +1386,7 @@ async function boot() {
   await listen<EngineCommand>('mhtalk://voice-command', (event) => dispatch(event.payload));
   const pending = await invoke<EngineCommand[]>('voice_mark_ready_and_take_pending');
   for (const command of pending) await dispatch(command);
-  await notifyMain({ type: 'ENGINE_READY', processId: await invoke<number>('voice_process_id'), version: '0.9.2' });
+  await notifyMain({ type: 'ENGINE_READY', processId: await invoke<number>('voice_process_id'), version: '0.9.3' });
 }
 
 boot().catch((error) => notifyMain({ type: 'VOICE_ERROR', message: `voice boot failed: ${safeText(error)}` }));

@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { ScreenRecorderSettings } from '../types/models';
+import { recorderTargetLongEdge } from '../core/recordingQuality';
 
 export type ScreenRecorderRuntimeState = 'idle' | 'starting' | 'recording' | 'paused' | 'stopping' | 'error';
 export type RecorderDependencyState = 'missing' | 'downloading' | 'ready' | 'error';
@@ -123,10 +124,11 @@ function resolveRecordingDimensions(sourceWidth: number, sourceHeight: number, s
   const height = Math.max(1, Math.round(sourceHeight));
   const longEdge = Math.max(width, height);
   const cores = Math.max(2, Number(navigator.hardwareConcurrency || 4));
-  let maxLongEdge = longEdge;
-  if (settings.quality === 'performance') maxLongEdge = 1280;
-  else if (settings.quality === 'balanced') maxLongEdge = 1920;
-  else if (settings.quality === 'adaptive') maxLongEdge = lowPcMode || cores <= 4 ? 1280 : cores <= 8 ? 1920 : longEdge;
+  let maxLongEdge = recorderTargetLongEdge(settings.resolution || 'auto', width, height, cores, lowPcMode);
+  if (settings.resolution === 'auto' || !settings.resolution) {
+    if (settings.quality === 'performance') maxLongEdge = Math.min(maxLongEdge, 1280);
+    else if (settings.quality === 'balanced') maxLongEdge = Math.min(maxLongEdge, 1920);
+  }
   if (longEdge <= maxLongEdge) return { width, height };
   const scale = maxLongEdge / longEdge;
   const even = (value: number) => Math.max(2, Math.round(value / 2) * 2);

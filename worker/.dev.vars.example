@@ -1,0 +1,4 @@
+# Configure these only when the SFU feature flag is ready for integration testing.
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=

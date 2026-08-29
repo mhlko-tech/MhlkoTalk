@@ -1,17 +1,19 @@
 import Database from '@tauri-apps/plugin-sql';
-import type { AppLanguage, AppSettings, ChatMessage, ChatMessageKind, HotkeyAction, NativeVoiceSolution, ScreenFps, ScreenQuality, UserProfile, ChatOverlaySettings, CameraOverlaySettings, ScreenRecorderSettings } from '../types/models';
+import type { AppSettings, ChatMessage, ChatMessageKind, HotkeyAction, NativeVoiceSolution, ScreenFps, ScreenQuality, UserProfile, ChatOverlaySettings, CameraOverlaySettings, ScreenRecorderSettings } from '../types/models';
+
+export interface MessageOutboxEntry {
+  messageId: string;
+  roomId: string;
+  message: ChatMessage;
+  recipientPeerIds: string[];
+  acknowledgedPeerIds: string[];
+  attempts: number;
+  nextAttemptAt: number;
+}
 
 let dbPromise: Promise<Database> | null = null;
 
 const DEFAULT_SIGNALING_URL = import.meta.env.VITE_SIGNALING_URL || 'ws://127.0.0.1:8787';
-
-function detectInitialLanguage(): AppLanguage {
-  try {
-    const code = navigator.language.toLowerCase().split('-')[0] as AppLanguage;
-    const supported: AppLanguage[] = ['ar', 'en', 'tr'];
-    return supported.includes(code) ? code : (navigator.language.toLowerCase().startsWith('ar') ? 'ar' : 'en');
-  } catch { return 'ar'; }
-}
 
 export const DEFAULT_CHAT_OVERLAY: ChatOverlaySettings = {
   xPercent: 3,
@@ -37,6 +39,10 @@ export const DEFAULT_CAMERA_OVERLAY: CameraOverlaySettings = {
   fitMode: 'cover',
   cropXPercent: 50,
   cropYPercent: 50,
+  cropTopPercent: 0,
+  cropRightPercent: 0,
+  cropBottomPercent: 0,
+  cropLeftPercent: 0,
   opacity: 1
 };
 
@@ -62,6 +68,7 @@ export const DEFAULT_PROFILE: UserProfile = {
 
 export const DEFAULT_SCREEN_RECORDER: ScreenRecorderSettings = {
   quality: 'adaptive',
+  resolution: 'auto',
   fps: 'match',
   codec: 'auto',
   includeAudio: true,
@@ -88,7 +95,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   screenQuality: 'auto-max',
   screenFps: 60,
   remoteVolume: 1,
-  language: detectInitialLanguage(),
   notificationsEnabled: true,
   nativeVoiceSolution: 1,
   voiceEnhanceEnabled: false,
@@ -126,6 +132,8 @@ export async function initDb(): Promise<void> {
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   )`);
+  // Version 1.0 is English-only. Remove the obsolete preference from upgraded databases.
+  await db.execute(`DELETE FROM settings WHERE key = 'language'`);
 
   await db.execute(`CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY,
@@ -164,6 +172,25 @@ export async function initDb(): Promise<void> {
   await tryExecute(db, `ALTER TABLE messages ADD COLUMN local_path TEXT`);
   await tryExecute(db, `ALTER TABLE messages ADD COLUMN file_size INTEGER`);
   await tryExecute(db, `ALTER TABLE messages ADD COLUMN transfer_id TEXT`);
+  await tryExecute(db, `ALTER TABLE messages ADD COLUMN peer_id TEXT`);
+  await tryExecute(db, `ALTER TABLE messages ADD COLUMN private_to TEXT`);
+  await tryExecute(db, `ALTER TABLE messages ADD COLUMN private_from TEXT`);
+  await tryExecute(db, `ALTER TABLE messages ADD COLUMN file_error TEXT`);
+  await tryExecute(db, `ALTER TABLE messages ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0`);
+
+  await db.execute(`CREATE TABLE IF NOT EXISTS message_outbox (
+    message_id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL,
+    message_json TEXT NOT NULL,
+    recipient_peer_ids TEXT NOT NULL,
+    acknowledged_peer_ids TEXT NOT NULL DEFAULT '[]',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  await db.execute(`CREATE INDEX IF NOT EXISTS idx_message_outbox_due ON message_outbox (room_id, next_attempt_at)`);
+  await db.execute(`DELETE FROM message_outbox WHERE created_at < $1`, [Date.now() - 30 * 24 * 60 * 60 * 1000]);
 
   await db.execute(
     `INSERT OR IGNORE INTO profile (id, display_name, account_email, avatar_data_url, banner_data_url, bio, status, updated_at)
@@ -188,7 +215,6 @@ function settingsToMap(settings: AppSettings): Record<string, string> {
     screenQuality: settings.screenQuality,
     screenFps: String(settings.screenFps),
     remoteVolume: String(settings.remoteVolume),
-    language: settings.language,
     notificationsEnabled: String(settings.notificationsEnabled),
     nativeVoiceSolution: String(settings.nativeVoiceSolution || 1),
     voiceEnhanceEnabled: String(settings.voiceEnhanceEnabled || false),
@@ -205,8 +231,6 @@ function mapToSettings(rows: Array<{ key: string; value: string }>): AppSettings
   const fps = Number(map.get('screenFps') || DEFAULT_SETTINGS.screenFps) as ScreenFps;
   const quality = (map.get('screenQuality') || DEFAULT_SETTINGS.screenQuality) as ScreenQuality;
   const volume = Number(map.get('remoteVolume') || DEFAULT_SETTINGS.remoteVolume);
-  const language = (map.get('language') || DEFAULT_SETTINGS.language) as AppLanguage;
-  const allowedLanguages: AppLanguage[] = ['ar', 'en', 'tr'];
   const nativeVoiceSolution = Number(map.get('nativeVoiceSolution') || DEFAULT_SETTINGS.nativeVoiceSolution) as NativeVoiceSolution;
   const allowedNativeVoiceSolutions: NativeVoiceSolution[] = [1, 2, 3, 4];
   const allowedQuality: ScreenQuality[] = ['auto-max', '4k', '1440p', '1080p', '720p', '480p', '360p', 'audio-only'];
@@ -252,6 +276,10 @@ function mapToSettings(rows: Array<{ key: string; value: string }>): AppSettings
       fitMode: parsed.fitMode === 'contain' ? 'contain' : 'cover',
       cropXPercent: Math.min(100, Math.max(0, Number(parsed.cropXPercent ?? DEFAULT_CAMERA_OVERLAY.cropXPercent))),
       cropYPercent: Math.min(100, Math.max(0, Number(parsed.cropYPercent ?? DEFAULT_CAMERA_OVERLAY.cropYPercent))),
+      cropTopPercent: Math.min(40, Math.max(0, Number(parsed.cropTopPercent ?? DEFAULT_CAMERA_OVERLAY.cropTopPercent))),
+      cropRightPercent: Math.min(40, Math.max(0, Number(parsed.cropRightPercent ?? DEFAULT_CAMERA_OVERLAY.cropRightPercent))),
+      cropBottomPercent: Math.min(40, Math.max(0, Number(parsed.cropBottomPercent ?? DEFAULT_CAMERA_OVERLAY.cropBottomPercent))),
+      cropLeftPercent: Math.min(40, Math.max(0, Number(parsed.cropLeftPercent ?? DEFAULT_CAMERA_OVERLAY.cropLeftPercent))),
       opacity: Math.min(1, Math.max(0.1, Number(parsed.opacity ?? DEFAULT_CAMERA_OVERLAY.opacity)))
     };
   } catch {
@@ -260,10 +288,12 @@ function mapToSettings(rows: Array<{ key: string; value: string }>): AppSettings
   try {
     const parsed = JSON.parse(map.get('screenRecorder') || '{}') as Partial<ScreenRecorderSettings>;
     const allowedQuality: ScreenRecorderSettings['quality'][] = ['adaptive', 'high', 'balanced', 'performance'];
+    const allowedResolution: ScreenRecorderSettings['resolution'][] = ['auto', '4k', '1440p', '1080p', '720p', '480p'];
     const allowedFps: ScreenRecorderSettings['fps'][] = ['match', 60, 30, 15];
     const allowedCodec: ScreenRecorderSettings['codec'][] = ['auto', 'h264', 'vp8', 'vp9'];
     screenRecorder = {
       quality: allowedQuality.includes(parsed.quality as ScreenRecorderSettings['quality']) ? parsed.quality as ScreenRecorderSettings['quality'] : DEFAULT_SCREEN_RECORDER.quality,
+      resolution: allowedResolution.includes(parsed.resolution as ScreenRecorderSettings['resolution']) ? parsed.resolution as ScreenRecorderSettings['resolution'] : DEFAULT_SCREEN_RECORDER.resolution,
       fps: allowedFps.includes(parsed.fps as ScreenRecorderSettings['fps']) ? parsed.fps as ScreenRecorderSettings['fps'] : DEFAULT_SCREEN_RECORDER.fps,
       codec: allowedCodec.includes(parsed.codec as ScreenRecorderSettings['codec']) ? parsed.codec as ScreenRecorderSettings['codec'] : DEFAULT_SCREEN_RECORDER.codec,
       includeAudio: parsed.includeAudio !== false,
@@ -292,7 +322,6 @@ function mapToSettings(rows: Array<{ key: string; value: string }>): AppSettings
     screenQuality: allowedQuality.includes(quality) ? quality : 'auto-max',
     screenFps: allowedFps.includes(fps) ? fps : 60,
     remoteVolume: Number.isFinite(volume) ? Math.min(2, Math.max(0, volume)) : 1,
-    language: allowedLanguages.includes(language) ? language : 'ar',
     notificationsEnabled: (map.get('notificationsEnabled') || 'true') === 'true',
     nativeVoiceSolution: allowedNativeVoiceSolutions.includes(nativeVoiceSolution) ? nativeVoiceSolution : 1,
     voiceEnhanceEnabled: (map.get('voiceEnhanceEnabled') || 'false') === 'true',
@@ -348,8 +377,8 @@ export async function saveSettings(settings: AppSettings): Promise<void> {
 export async function saveMessage(message: ChatMessage): Promise<void> {
   const db = await getDb();
   await db.execute(
-    `INSERT OR REPLACE INTO messages (id, room_id, sender, sender_name, body, created_at, kind, file_name, mime_type, data_url, reply_to_id, reply_to_body, reply_to_sender, waveform, edited_at, deleted_at, delivery_status, delivered_to, seen_by, target_count, transfer_id, file_size, local_path, file_status, transferred_bytes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)`,
+    `INSERT OR REPLACE INTO messages (id, room_id, sender, sender_name, body, created_at, kind, file_name, mime_type, data_url, reply_to_id, reply_to_body, reply_to_sender, waveform, edited_at, deleted_at, delivery_status, delivered_to, seen_by, target_count, transfer_id, file_size, local_path, file_status, transferred_bytes, peer_id, private_to, private_from, file_error, retryable)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)`,
     [
       message.id,
       message.roomId,
@@ -375,7 +404,12 @@ export async function saveMessage(message: ChatMessage): Promise<void> {
       Number.isFinite(message.fileSize || NaN) ? message.fileSize || 0 : null,
       message.localPath || null,
       message.fileStatus || null,
-      Number.isFinite(message.transferredBytes || NaN) ? message.transferredBytes || 0 : null
+      Number.isFinite(message.transferredBytes || NaN) ? message.transferredBytes || 0 : null,
+      message.peerId || null,
+      message.privateTo || null,
+      message.privateFrom || null,
+      message.fileError || null,
+      message.retryable ? 1 : 0
     ]
   );
 }
@@ -408,6 +442,11 @@ export async function loadMessages(roomId: string): Promise<ChatMessage[]> {
     local_path?: string | null;
     file_status?: string | null;
     transferred_bytes?: number | null;
+    peer_id?: string | null;
+    private_to?: string | null;
+    private_from?: string | null;
+    file_error?: string | null;
+    retryable?: number | null;
   }>>(`SELECT * FROM messages WHERE room_id = $1 ORDER BY created_at ASC LIMIT 500`, [roomId]);
 
   return rows.map((row) => ({
@@ -435,8 +474,116 @@ export async function loadMessages(roomId: string): Promise<ChatMessage[]> {
     fileSize: typeof row.file_size === 'number' ? row.file_size : undefined,
     localPath: row.local_path || undefined,
     fileStatus: (row.file_status as ChatMessage['fileStatus']) || undefined,
-    transferredBytes: typeof row.transferred_bytes === 'number' ? row.transferred_bytes : undefined
+    transferredBytes: typeof row.transferred_bytes === 'number' ? row.transferred_bytes : undefined,
+    peerId: row.peer_id || undefined,
+    privateTo: row.private_to || undefined,
+    privateFrom: row.private_from || undefined,
+    fileError: row.file_error || undefined,
+    retryable: Boolean(row.retryable)
   }));
+}
+
+export async function enqueueMessageOutbox(message: ChatMessage): Promise<void> {
+  const db = await getDb();
+  const now = Date.now();
+  const recipientPeerIds = [...new Set((message.targetPeerIds || (message.privateTo ? [message.privateTo] : [])).filter(Boolean))];
+  await db.execute(
+    `INSERT INTO message_outbox (message_id, room_id, message_json, recipient_peer_ids, acknowledged_peer_ids, attempts, next_attempt_at, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, '[]', 0, $5, $5, $5)
+     ON CONFLICT(message_id) DO UPDATE SET
+       message_json=excluded.message_json,
+       recipient_peer_ids=excluded.recipient_peer_ids,
+       next_attempt_at=MIN(message_outbox.next_attempt_at, excluded.next_attempt_at),
+       updated_at=excluded.updated_at`,
+    [message.id, message.roomId, JSON.stringify(message), JSON.stringify(recipientPeerIds), now]
+  );
+}
+
+export async function loadDueMessageOutbox(roomId: string, now = Date.now(), limit = 100): Promise<MessageOutboxEntry[]> {
+  const db = await getDb();
+  const rows = await db.select<Array<{
+    message_id: string;
+    room_id: string;
+    message_json: string;
+    recipient_peer_ids: string;
+    acknowledged_peer_ids: string;
+    attempts: number;
+    next_attempt_at: number;
+  }>>(
+    `SELECT message_id, room_id, message_json, recipient_peer_ids, acknowledged_peer_ids, attempts, next_attempt_at
+     FROM message_outbox WHERE room_id = $1 AND next_attempt_at <= $2 ORDER BY created_at ASC LIMIT $3`,
+    [roomId, now, Math.max(1, Math.min(500, limit))]
+  );
+  const entries: MessageOutboxEntry[] = [];
+  for (const row of rows) {
+    try {
+      const message = JSON.parse(row.message_json) as ChatMessage;
+      if (!message?.id || message.id !== row.message_id || message.roomId !== row.room_id) continue;
+      entries.push({
+        messageId: row.message_id,
+        roomId: row.room_id,
+        message,
+        recipientPeerIds: safeJsonStringArray(row.recipient_peer_ids) || [],
+        acknowledgedPeerIds: safeJsonStringArray(row.acknowledged_peer_ids) || [],
+        attempts: Math.max(0, Number(row.attempts) || 0),
+        nextAttemptAt: Number(row.next_attempt_at) || 0
+      });
+    } catch {
+      await db.execute(`DELETE FROM message_outbox WHERE message_id = $1`, [row.message_id]);
+    }
+  }
+  return entries;
+}
+
+export async function loadMessageOutbox(roomId: string, limit = 500): Promise<MessageOutboxEntry[]> {
+  return loadDueMessageOutbox(roomId, Number.MAX_SAFE_INTEGER, limit);
+}
+
+export async function setMessageOutboxRecipients(messageId: string, peerIds: string[]): Promise<string[]> {
+  const db = await getDb();
+  const clean = [...new Set(peerIds.filter(Boolean))];
+  if (!clean.length) return [];
+  await db.execute(
+    `UPDATE message_outbox SET recipient_peer_ids = $1, updated_at = $2
+     WHERE message_id = $3 AND recipient_peer_ids = '[]'`,
+    [JSON.stringify(clean), Date.now(), messageId]
+  );
+  const rows = await db.select<Array<{ recipient_peer_ids: string }>>(
+    `SELECT recipient_peer_ids FROM message_outbox WHERE message_id = $1`,
+    [messageId]
+  );
+  return rows[0] ? safeJsonStringArray(rows[0].recipient_peer_ids) || [] : [];
+}
+
+export async function markMessageOutboxAttempt(messageId: string, attempts: number, nextAttemptAt: number): Promise<void> {
+  const db = await getDb();
+  await db.execute(
+    `UPDATE message_outbox SET attempts = $1, next_attempt_at = $2, updated_at = $3 WHERE message_id = $4`,
+    [Math.max(0, attempts), nextAttemptAt, Date.now(), messageId]
+  );
+}
+
+export async function acknowledgeMessageOutbox(messageId: string, peerId: string): Promise<boolean> {
+  if (!messageId || !peerId) return false;
+  const db = await getDb();
+  const rows = await db.select<Array<{ recipient_peer_ids: string; acknowledged_peer_ids: string }>>(
+    `SELECT recipient_peer_ids, acknowledged_peer_ids FROM message_outbox WHERE message_id = $1`,
+    [messageId]
+  );
+  if (!rows[0]) return false;
+  const recipients = safeJsonStringArray(rows[0].recipient_peer_ids) || [];
+  const acknowledged = new Set(safeJsonStringArray(rows[0].acknowledged_peer_ids) || []);
+  acknowledged.add(peerId);
+  const complete = recipients.length > 0 && recipients.every((id) => acknowledged.has(id));
+  if (complete) {
+    await db.execute(`DELETE FROM message_outbox WHERE message_id = $1`, [messageId]);
+  } else {
+    await db.execute(
+      `UPDATE message_outbox SET acknowledged_peer_ids = $1, updated_at = $2 WHERE message_id = $3`,
+      [JSON.stringify([...acknowledged]), Date.now(), messageId]
+    );
+  }
+  return complete;
 }
 
 function safeJsonStringArray(value: string): string[] | undefined {
@@ -465,11 +612,13 @@ export async function markMessageDeleted(messageId: string, deletedAt: number): 
 export async function clearRoomMessages(roomId: string): Promise<void> {
   const db = await getDb();
   await db.execute(`DELETE FROM messages WHERE room_id = $1`, [roomId]);
+  await db.execute(`DELETE FROM message_outbox WHERE room_id = $1`, [roomId]);
 }
 
 export async function clearAllLocalData(): Promise<void> {
   const db = await getDb();
   await db.execute(`DELETE FROM messages`);
+  await db.execute(`DELETE FROM message_outbox`);
   await db.execute(`DELETE FROM settings`);
   await db.execute(`DELETE FROM profile`);
   dbPromise = null;

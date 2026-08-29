@@ -34,6 +34,10 @@ export function normalizeCameraOverlay(settings: CameraOverlaySettings): CameraO
     fitMode: settings.fitMode === 'contain' ? 'contain' : 'cover',
     cropXPercent: clamp(Number(settings.cropXPercent ?? 50), 0, 100),
     cropYPercent: clamp(Number(settings.cropYPercent ?? 50), 0, 100),
+    cropTopPercent: clamp(Number(settings.cropTopPercent ?? 0), 0, 40),
+    cropRightPercent: clamp(Number(settings.cropRightPercent ?? 0), 0, 40),
+    cropBottomPercent: clamp(Number(settings.cropBottomPercent ?? 0), 0, 40),
+    cropLeftPercent: clamp(Number(settings.cropLeftPercent ?? 0), 0, 40),
     opacity: clamp(Number(settings.opacity ?? 1), 0.1, 1)
   };
 }
@@ -64,22 +68,32 @@ function drawCover(
   height: number,
   mirror: boolean,
   cropXPercent: number,
-  cropYPercent: number
+  cropYPercent: number,
+  cropTopPercent: number,
+  cropRightPercent: number,
+  cropBottomPercent: number,
+  cropLeftPercent: number
 ) {
   const sourceWidth = Math.max(1, video.videoWidth || width);
   const sourceHeight = Math.max(1, video.videoHeight || height);
-  const sourceRatio = sourceWidth / sourceHeight;
+  const left = sourceWidth * clamp(cropLeftPercent / 100, 0, 0.4);
+  const right = sourceWidth * clamp(cropRightPercent / 100, 0, 0.4);
+  const top = sourceHeight * clamp(cropTopPercent / 100, 0, 0.4);
+  const bottom = sourceHeight * clamp(cropBottomPercent / 100, 0, 0.4);
+  const croppedWidth = Math.max(sourceWidth * 0.2, sourceWidth - left - right);
+  const croppedHeight = Math.max(sourceHeight * 0.2, sourceHeight - top - bottom);
+  const sourceRatio = croppedWidth / croppedHeight;
   const targetRatio = width / height;
-  let sx = 0;
-  let sy = 0;
-  let sw = sourceWidth;
-  let sh = sourceHeight;
+  let sx = left;
+  let sy = top;
+  let sw = croppedWidth;
+  let sh = croppedHeight;
   if (sourceRatio > targetRatio) {
-    sw = sourceHeight * targetRatio;
-    sx = (sourceWidth - sw) * clamp(cropXPercent / 100, 0, 1);
+    sw = croppedHeight * targetRatio;
+    sx = left + (croppedWidth - sw) * clamp(cropXPercent / 100, 0, 1);
   } else {
-    sh = sourceWidth / targetRatio;
-    sy = (sourceHeight - sh) * clamp(cropYPercent / 100, 0, 1);
+    sh = croppedWidth / targetRatio;
+    sy = top + (croppedHeight - sh) * clamp(cropYPercent / 100, 0, 1);
   }
   ctx.save();
   if (mirror) {
@@ -244,7 +258,11 @@ export class ScreenCameraCompositor {
           boxHeight,
           settings.mirror,
           settings.cropXPercent,
-          settings.cropYPercent
+          settings.cropYPercent,
+          settings.cropTopPercent,
+          settings.cropRightPercent,
+          settings.cropBottomPercent,
+          settings.cropLeftPercent
         );
       }
       this.context.restore();

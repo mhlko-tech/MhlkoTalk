@@ -1,6 +1,6 @@
 [package]
 name = "mhtalk"
-version = "0.9.2"
+version = "0.9.3"
 description = "MHTalk Private P2P Desktop Messenger"
 authors = ["Mhlko"]
 edition = "2021"

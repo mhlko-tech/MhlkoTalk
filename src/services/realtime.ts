@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { AppSettings, CameraOverlaySettings, ChatMessage, ChatMessageKind, ConnectionState, PeerConnectionStatus, PeerProfile, ScreenFps, ScreenQuality, UserProfile } from '../types/models';
+import { BoundedMessageIdCache } from '../core/outboxPolicy';
 import { ScreenCameraCompositor } from './mediaCompositor';
 import { profileAvatarVersion, profileEndpointFromSignaling, type ProfileAssetAccess } from './profileAssets';
 import { classifyRtcPressure, mediaBudgetFor, type RtcPressureLevel } from './rtcPolicy';
@@ -145,6 +146,7 @@ type SignalMessage =
 
 type DataPacket =
   | { type: 'chat'; id: string; from: string; to?: string; senderName: string; body: string; createdAt: number; private?: boolean; replyToId?: string; replyToBody?: string; replyToSender?: string }
+  | { type: 'profile-sync'; from: string; profile: PeerProfile }
   | { type: 'edit'; id: string; from: string; to?: string; body: string; editedAt: number }
   | { type: 'delete'; id: string; from: string; to?: string; deletedAt: number }
   | { type: 'receipt'; id: string; from: string; to?: string; status: 'delivered' | 'seen'; at: number }
@@ -250,6 +252,7 @@ type PeerRuntime = {
   lastScreenRefreshRequestAt?: number;
   disposing: boolean;
   sendQueue: DataPacket[];
+  fileReceiveChain: Promise<void>;
 };
 
 type Callbacks = {
@@ -375,8 +378,8 @@ function unpackFileBinaryChunk(data: ArrayBuffer): FileBinaryChunk | null {
   };
 }
 
-function waitForBufferedLow(channel: RTCDataChannel): Promise<void> {
-  if (channel.bufferedAmount <= FILE_BUFFERED_HIGH_WATER) return Promise.resolve();
+function waitForBufferedLow(channel: RTCDataChannel, highWater = FILE_BUFFERED_HIGH_WATER, lowWater = FILE_BUFFERED_LOW_WATER): Promise<void> {
+  if (channel.bufferedAmount <= highWater) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const previousThreshold = channel.bufferedAmountLowThreshold;
     const cleanup = () => {
@@ -387,7 +390,7 @@ function waitForBufferedLow(channel: RTCDataChannel): Promise<void> {
     };
     const onLow = () => { cleanup(); resolve(); };
     const onClose = () => { cleanup(); reject(new Error('file data channel closed')); };
-    channel.bufferedAmountLowThreshold = FILE_BUFFERED_LOW_WATER;
+    channel.bufferedAmountLowThreshold = lowWater;
     channel.addEventListener('bufferedamountlow', onLow, { once: true });
     channel.addEventListener('close', onClose, { once: true });
     channel.addEventListener('error', onClose, { once: true });
@@ -421,6 +424,7 @@ export class RealtimeRoom {
   private readonly stableClientId = getStableClientId();
   private profile: UserProfile;
   private readonly callbacks: Callbacks;
+  private readonly receivedChatIds = new BoundedMessageIdCache();
   private reconnectTimer?: number;
   private socketGeneration = 0;
   private reconnectAttempt = 0;
@@ -492,6 +496,8 @@ export class RealtimeRoom {
   private lastVoicePressureNotifyAt = 0;
   private roomRoles: Record<string, RoomRole> = {};
   private peers = new Map<string, PeerRuntime>();
+  private readonly canceledOutgoingFileIds = new Set<string>();
+  private readonly outgoingFileTransfers = new Map<string, { transferId: string; peers: Set<string> }>();
 
   constructor(args: { roomId: string; signalingUrl: string; profile: UserProfile; callbacks: Callbacks }) {
     this.roomId = args.roomId;
@@ -1006,7 +1012,9 @@ export class RealtimeRoom {
   }
 
   announceProfile() {
-    this.sendSignal({ type: 'profile', from: this.peerId, profile: this.publicProfile() });
+    const profile = this.publicProfile();
+    this.sendSignal({ type: 'profile', from: this.peerId, profile });
+    for (const peer of this.openPeers()) this.sendData(peer, { type: 'profile-sync', from: this.peerId, profile });
   }
 
   private setRoomReady(label = 'state_room_ready') {
@@ -1061,7 +1069,8 @@ export class RealtimeRoom {
       hardResetCount: 0,
       remoteScreenRecoveries: new Map(),
       disposing: false,
-      sendQueue: []
+      sendQueue: [],
+      fileReceiveChain: Promise.resolve()
     };
     this.log(`Peer discovered: ${peerId}`);
 
@@ -1371,7 +1380,7 @@ export class RealtimeRoom {
 
     if (message.type === 'hello') {
       const peer = this.ensurePeer(from);
-      peer.profile = message.profile;
+      if (!peer.profile || Number(message.profile.profileVersion || 0) >= Number(peer.profile.profileVersion || 0)) peer.profile = message.profile;
       this.callbacks.onProfileAssetsStale?.();
       this.emitPeers();
       this.sendSignal({ type: 'profile', from: this.peerId, to: from, profile: this.publicProfile() });
@@ -1382,6 +1391,7 @@ export class RealtimeRoom {
 
     if (message.type === 'profile') {
       const peer = this.ensurePeer(from);
+      if (peer.profile && Number(message.profile.profileVersion || 0) < Number(peer.profile.profileVersion || 0)) return;
       peer.profile = message.profile;
       this.callbacks.onProfileAssetsStale?.();
       this.emitPeers();
@@ -1912,8 +1922,24 @@ export class RealtimeRoom {
       this.schedulePeerRepair(peer, 300);
     };
     channel.onmessage = (event) => {
-      if (!(event.data instanceof ArrayBuffer)) return;
-      this.handleFileBinaryChunk(peer, event.data).catch((error) => {
+      const incoming = event.data;
+      peer.fileReceiveChain = peer.fileReceiveChain.then(async () => {
+        if (typeof incoming === 'string') {
+          if (incoming.length > MAX_DATA_PACKET_CHARS) throw new Error('oversized-file-control-packet');
+          const packet = JSON.parse(incoming) as DataPacket;
+          if (!packet || !['file-stream-start', 'file-stream-complete', 'file-stream-cancel', 'file-stream-error'].includes(packet.type)) {
+            throw new Error('invalid-file-control-packet');
+          }
+          await this.handleDataPacket(peer, packet);
+          return;
+        }
+        const raw = incoming instanceof ArrayBuffer
+          ? incoming
+          : incoming instanceof Blob
+            ? await incoming.arrayBuffer()
+            : null;
+        if (raw) await this.handleFileBinaryChunk(peer, raw);
+      }).catch((error) => {
         this.log(`File chunk receive failed: ${String((error as Error)?.message || error || 'unknown')}`, 'error');
       });
     };
@@ -1922,6 +1948,22 @@ export class RealtimeRoom {
   private async handleDataPacket(peer: PeerRuntime, data: DataPacket) {
     data = { ...data, from: peer.peerId } as DataPacket;
     if ('to' in data && data.to && data.to !== this.peerId) return;
+
+    if (data.type === 'profile-sync') {
+      const incoming = data.profile;
+      if (!incoming || incoming.peerId !== peer.peerId || typeof incoming.displayName !== 'string') return;
+      if (peer.profile && Number(incoming.profileVersion || 0) < Number(peer.profile.profileVersion || 0)) return;
+      peer.profile = {
+        ...incoming,
+        peerId: peer.peerId,
+        displayName: incoming.displayName.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 80) || 'Friend',
+        status: String(incoming.status || 'Online').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 120),
+        bio: String(incoming.bio || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 500)
+      };
+      this.callbacks.onProfileAssetsStale?.();
+      this.emitPeers();
+      return;
+    }
 
     if (data.type === 'admin-mute-all') {
       if (!this.isAuthorizedModerator(peer.peerId, true)) {
@@ -2016,6 +2058,10 @@ export class RealtimeRoom {
     if (data.type === 'chat') {
       const incomingId = data.id || crypto.randomUUID();
       const fromPeer = data.from || peer.peerId;
+      if (this.receivedChatIds.remember(`${fromPeer}:${incomingId}`)) {
+        this.sendData(peer, { type: 'receipt', id: incomingId, from: this.peerId, to: fromPeer, status: 'delivered', at: Date.now() });
+        return;
+      }
       this.callbacks.onMessage({
         id: incomingId,
         roomId: this.roomId,
@@ -2073,7 +2119,7 @@ export class RealtimeRoom {
         && !peer.incomingStreamFiles.has(transferId);
       if (!valid) {
         this.log(`Invalid file stream offer rejected from ${peer.peerId}`, 'error');
-        this.sendData(peer, { type: 'file-stream-error', id: String(data.id || ''), transferId, from: this.peerId, reason: 'invalid-file-offer' });
+        this.sendFileControl(peer, { type: 'file-stream-error', id: String(data.id || ''), transferId, from: this.peerId, reason: 'invalid-file-offer' });
         return;
       }
       const fromPeer = peer.peerId;
@@ -2134,13 +2180,14 @@ export class RealtimeRoom {
         this.log(`File streaming receive started: ${pending.transferId} size=${pending.fileSize}`);
       } catch (error) {
         this.log(`File receive init failed: ${String((error as Error)?.message || error || 'unknown')}`, 'error');
-        this.sendData(peer, { type: 'file-stream-error', id: data.id, transferId: data.transferId, from: this.peerId, reason: 'receive-init-failed' });
+        this.sendFileControl(peer, { type: 'file-stream-error', id: data.id, transferId: data.transferId, from: this.peerId, reason: 'receive-init-failed' });
       }
       return;
     }
 
     if (data.type === 'file-stream-progress') {
-      this.callbacks.onFileProgress?.({ id: data.id, roomId: this.roomId, sender: 'me', senderName: this.profile.display_name || 'Me', body: '', createdAt: Date.now(), kind: 'file', transferId: data.transferId, fileSize: data.fileSize, transferredBytes: data.transferredBytes, uploadProgress: Math.round((data.transferredBytes / Math.max(1, data.fileSize)) * 100), fileStatus: 'sending' });
+      // Compatibility-only packet. Receiver progress is authoritative only after
+      // handleFileBinaryChunk has written the bytes to disk.
       return;
     }
 
@@ -2150,7 +2197,7 @@ export class RealtimeRoom {
       if (pending.receivedBytes !== pending.fileSize || pending.receivedChunks.size !== pending.totalChunks) {
         peer.incomingStreamFiles.delete(pending.transferId);
         await invoke('cancel_file_receive', { transferId: pending.transferId }).catch(() => undefined);
-        this.sendData(peer, { type: 'file-stream-error', id: pending.id, transferId: pending.transferId, from: this.peerId, reason: 'incomplete-file' });
+        this.sendFileControl(peer, { type: 'file-stream-error', id: pending.id, transferId: pending.transferId, from: this.peerId, reason: 'incomplete-file' });
         this.callbacks.onError('error_incomplete_file');
         return;
       }
@@ -2194,10 +2241,26 @@ export class RealtimeRoom {
     }
 
     if (data.type === 'file-stream-cancel' || data.type === 'file-stream-error') {
+      for (const [messageId, outgoing] of this.outgoingFileTransfers) {
+        if (outgoing.transferId === data.transferId) this.canceledOutgoingFileIds.add(messageId);
+      }
       const pending = peer.incomingStreamFiles.get(data.transferId);
       peer.incomingStreamFiles.delete(data.transferId);
       await invoke('cancel_file_receive', { transferId: data.transferId }).catch(() => undefined);
       if (pending) this.callbacks.onFileProgress?.({ id: pending.id, roomId: this.roomId, sender: 'peer', senderName: pending.senderName, body: pending.fileName, createdAt: pending.createdAt, kind: pending.kind, transferId: pending.transferId, fileName: pending.fileName, mimeType: pending.mimeType, fileSize: pending.fileSize, fileStatus: data.type === 'file-stream-cancel' ? 'canceled' : 'failed' });
+      else this.callbacks.onFileProgress?.({
+        id: String(data.id || ''),
+        roomId: this.roomId,
+        sender: 'me',
+        senderName: this.profile.display_name || 'Me',
+        body: '',
+        createdAt: Date.now(),
+        kind: 'file',
+        transferId: data.transferId,
+        fileStatus: data.type === 'file-stream-cancel' ? 'canceled' : 'failed',
+        fileError: data.reason || 'recipient-rejected-transfer',
+        retryable: data.type === 'file-stream-error'
+      });
       this.log(`File streaming ${data.type === 'file-stream-cancel' ? 'canceled' : 'failed'}: ${data.transferId}`);
       return;
     }
@@ -2277,7 +2340,8 @@ export class RealtimeRoom {
         replyToId: pending.replyToId,
         replyToBody: pending.replyToBody,
         replyToSender: pending.replyToSender,
-        waveform: pending.waveform
+        waveform: pending.waveform,
+        fileStatus: 'completed'
       });
       this.sendData(peer, { type: 'receipt', id: pending.id, from: this.peerId, to: pending.from, status: 'delivered', at: Date.now() });
       peer.incomingFiles.delete(data.id);
@@ -2301,7 +2365,7 @@ export class RealtimeRoom {
     if (!valid) {
       peer.incomingStreamFiles.delete(chunk.transferId);
       await invoke('cancel_file_receive', { transferId: chunk.transferId }).catch(() => undefined);
-      this.sendData(peer, { type: 'file-stream-error', id: pending.id, transferId: chunk.transferId, from: this.peerId, reason: 'invalid-file-chunk' });
+      this.sendFileControl(peer, { type: 'file-stream-error', id: pending.id, transferId: chunk.transferId, from: this.peerId, reason: 'invalid-file-chunk' });
       throw new Error('invalid file chunk sequence or size');
     }
     pending.receivedChunks.add(chunk.chunkIndex);
@@ -2316,7 +2380,7 @@ export class RealtimeRoom {
     } catch (error) {
       peer.incomingStreamFiles.delete(chunk.transferId);
       await invoke('cancel_file_receive', { transferId: chunk.transferId }).catch(() => undefined);
-      this.sendData(peer, { type: 'file-stream-error', id: pending.id, transferId: chunk.transferId, from: this.peerId, reason: 'file-write-rejected' });
+      this.sendFileControl(peer, { type: 'file-stream-error', id: pending.id, transferId: chunk.transferId, from: this.peerId, reason: 'file-write-rejected' });
       throw error;
     }
     pending.receivedBytes = Number(written || pending.receivedBytes + chunk.payload.byteLength);
@@ -2382,6 +2446,49 @@ export class RealtimeRoom {
     return true;
   }
 
+  private sendFileControl(peer: PeerRuntime, packet: DataPacket): boolean {
+    const channel = peer.fileDc;
+    if (!channel || channel.readyState !== 'open') {
+      this.log(`File channel unavailable for ${peer.peerId}; could not send ${packet.type}`, 'error');
+      return false;
+    }
+    try {
+      channel.send(JSON.stringify(packet));
+      return true;
+    } catch (error) {
+      this.log(`Failed sending file control to ${peer.peerId}: ${String((error as Error)?.message || error)}`, 'error');
+      return false;
+    }
+  }
+
+  private async waitForFileChannel(peer: PeerRuntime, timeoutMs = 8_000): Promise<RTCDataChannel> {
+    if (peer.fileDc?.readyState === 'open') return peer.fileDc;
+    this.ensureLocalDataChannels(peer);
+    const channel = peer.fileDc;
+    if (!channel) throw new Error('file data channel is unavailable');
+    if (channel.readyState === 'open') return channel;
+    if (channel.readyState === 'closing' || channel.readyState === 'closed') throw new Error('file data channel is closed');
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('file data channel did not open in time'));
+      }, timeoutMs);
+      const cleanup = () => {
+        window.clearTimeout(timer);
+        channel.removeEventListener('open', onOpen);
+        channel.removeEventListener('close', onClose);
+        channel.removeEventListener('error', onClose);
+      };
+      const onOpen = () => { cleanup(); resolve(); };
+      const onClose = () => { cleanup(); reject(new Error('file data channel closed before transfer')); };
+      channel.addEventListener('open', onOpen, { once: true });
+      channel.addEventListener('close', onClose, { once: true });
+      channel.addEventListener('error', onClose, { once: true });
+    });
+    if (peer.fileDc !== channel || (channel as RTCDataChannel).readyState !== 'open') throw new Error('file data channel changed before transfer');
+    return channel;
+  }
+
   private updateVoicePressure(level: 'normal' | 'pressure' | 'severe') {
     const now = Date.now();
     if (level !== this.voicePressureLevel || now - this.lastVoicePressureNotifyAt > 5000) {
@@ -2404,14 +2511,15 @@ export class RealtimeRoom {
 
   private async waitForBuffer(peer: PeerRuntime) {
     if (!peer.dc) return;
-    if (peer.dc.bufferedAmount <= FILE_BUFFERED_HIGH_WATER) return;
-    await waitForBufferedLow(peer.dc);
+    if (peer.dc.bufferedAmount <= DATA_CHANNEL_BUFFERED_HIGH_WATER) return;
+    await waitForBufferedLow(peer.dc, DATA_CHANNEL_BUFFERED_HIGH_WATER, DATA_CHANNEL_BUFFERED_LOW_WATER);
   }
 
-  private async waitForFileBudget(peer: PeerRuntime): Promise<void> {
+  private async waitForFileBudget(peer: PeerRuntime, isCanceled: () => boolean = () => false): Promise<void> {
     const channel = peer.fileDc;
     if (!channel) return;
     while (channel.readyState === 'open') {
+      if (isCanceled()) return;
       const budget = mediaBudgetFor(this.voicePressureLevel, this.currentScreenBitrate, this.currentScreenFps, this.activePeerCount());
       if (channel.bufferedAmount <= budget.fileHighWater) {
         if (budget.fileChunkDelayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, budget.fileChunkDelayMs));
@@ -2427,8 +2535,6 @@ export class RealtimeRoom {
     const clean = body.trim();
     if (!clean) return null;
     const targets = this.openPeers(targetPeerId);
-    if (targetPeerId && !targets.length) return null;
-
     const message: ChatMessage = {
       id: crypto.randomUUID(),
       roomId: this.roomId,
@@ -2444,7 +2550,8 @@ export class RealtimeRoom {
       deliveryStatus: 'sent',
       deliveredTo: [],
       seenBy: [],
-      targetCount: targets.length
+      targetCount: targetPeerId ? 1 : targets.length,
+      targetPeerIds: targetPeerId ? [targetPeerId] : targets.map((peer) => peer.peerId)
     };
 
     for (const peer of targets) {
@@ -2468,7 +2575,7 @@ export class RealtimeRoom {
         senderName,
         body: message.body,
         createdAt: message.createdAt,
-        private: false,
+        private: Boolean(message.privateTo),
         replyToId: message.replyToId,
         replyToBody: message.replyToBody,
         replyToSender: message.replyToSender
@@ -2823,6 +2930,49 @@ export class RealtimeRoom {
     this.log('Camera-over-screen composition stopped');
   }
 
+  async cancelFileTransfer(messageId: string): Promise<boolean> {
+    if (!messageId) return false;
+    this.canceledOutgoingFileIds.add(messageId);
+    let canceled = false;
+    const outgoing = this.outgoingFileTransfers.get(messageId);
+    if (outgoing) {
+      for (const peerId of outgoing.peers) {
+        const peer = this.peers.get(peerId);
+        if (!peer) continue;
+        this.sendFileControl(peer, {
+          type: 'file-stream-cancel',
+          id: messageId,
+          transferId: outgoing.transferId,
+          from: this.peerId,
+          reason: 'sender-canceled'
+        });
+      }
+      canceled = true;
+    }
+    for (const peer of this.peers.values()) {
+      for (const [transferId, pending] of peer.incomingStreamFiles) {
+        if (pending.id !== messageId) continue;
+        peer.incomingStreamFiles.delete(transferId);
+        await invoke('cancel_file_receive', { transferId }).catch(() => undefined);
+        this.sendFileControl(peer, {
+          type: 'file-stream-cancel',
+          id: messageId,
+          transferId,
+          from: this.peerId,
+          reason: 'receiver-canceled'
+        });
+        canceled = true;
+      }
+      const legacy = peer.incomingFiles.get(messageId);
+      if (legacy) {
+        peer.incomingFiles.delete(messageId);
+        canceled = true;
+      }
+    }
+    this.log(`File transfer cancellation ${canceled ? 'applied' : 'queued'}: ${messageId}`);
+    return true;
+  }
+
   async sendFile(fileName: string, mimeType: string, source: string | File | Blob, targetPeerId?: string, options?: SendFileOptions): Promise<ChatMessage | null> {
     const targets = this.openPeers(targetPeerId);
     if (targetPeerId && !targets.length) return null;
@@ -2858,7 +3008,8 @@ export class RealtimeRoom {
           uploadProgress: 0,
           fileStatus: 'sending' as const
         } : {}),
-        deliveryStatus: 'sent', deliveredTo: [], seenBy: [], targetCount: targets.length
+        deliveryStatus: 'sent', deliveredTo: [], seenBy: [], targetCount: targets.length,
+        targetPeerIds: targets.map((peer) => peer.peerId)
       };
       const completedMessage = typeof options?.fileSize === 'number'
         ? { ...message, fileStatus: 'completed' as const, uploadProgress: 100, transferredBytes: options.fileSize }
@@ -2866,22 +3017,25 @@ export class RealtimeRoom {
       const chunks = Math.max(1, Math.ceil(dataUrl.length / LEGACY_FILE_CHUNK_SIZE));
       if (!targets.length) {
         options?.onProgress?.(100);
-        return { ...completedMessage, deliveryStatus: 'sent', targetCount: 0 };
+        return { ...completedMessage, fileStatus: 'failed', fileError: 'no-connected-recipient', retryable: true, deliveryStatus: 'sent', targetCount: 0 };
       }
       for (let peerIndex = 0; peerIndex < targets.length; peerIndex += 1) {
         const peer = targets[peerIndex];
-        this.sendData(peer, { type: 'file-start', id: message.id, from: this.peerId, to: targetPeerId, senderName: message.senderName, fileName, mimeType, kind, total: chunks, createdAt: message.createdAt, private: Boolean(targetPeerId), replyToId: message.replyToId, replyToBody: message.replyToBody, replyToSender: message.replyToSender, waveform: message.waveform });
+        if (!this.sendData(peer, { type: 'file-start', id: message.id, from: this.peerId, to: targetPeerId, senderName: message.senderName, fileName, mimeType, kind, total: chunks, createdAt: message.createdAt, private: Boolean(targetPeerId), replyToId: message.replyToId, replyToBody: message.replyToBody, replyToSender: message.replyToSender, waveform: message.waveform })) {
+          throw new Error('could not start inline transfer');
+        }
         for (let index = 0; index < chunks; index += 1) {
+          if (options?.isCanceled?.() || this.canceledOutgoingFileIds.has(id)) return { ...message, fileStatus: 'canceled', retryable: false };
           await this.waitForBuffer(peer);
           const data = dataUrl.slice(index * LEGACY_FILE_CHUNK_SIZE, (index + 1) * LEGACY_FILE_CHUNK_SIZE);
-          this.sendData(peer, { type: 'file-chunk', id: message.id, index, data });
+          if (!this.sendData(peer, { type: 'file-chunk', id: message.id, index, data })) throw new Error('inline transfer queue rejected a chunk');
           const completedChunks = (peerIndex * chunks) + index + 1;
           options?.onProgress?.(Math.min(99, Math.round((completedChunks / (chunks * targets.length)) * 100)));
         }
-        this.sendData(peer, { type: 'file-end', id: message.id });
+        if (!this.sendData(peer, { type: 'file-end', id: message.id })) throw new Error('could not finalize inline transfer');
       }
       options?.onProgress?.(100);
-      return completedMessage;
+      return { ...completedMessage, fileStatus: 'awaiting-delivery', retryable: true };
     }
 
     const file = source;
@@ -2889,17 +3043,6 @@ export class RealtimeRoom {
       this.callbacks.onError('fileTooLarge');
       return null;
     }
-    // Small files/audio voice messages keep legacy inline compatibility and old-message display.
-    if (file.size <= INLINE_PREVIEW_MAX_BYTES) {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-      return this.sendFile(fileName, mimeType, dataUrl, targetPeerId, { ...options, fileSize: file.size });
-    }
-
     const transferId = crypto.randomUUID();
     const safe = safeFileName(fileName);
     const totalChunks = Math.max(1, Math.ceil(file.size / FILE_CHUNK_BYTES));
@@ -2923,51 +3066,67 @@ export class RealtimeRoom {
       replyToBody: options?.replyTo?.body,
       replyToSender: options?.replyTo?.senderName,
       waveform: options?.waveform,
-      deliveryStatus: 'sent', deliveredTo: [], seenBy: [], targetCount: targets.length
+      deliveryStatus: 'sent', deliveredTo: [], seenBy: [], targetCount: targets.length,
+      targetPeerIds: targets.map((peer) => peer.peerId)
     };
 
     if (!targets.length) {
       options?.onProgress?.(100);
-      return { ...message, fileStatus: 'completed', uploadProgress: 100, transferredBytes: file.size, targetCount: 0 };
+      return { ...message, fileStatus: 'failed', fileError: 'no-connected-recipient', retryable: true, uploadProgress: 0, transferredBytes: 0, targetCount: 0 };
     }
 
-    for (let peerIndex = 0; peerIndex < targets.length; peerIndex += 1) {
-      const peer = targets[peerIndex];
-      if (peer.fileDc?.readyState !== 'open') {
-        this.callbacks.onError('fileFailed');
-        return null;
-      }
-      this.sendData(peer, {
-        type: 'file-stream-start', id, transferId, roomId: this.roomId, from: this.peerId, to: targetPeerId,
-        senderName: message.senderName, fileName, safeFileName: safe, fileSize: file.size, mimeType, kind,
-        chunkSize: FILE_CHUNK_BYTES, totalChunks, createdAt: now, private: Boolean(targetPeerId),
-        replyToId: message.replyToId, replyToBody: message.replyToBody, replyToSender: message.replyToSender, waveform: message.waveform
-      });
-      for (let index = 0; index < totalChunks; index += 1) {
-        if (options?.isCanceled?.()) {
-          this.sendData(peer, { type: 'file-stream-cancel', id, transferId, from: this.peerId, reason: 'sender-canceled' });
-          this.log(`File streaming canceled by sender: ${transferId}`);
-          return { ...message, fileStatus: 'canceled', uploadProgress: 0 };
+    const isCanceled = () => this.canceledOutgoingFileIds.has(id) || Boolean(options?.isCanceled?.());
+    this.outgoingFileTransfers.set(id, { transferId, peers: new Set(targets.map((peer) => peer.peerId)) });
+    try {
+      for (let peerIndex = 0; peerIndex < targets.length; peerIndex += 1) {
+        const peer = targets[peerIndex];
+        const fileChannel = await this.waitForFileChannel(peer);
+        if (isCanceled()) {
+          this.sendFileControl(peer, { type: 'file-stream-cancel', id, transferId, from: this.peerId, reason: 'sender-canceled' });
+          return { ...message, fileStatus: 'canceled', retryable: false, uploadProgress: 0 };
         }
-        if (peer.fileDc?.readyState !== 'open') throw new Error('file channel closed');
-        await this.waitForFileBudget(peer);
-        const offset = index * FILE_CHUNK_BYTES;
-        const payload = await file.slice(offset, Math.min(file.size, offset + FILE_CHUNK_BYTES)).arrayBuffer();
-        peer.fileDc.send(packFileBinaryChunk(transferId, index, offset, payload));
-        const transferred = Math.min(file.size, offset + payload.byteLength);
-        const completedChunks = (peerIndex * totalChunks) + index + 1;
-        const progress = Math.min(99, Math.round((completedChunks / (totalChunks * targets.length)) * 100));
-        options?.onProgress?.(progress);
-        if (index % 4 === 0 || index + 1 === totalChunks) this.sendData(peer, { type: 'file-stream-progress', id, transferId, from: this.peerId, transferredBytes: transferred, fileSize: file.size });
-        const fileBudget = mediaBudgetFor(this.voicePressureLevel, this.currentScreenBitrate, this.currentScreenFps, this.activePeerCount());
-        if (fileBudget.fileChunkDelayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, fileBudget.fileChunkDelayMs));
-        else await new Promise((resolve) => window.setTimeout(resolve, 0));
+        if (!this.sendFileControl(peer, {
+          type: 'file-stream-start', id, transferId, roomId: this.roomId, from: this.peerId, to: targetPeerId,
+          senderName: message.senderName, fileName, safeFileName: safe, fileSize: file.size, mimeType, kind,
+          chunkSize: FILE_CHUNK_BYTES, totalChunks, createdAt: now, private: Boolean(targetPeerId),
+          replyToId: message.replyToId, replyToBody: message.replyToBody, replyToSender: message.replyToSender, waveform: message.waveform
+        })) throw new Error('could not start file transfer');
+
+        for (let index = 0; index < totalChunks; index += 1) {
+          if (isCanceled()) {
+            this.sendFileControl(peer, { type: 'file-stream-cancel', id, transferId, from: this.peerId, reason: 'sender-canceled' });
+            this.log(`File streaming canceled by sender: ${transferId}`);
+            return { ...message, fileStatus: 'canceled', retryable: false, uploadProgress: 0 };
+          }
+          if (fileChannel.readyState !== 'open' || peer.fileDc !== fileChannel) throw new Error('file channel closed');
+          await this.waitForFileBudget(peer, isCanceled);
+          if (isCanceled()) continue;
+          const offset = index * FILE_CHUNK_BYTES;
+          const payload = await file.slice(offset, Math.min(file.size, offset + FILE_CHUNK_BYTES)).arrayBuffer();
+          if (isCanceled()) continue;
+          fileChannel.send(packFileBinaryChunk(transferId, index, offset, payload));
+          const completedChunks = (peerIndex * totalChunks) + index + 1;
+          const progress = Math.min(99, Math.round((completedChunks / (totalChunks * targets.length)) * 100));
+          options?.onProgress?.(progress);
+          const fileBudget = mediaBudgetFor(this.voicePressureLevel, this.currentScreenBitrate, this.currentScreenFps, this.activePeerCount());
+          if (fileBudget.fileChunkDelayMs > 0) await new Promise((resolve) => window.setTimeout(resolve, fileBudget.fileChunkDelayMs));
+          else await new Promise((resolve) => window.setTimeout(resolve, 0));
+        }
+        if (isCanceled()) {
+          this.sendFileControl(peer, { type: 'file-stream-cancel', id, transferId, from: this.peerId, reason: 'sender-canceled' });
+          return { ...message, fileStatus: 'canceled', retryable: false, uploadProgress: 0 };
+        }
+        if (!this.sendFileControl(peer, { type: 'file-stream-complete', id, transferId, from: this.peerId })) {
+          throw new Error('could not finalize file transfer');
+        }
+        this.log(`File streaming send completed: ${transferId} size=${file.size}`);
       }
-      this.sendData(peer, { type: 'file-stream-complete', id, transferId, from: this.peerId });
-      this.log(`File streaming send completed: ${transferId} size=${file.size}`);
+      options?.onProgress?.(100);
+      return { ...message, uploadProgress: 100, transferredBytes: file.size, fileStatus: 'awaiting-delivery', retryable: true };
+    } finally {
+      this.outgoingFileTransfers.delete(id);
+      this.canceledOutgoingFileIds.delete(id);
     }
-    options?.onProgress?.(100);
-    return { ...message, uploadProgress: 100, transferredBytes: file.size, fileStatus: 'completed' };
   }
 
   async startVoiceMessageRecording(inputDeviceId?: string): Promise<VoiceMessageStartResult> {
@@ -3088,6 +3247,18 @@ export class RealtimeRoom {
       });
     };
     apply().catch((error) => this.callbacks.onError(String((error as Error)?.message || error)));
+  }
+
+  /**
+   * Updates authoritative room presence for a microphone owned by an external
+   * media adapter without starting the legacy voice companion.
+   */
+  setExternalMicEnabled(enabled: boolean): void {
+    this.voiceDesiredActive = enabled;
+    this.voiceMicEnabled = enabled;
+    if (!enabled) this.callbacks.onVoiceActivity?.(this.peerId, false, 0);
+    this.callbacks.onLocalMedia?.({ micEnabled: enabled });
+    this.sendSignal({ type: 'media', from: this.peerId, micEnabled: enabled });
   }
 
   async setVoiceEnhanceEnabled(enabled: boolean): Promise<void> {
@@ -4052,6 +4223,8 @@ export class RealtimeRoom {
       displayName: this.profile.display_name || 'Mhlko User',
       avatarVersion: profileAvatarVersion(this.profile.avatar_data_url),
       status: this.profile.status,
+      bio: this.profile.bio,
+      profileVersion: this.profile.updated_at,
       capabilities: { rtpVoice: false, voiceCompanion: true, rtcDiagnosticsVersion: 2 }
     };
   }
@@ -4084,9 +4257,12 @@ export class RealtimeRoom {
 
   close() {
     this.closedByUser = true;
+    this.canceledOutgoingFileIds.clear();
+    this.outgoingFileTransfers.clear();
     this.pendingRtcSignals = [];
     this.pendingStateRefresh = false;
     this.peerSignalChains.clear();
+    this.receivedChatIds.clear();
     this.callbacks.onProfileAssetAccess?.(null);
     this.detachRecoveryListeners();
     if (this.reconnectTimer) window.clearTimeout(this.reconnectTimer);
