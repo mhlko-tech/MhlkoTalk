@@ -8,6 +8,7 @@ import {
   type RoutingEnvironment,
 } from "../worker/src/providerRouting";
 import { targetRtcProviders as clientTargetRtcProviders } from "../src/core/rtcProviders";
+import { routingForRtcProvider, routingIsSupported } from "../src/core/serviceRouting";
 import { targetRtcProviders as workerTargetRtcProviders } from "../worker/src/rtcProviderCatalog";
 
 function testEnvironment() {
@@ -44,6 +45,13 @@ assert.deepEqual(parseRtcProviders(undefined), ["livekit"]);
 assert.deepEqual(workerTargetRtcProviders, clientTargetRtcProviders);
 assert.equal(workerTargetRtcProviders.length, 11);
 assert.equal(knownRtcProviders.includes("daily"), true);
+assert.deepEqual(routingForRtcProvider("stream"), {
+  messaging: "stream-events",
+  files: "supabase-storage",
+});
+assert.equal(routingIsSupported("stream", ["stream-events"], ["livekit-stream"]), false);
+assert.equal(routingIsSupported("stream", ["stream-events"], ["supabase-storage"]), true);
+assert.equal(routingIsSupported("livekit", ["livekit-data"], ["livekit-stream"]), true);
 
 const environment = testEnvironment();
 const capabilities = await rtcCapabilities(environment);
@@ -80,4 +88,4 @@ assert.equal(await selectRtcProvider(environment, "Another", ["livekit"]), null)
 await updateProviderHealth(environment, "livekit", { usedPercent: 0, disabled: true });
 assert.equal(await selectRtcProvider(environment, "Disabled", ["livekit"]), null);
 
-console.log("Provider routing tests passed: 23");
+console.log("Provider routing tests passed: 28");

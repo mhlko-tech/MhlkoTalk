@@ -28,6 +28,8 @@ import { accountSession } from "./accountSession";
 import {
   legacyRoomServiceRouting,
   parseRoomServiceRouting,
+  type FileProviderId,
+  type MessagingProviderId,
   type RoomServiceRouting,
 } from "../core/serviceRouting";
 import {
@@ -91,6 +93,23 @@ const qualityValue = {
   medium: 1,
   high: 2,
 } as const;
+
+const supportedMessagingProviders: MessagingProviderId[] = [
+  "stream-events",
+  "agora-data",
+  "tencent-data",
+  "cloudflare-realtime",
+  "daily-chat",
+  "whereby-chat",
+  "livekit-data",
+];
+
+const supportedFileProviders: FileProviderId[] = [
+  "supabase-storage",
+  "daily-prebuilt",
+  "whereby-prebuilt",
+  "livekit-stream",
+];
 
 /** Owns the whole media lifecycle; React components only observe this class. */
 export class RoomSession {
@@ -163,6 +182,10 @@ export class RoomSession {
   private tencentParticipantIds = new Set<string>();
   private cloudflareParticipantIds = new Set<string>();
   private routing: RoomServiceRouting = legacyRoomServiceRouting(liveKitUrl);
+  private attachmentAccessToken: string | undefined;
+  private usageAccessToken: string | undefined;
+  private usageWindowStartedAt: number | undefined;
+  private usageReportTimer: number | undefined;
   private attachedMediaElements = new Set<HTMLMediaElement>();
   private remoteVoiceAudio = new Map<string, Set<HTMLAudioElement>>();
   private remoteStreamAudio = new Map<string, Set<HTMLAudioElement>>();
@@ -256,6 +279,7 @@ export class RoomSession {
       if (this.isLiveKitConfigured()) await this.joinRealtime(roomName);
       else await this.joinSimulator();
     } catch (error) {
+      await this.stopUsageReporting(false);
       await this.room?.disconnect().catch(() => undefined);
       await this.streamRtc.disconnect();
       await this.agoraRtc.disconnect();
@@ -289,6 +313,7 @@ export class RoomSession {
 
   async leave() {
     window.clearTimeout(this.recoveryTimer);
+    await this.stopUsageReporting(true);
     await this.room?.disconnect();
     await this.streamRtc.disconnect();
     await this.agoraRtc.disconnect();
@@ -296,6 +321,7 @@ export class RoomSession {
     await this.cloudflareRtc.disconnect();
     this.room = null;
     this.inviteCode = undefined;
+    this.attachmentAccessToken = undefined;
     this.remoteProfiles.clear();
     this.remoteMediaQuality.clear();
     this.remoteMediaState.clear();
@@ -637,12 +663,16 @@ export class RoomSession {
 
   async deleteChatMessage(id: string) {
     if (!this.room && !this.streamRtc.call && !this.agoraRtc.connected && !this.tencentRtc.connected && !this.cloudflareRtc.connected) return;
+    const storedAttachment = this.chat.messages.find((message) => message.id === id && message.mine)?.attachment?.storageId;
     await this.sendProviderEvent({ type: "delete", id }, true);
     this.patchChat(id, {
       deleted: true,
       body: undefined,
       attachment: undefined,
     });
+    if (storedAttachment) {
+      void this.attachmentApi("/attachments/delete", { attachmentId: storedAttachment }).catch(() => undefined);
+    }
   }
 
   async setProfile(profile: UserProfile) {
@@ -1042,10 +1072,9 @@ export class RoomSession {
     onProgress?: (progress: number) => void,
     signal?: AbortSignal,
   ) {
-    if (this.streamRtc.call || this.agoraRtc.connected || this.tencentRtc.connected || this.cloudflareRtc.connected) {
-      throw new Error(
-        "Attachments are temporarily unavailable on this call server. Text chat, voice, camera and screen sharing remain available.",
-      );
+    if (this.routing.files.provider === "supabase-storage") {
+      await this.sendStoredFile(file, onProgress, signal);
+      return;
     }
     if (!this.room) return;
     const maximum = this.routing.subscription.entitlements.maxAttachmentBytes;
@@ -1102,6 +1131,147 @@ export class RoomSession {
     }
   }
 
+  private async attachmentApi<T>(path: string, value: Record<string, unknown>) {
+    const accountToken = accountSession.getAccessToken();
+    if (!accountToken || !this.attachmentAccessToken) {
+      throw new Error("Rejoin the room before sending or opening attachments.");
+    }
+    const response = await fetch(new URL(path, liveKitTokenEndpoint), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${accountToken}`,
+      },
+      body: JSON.stringify({
+        ...value,
+        roomAccessToken: this.attachmentAccessToken,
+      }),
+    });
+    const payload = (await response.json().catch(() => ({}))) as T & { error?: string };
+    if (!response.ok) throw new Error(payload.error || "Attachment service is unavailable");
+    return payload;
+  }
+
+  private uploadSignedFile(
+    uploadUrl: string,
+    file: File,
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal,
+  ) {
+    return new Promise<void>((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      const abort = () => request.abort();
+      signal?.addEventListener("abort", abort, { once: true });
+      request.open("PUT", uploadUrl);
+      request.setRequestHeader("content-type", file.type || "application/octet-stream");
+      request.setRequestHeader("x-upsert", "false");
+      request.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.(event.loaded / event.total);
+      };
+      request.onerror = () => reject(new Error("Attachment upload failed"));
+      request.onabort = () => reject(new DOMException("Transfer cancelled", "AbortError"));
+      request.onload = () => {
+        signal?.removeEventListener("abort", abort);
+        if (request.status >= 200 && request.status < 300) resolve();
+        else reject(new Error("Attachment storage rejected the upload"));
+      };
+      request.send(file);
+    });
+  }
+
+  private async sendStoredFile(
+    file: File,
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal,
+  ) {
+    const maximum = this.routing.subscription.entitlements.maxAttachmentBytes;
+    if (file.size > maximum) {
+      throw new Error(
+        `${this.routing.subscription.tier === "plus" ? "MHTalk Plus" : "Free accounts"} can send files up to ${formatAttachmentLimit(maximum)}.`,
+      );
+    }
+    const ticket = await this.attachmentApi<{
+      attachmentId: string;
+      uploadUrl: string;
+      fileName: string;
+      mimeType: string;
+      size: number;
+      expiresAt: string;
+    }>("/attachments/upload-ticket", {
+      fileName: file.name,
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+    });
+    await this.uploadSignedFile(ticket.uploadUrl, file, onProgress, signal);
+    const attachment = await this.attachmentApi<{
+      attachmentId: string;
+      fileName: string;
+      mimeType: string;
+      size: number;
+      expiresAt: string;
+    }>("/attachments/complete", { attachmentId: ticket.attachmentId });
+    const id = crypto.randomUUID();
+    const createdAt = Date.now();
+    await this.sendProviderEvent({
+      type: "attachment",
+      id,
+      createdAt,
+      attachment: {
+        id: attachment.attachmentId,
+        name: attachment.fileName,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+      },
+    }, true);
+    const localUrl = URL.createObjectURL(file);
+    this.objectUrls.add(localUrl);
+    this.addChat({
+      id,
+      sender: this.profile.name,
+      createdAt,
+      mine: true,
+      attachment: {
+        storageId: attachment.attachmentId,
+        name: attachment.fileName,
+        mimeType: attachment.mimeType,
+        size: attachment.size,
+        url: localUrl,
+        kind: attachmentKind(attachment.mimeType),
+      },
+    });
+  }
+
+  private async receiveStoredAttachment(
+    identity: string,
+    event: { id: string; createdAt: number; attachment: { id: string; name: string; mimeType: string; size: number } },
+  ) {
+    try {
+      const download = await this.attachmentApi<{
+        downloadUrl: string;
+        fileName: string;
+        mimeType: string;
+        size: number;
+      }>("/attachments/download-ticket", { attachmentId: event.attachment.id });
+      this.addChat({
+        id: event.id,
+        sender: this.remoteProfiles.get(identity)?.name || identity.slice(0, 16),
+        senderIdentity: identity,
+        createdAt: event.createdAt,
+        mine: false,
+        attachment: {
+          storageId: event.attachment.id,
+          name: download.fileName,
+          mimeType: download.mimeType,
+          size: download.size,
+          url: download.downloadUrl,
+          kind: attachmentKind(download.mimeType),
+        },
+      });
+    } catch {
+      /* A failed or expired attachment must not disconnect the call. */
+    }
+  }
+
   setTyping(typing: boolean) {
     if (!this.room && !this.streamRtc.call && !this.agoraRtc.connected && !this.tencentRtc.connected && !this.cloudflareRtc.connected) return;
     window.clearTimeout(this.typingTimer);
@@ -1132,7 +1302,47 @@ export class RoomSession {
     }
     const credentials = await this.fetchToken(roomName);
     this.routing = credentials.routing;
+    this.attachmentAccessToken = credentials.attachmentAccessToken;
     await this.rtcAdapters.connect(credentials);
+    this.startUsageReporting(credentials.usageAccessToken);
+  }
+
+  private startUsageReporting(token?: string) {
+    window.clearInterval(this.usageReportTimer);
+    this.usageAccessToken = token;
+    this.usageWindowStartedAt = token ? Date.now() : undefined;
+    if (!token) return;
+    this.usageReportTimer = window.setInterval(() => {
+      void this.reportRtcUsage();
+    }, 60_000);
+  }
+
+  private async stopUsageReporting(flush: boolean) {
+    window.clearInterval(this.usageReportTimer);
+    this.usageReportTimer = undefined;
+    if (flush) await this.reportRtcUsage(true).catch(() => undefined);
+    this.usageAccessToken = undefined;
+    this.usageWindowStartedAt = undefined;
+  }
+
+  private async reportRtcUsage(leaving = false) {
+    const usageAccessToken = this.usageAccessToken;
+    const measuredFromMs = this.usageWindowStartedAt;
+    const measuredToMs = Date.now();
+    if (!usageAccessToken || !measuredFromMs || measuredToMs - measuredFromMs < 10_000) return;
+    this.usageWindowStartedAt = measuredToMs;
+    await fetch(new URL("/rtc/usage", liveKitTokenEndpoint), {
+      method: "POST",
+      keepalive: true,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        usageAccessToken,
+        reportId: crypto.randomUUID(),
+        measuredFrom: new Date(measuredFromMs).toISOString(),
+        measuredTo: new Date(measuredToMs).toISOString(),
+        leaving,
+      }),
+    });
   }
 
   private async joinStream(credentials: RoomConnectionCredentials) {
@@ -1852,6 +2062,9 @@ export class RoomSession {
     if (event.type === "delete" && typeof event.id === "string") {
       this.patchChat(event.id, { deleted: true, body: undefined, attachment: undefined });
     }
+    if (isStoredAttachmentEvent(event)) {
+      void this.receiveStoredAttachment(identity, event);
+    }
     if (event.type === "profile" && event.profile && typeof event.profile === "object") {
       const value = event.profile as Partial<UserProfile>;
       this.remoteProfiles.set(identity, sanitizeProfile({
@@ -2026,6 +2239,7 @@ export class RoomSession {
       source?: unknown;
       quality?: unknown;
       replyTo?: unknown;
+      attachment?: unknown;
     };
     const sender = this.remoteProfiles.get(identity)?.name || received.user.name || identity.slice(0, 16);
     if (
@@ -2050,6 +2264,9 @@ export class RoomSession {
     }
     if (event.type === "delete" && typeof event.id === "string") {
       this.patchChat(event.id, { deleted: true, body: undefined, attachment: undefined });
+    }
+    if (isStoredAttachmentEvent(event)) {
+      void this.receiveStoredAttachment(identity, event);
     }
     if (event.type === "profile" && event.profile && typeof event.profile === "object") {
       const value = event.profile as Partial<UserProfile>;
@@ -2311,11 +2528,16 @@ export class RoomSession {
         roomName,
         inviteCode: this.inviteCode,
         clientPlatform: "windows",
+        capabilitiesVersion: 2,
         supportedRtcProviders,
+        supportedMessagingProviders,
+        supportedFileProviders,
       }),
     }).finally(() => window.clearTimeout(timer));
     const payload = (await response.json().catch(() => ({}))) as {
       token?: string;
+      attachmentAccessToken?: string;
+      usageAccessToken?: string;
       identity?: string;
       screenToken?: string;
       screenIdentity?: string;
@@ -2328,6 +2550,8 @@ export class RoomSession {
       throw new Error("Invalid token response");
     return {
       token: payload.token,
+      ...(payload.attachmentAccessToken ? { attachmentAccessToken: payload.attachmentAccessToken } : {}),
+      ...(payload.usageAccessToken ? { usageAccessToken: payload.usageAccessToken } : {}),
       ...(payload.identity ? { identity: payload.identity } : {}),
       ...(payload.screenToken ? { screenToken: payload.screenToken } : {}),
       ...(payload.screenIdentity ? { screenIdentity: payload.screenIdentity } : {}),
@@ -2678,6 +2902,21 @@ function isChatReply(value: unknown): value is NonNullable<ChatMessage["replyTo"
   return typeof reply.id === "string" &&
     typeof reply.sender === "string" &&
     typeof reply.body === "string";
+}
+
+function isStoredAttachmentEvent(value: Record<string, unknown>): value is {
+  type: "attachment";
+  id: string;
+  createdAt: number;
+  attachment: { id: string; name: string; mimeType: string; size: number };
+} {
+  if (value.type !== "attachment" || typeof value.id !== "string" || typeof value.createdAt !== "number") return false;
+  if (!value.attachment || typeof value.attachment !== "object") return false;
+  const attachment = value.attachment as Record<string, unknown>;
+  return typeof attachment.id === "string" &&
+    typeof attachment.name === "string" &&
+    typeof attachment.mimeType === "string" &&
+    typeof attachment.size === "number";
 }
 
 function capQuality(requested: MediaQuality, maximum: MediaQuality) {

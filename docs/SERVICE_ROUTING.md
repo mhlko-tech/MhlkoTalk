@@ -6,15 +6,21 @@ entitlements. Both clients accept the same response contract:
 ```json
 {
   "routing": {
-    "rtc": { "provider": "daily", "serverUrl": "https://…daily.co/…" },
-    "messaging": { "provider": "daily-chat" },
-    "files": { "provider": "daily-prebuilt" }
+    "rtc": { "provider": "stream", "serverUrl": "", "clientKey": "public-key" },
+    "messaging": { "provider": "stream-events" },
+    "files": { "provider": "supabase-storage" }
   },
   "subscription": { "tier": "free", "entitlements": {} }
 }
 ```
 
-The current working tree contains Stream, Agora, Tencent, Whereby Embedded,
+Capability contract version 2 requires each client to declare its RTC,
+messaging and file implementations. The broker rejects an incomplete route with
+`CLIENT_CAPABILITY_MISMATCH`; both clients also verify that the returned
+companion services exactly match the selected RTC provider.
+
+The current working tree contains Stream, Agora, Tencent, Cloudflare Realtime,
+Whereby Embedded,
 Daily Prebuilt and LiveKit adapters. Daily is a legacy Beta path and is not part
 of the target zero-budget portfolio.
 `PROVIDER_PORTFOLIO.md` is the authoritative list of the eleven target RTC
@@ -42,10 +48,17 @@ are ready. Secrets are never included in this response or stored in a client.
   on both clients. A failed provider therefore produces a clear error instead
   of an infinite spinner.
 
-Stream, Agora, Tencent and Whereby are deployed end to end. Every other target
-entry remains visibly unavailable until its credentials and both client
-adapters are deployed. This is an intentional release-safety rule, not a
-placeholder route.
+Stream, Agora, Tencent, Cloudflare Realtime, Whereby and LiveKit have complete
+source adapters. Runtime readiness still requires credentials, a green staging
+matrix and a healthy quota policy. Every other target entry remains visibly
+unavailable until its credential issuer and both client adapters are deployed.
+This is an intentional release-safety rule, not a placeholder route.
+
+For Stream, Agora, Tencent and Cloudflare routes, authenticated attachments use
+a private Supabase Storage bucket. The Worker issues short-lived upload and
+download URLs, validates ownership, room membership, size and retention, and
+removes expired objects from the scheduled job. Service-role credentials never
+reach either client.
 
 ## Account plans
 

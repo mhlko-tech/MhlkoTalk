@@ -41,6 +41,7 @@ export interface SessionSnapshot {
 }
 
 export type ChatAttachment = {
+  storageId?: string;
   name: string;
   mimeType: string;
   size: number;

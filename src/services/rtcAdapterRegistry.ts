@@ -3,6 +3,10 @@ import type { RoomServiceRouting } from "../core/serviceRouting";
 
 export type RoomConnectionCredentials = {
   token: string;
+  /** Short-lived HMAC capability used only for private room attachments. */
+  attachmentAccessToken?: string;
+  /** Signed capability used for idempotent participant-minute heartbeats. */
+  usageAccessToken?: string;
   /** Provider-scoped participant identity. Never infer it from opaque tokens. */
   identity?: string;
   /** Optional second identity/token used by providers that publish screen share separately. */

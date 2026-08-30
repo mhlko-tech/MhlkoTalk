@@ -26,16 +26,16 @@ const routing = parseRoomServiceRouting(
   {
     routing: {
       rtc: { provider: "livekit", serverUrl: "wss://rtc.example" },
-      messaging: { provider: "cloudflare-realtime" },
-      files: { provider: "cloudflare-r2" },
+      messaging: { provider: "livekit-data" },
+      files: { provider: "livekit-stream" },
     },
     subscription: { tier: "plus" },
   },
   "wss://fallback.example",
 );
 assert.equal(routing.rtc.serverUrl, "wss://rtc.example");
-assert.equal(routing.messaging.provider, "cloudflare-realtime");
-assert.equal(routing.files.provider, "cloudflare-r2");
+assert.equal(routing.messaging.provider, "livekit-data");
+assert.equal(routing.files.provider, "livekit-stream");
 assert.equal(routing.subscription.tier, "plus");
 
 const agoraRouting = parseRoomServiceRouting(
@@ -51,5 +51,13 @@ const agoraRouting = parseRoomServiceRouting(
 assert.equal(agoraRouting.rtc.provider, "agora");
 assert.equal(agoraRouting.rtc.clientKey, "public-app-id");
 assert.equal(agoraRouting.messaging.provider, "agora-data");
+
+assert.throws(() => parseRoomServiceRouting({
+  routing: {
+    rtc: { provider: "stream" },
+    messaging: { provider: "livekit-data" },
+    files: { provider: "livekit-stream" },
+  },
+}, "wss://fallback.example"), /incompatible room service route/);
 
 console.log("subscription and service-routing tests passed");

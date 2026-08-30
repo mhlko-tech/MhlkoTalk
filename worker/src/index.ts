@@ -1,8 +1,16 @@
-import { AccessToken, RoomServiceClient } from "livekit-server-sdk";
+import { AccessToken } from "livekit-server-sdk";
 import { StreamClient } from "@stream-io/node-sdk";
 import { RtcRole, RtcTokenBuilder } from "agora-token";
 import { moderateMainMessage } from "../../src/core/moderation";
 import { emailError, passwordError, usernameError } from "../../src/core/authRules";
+import {
+  knownFileProviders,
+  knownMessagingProviders,
+  routingForRtcProvider,
+  routingIsSupported,
+  type FileProviderId,
+  type MessagingProviderId,
+} from "../../src/core/serviceRouting";
 import {
   isRtcProvider,
   parseRtcProviders,
@@ -13,6 +21,7 @@ import {
 } from "./providerRouting";
 import { generateTencentUserSig } from "./tencentUserSig";
 import { CloudflareRtcRoom, CloudflareRtcUsage, proxyCloudflareRtc } from "./cloudflareRtc";
+import { monthlyUsageCycle, usageAmount } from "./rtcUsage";
 
 export { CloudflareRtcRoom, CloudflareRtcUsage };
 
@@ -124,6 +133,7 @@ function serviceRouting(env: Env, profile: Profile | null, provider: RtcProvider
   const agora = provider === "agora";
   const tencent = provider === "tencent";
   const cloudflare = provider === "cloudflare-realtime";
+  const companionRouting = routingForRtcProvider(provider);
   return {
     rtc: {
       provider,
@@ -132,19 +142,20 @@ function serviceRouting(env: Env, profile: Profile | null, provider: RtcProvider
       ...(agora ? { clientKey: env.AGORA_APP_ID || "" } : {}),
       ...(tencent ? { clientKey: env.TENCENT_SDK_APP_ID || "" } : {}),
     },
-    messaging: { provider: daily ? "daily-chat" : whereby ? "whereby-chat" : cloudflare ? "cloudflare-realtime" : stream ? "stream-events" : agora ? "agora-data" : tencent ? "tencent-data" : "livekit-data" },
-    files: { provider: daily ? "daily-prebuilt" : whereby ? "whereby-prebuilt" : stream || agora || tencent || cloudflare ? "supabase-storage" : "livekit-stream" },
+    messaging: { provider: companionRouting.messaging },
+    files: { provider: companionRouting.files },
     subscription: subscriptionFor(profile),
   } as const;
 }
 async function serviceCapabilities(env: Env) {
   const rtc = await rtcCapabilities(env);
   const activeRtc = rtc.find((item) => item.ready)?.provider || null;
+  const activeRouting = activeRtc ? routingForRtcProvider(activeRtc) : null;
   return {
     active: {
       rtc: activeRtc,
-      messaging: activeRtc === "daily" ? "daily-chat" : activeRtc === "whereby" ? "whereby-chat" : activeRtc === "cloudflare-realtime" ? "cloudflare-realtime" : activeRtc === "stream" ? "stream-events" : activeRtc === "agora" ? "agora-data" : activeRtc === "tencent" ? "tencent-data" : "livekit-data",
-      files: activeRtc === "daily" ? "daily-prebuilt" : activeRtc === "whereby" ? "whereby-prebuilt" : activeRtc === "stream" || activeRtc === "agora" || activeRtc === "tencent" || activeRtc === "cloudflare-realtime" ? "supabase-storage" : "livekit-stream",
+      messaging: activeRouting?.messaging ?? null,
+      files: activeRouting?.files ?? null,
     },
     thresholds: {
       default: { warningPercent: 70, drainPercent: 85, migratePercent: 95 },
@@ -162,6 +173,14 @@ async function serviceCapabilities(env: Env) {
     files: ["daily-prebuilt", "whereby-prebuilt", "livekit-stream", "cloudflare-r2", "supabase-storage", "backblaze-b2"],
   };
 }
+
+function parseProviderCapabilities<T extends string>(
+  value: unknown,
+  known: readonly T[],
+) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item).trim().toLowerCase()).filter((item): item is T => known.includes(item as T)))];
+}
 const publicPage = (title: string, body: string) => new Response(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title} · MHTalk</title><style>body{margin:0;background:#0c111b;color:#e8edf7;font:16px/1.65 system-ui,sans-serif}main{max-width:780px;margin:auto;padding:56px 24px}h1,h2{color:#fff}a{color:#73b7ff}.card{background:#151d2b;border:1px solid #263348;border-radius:18px;padding:28px}small{color:#9aa8bc}</style></head>
@@ -169,7 +188,7 @@ const publicPage = (title: string, body: string) => new Response(`<!doctype html
   headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff" },
 });
 const homePage = () => publicPage("MHTalk", `<p>MHTalk is a voice, video, screen-sharing and social rooms app for Android and Windows.</p><p>Sign in securely with your username or email and password, or continue with Google, to keep your profile and friends available across your devices.</p>`);
-const privacyPage = () => publicPage("Privacy Policy", `<p>Last updated: August 28, 2026.</p><h2>Data we use</h2><p>When you create or use an account, MHTalk stores your account identifier, username, email address, profile name and picture, friend relationships, blocks, and notification device tokens. Supabase hosts this account data and Cloudflare routes authenticated requests. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk.</p><h2>Calls and files</h2><p>The selected compatible realtime provider carries live voice, camera, screen sharing, chat and short room events. The routing response tells the app which service is active before a room opens. Live media is not stored by the MHTalk account backend. Room invitations and presence data are temporary.</p><h2>Purpose and sharing</h2><p>We use this data only to provide authentication, account recovery, profiles, friends, presence, room invitations and notifications. Google supplies basic account information only when you choose Google sign-in. We do not sell personal data.</p><h2>Your choices</h2><p>You may sign out, disable notifications, edit your profile, or contact us to request deletion of your account data.</p>`);
+const privacyPage = () => publicPage("Privacy Policy", `<p>Last updated: August 30, 2026.</p><h2>Data we use</h2><p>When you create or use an account, MHTalk stores your account identifier, username, email address, profile name and picture, friend relationships, blocks, and notification device tokens. Supabase hosts this account data and Cloudflare routes authenticated requests. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk.</p><h2>Calls and files</h2><p>The selected compatible realtime provider carries live voice, camera, screen sharing, chat and short room events. The routing response tells the app which service is active before a room opens. Live media is not recorded by MHTalk. Authenticated attachments on guarded routes are kept in a private Supabase bucket for 24 hours on Free accounts or seven days on Plus accounts, then removed automatically. Room invitations and presence data are temporary.</p><h2>Purpose and sharing</h2><p>We use this data only to provide authentication, account recovery, profiles, friends, presence, room invitations and notifications. Google supplies basic account information only when you choose Google sign-in. We do not sell personal data.</p><h2>Your choices</h2><p>You may sign out, disable notifications, edit your profile, or contact us to request deletion of your account data.</p>`);
 const termsPage = () => publicPage("Terms of Service", `<p>Last updated: August 25, 2026.</p><p>Use MHTalk lawfully and respectfully. Do not abuse rooms, harass others, distribute illegal material, evade moderation, or attempt to compromise the service or other users.</p><p>You are responsible for content you transmit. Network, device and third-party service conditions can affect call quality and availability. The service is provided as available, without removing rights that cannot legally be waived.</p><p>Accounts or access may be limited when necessary to protect users or the service.</p>`);
 const oauthCompletePage = (request: Request) => {
   const incoming = new URL(request.url);
@@ -616,6 +635,396 @@ async function validInvite(roomName: string, invite: string, secret: string) {
   const expiry = Number(invite.slice(expiryDot + 1, dot));
   return invite.slice(0, expiryDot) === roomName && Number.isSafeInteger(expiry) && expiry >= Date.now() / 1000 &&
     crypto.subtle.verify("HMAC", await hmacKey(secret), unb64(invite.slice(dot + 1)), encoder.encode(payload));
+}
+
+type RoomAccess = { roomName: string; userId: string; expiresAt: number };
+type RtcUsageAccess = {
+  roomName: string;
+  provider: RtcProviderId;
+  subject: string;
+  expiresAt: number;
+};
+
+async function signedRoomAccess(roomName: string, userId: string, secret: string) {
+  const access: RoomAccess = {
+    roomName,
+    userId,
+    expiresAt: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
+  };
+  const payload = b64(encoder.encode(JSON.stringify(access)).buffer);
+  const signature = b64(await crypto.subtle.sign("HMAC", await hmacKey(secret), encoder.encode(payload)));
+  return `${payload}.${signature}`;
+}
+
+async function verifyRoomAccess(token: string, userId: string, secret: string): Promise<RoomAccess | null> {
+  const dot = token.lastIndexOf(".");
+  if (dot < 1) return null;
+  const payload = token.slice(0, dot);
+  const signature = token.slice(dot + 1);
+  const valid = await crypto.subtle.verify("HMAC", await hmacKey(secret), (() => {
+    try { return unb64(signature); } catch { return new Uint8Array(); }
+  })(), encoder.encode(payload));
+  if (!valid) return null;
+  try {
+    const value = JSON.parse(new TextDecoder().decode(unb64(payload))) as Partial<RoomAccess>;
+    if (
+      value.userId !== userId ||
+      typeof value.roomName !== "string" ||
+      !allowedRoom.test(value.roomName) ||
+      !Number.isSafeInteger(value.expiresAt) ||
+      Number(value.expiresAt) < Date.now() / 1000
+    ) return null;
+    return value as RoomAccess;
+  } catch {
+    return null;
+  }
+}
+
+async function signedRtcUsageAccess(
+  roomName: string,
+  provider: RtcProviderId,
+  subject: string,
+  secret: string,
+) {
+  const access: RtcUsageAccess = {
+    roomName,
+    provider,
+    subject,
+    expiresAt: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
+  };
+  const payload = b64(encoder.encode(JSON.stringify(access)).buffer);
+  const signature = b64(await crypto.subtle.sign("HMAC", await hmacKey(secret), encoder.encode(payload)));
+  return `${payload}.${signature}`;
+}
+
+async function verifyRtcUsageAccess(token: string, secret: string): Promise<RtcUsageAccess | null> {
+  const dot = token.lastIndexOf(".");
+  if (dot < 1) return null;
+  const payload = token.slice(0, dot);
+  const signature = token.slice(dot + 1);
+  const valid = await crypto.subtle.verify("HMAC", await hmacKey(secret), (() => {
+    try { return unb64(signature); } catch { return new Uint8Array(); }
+  })(), encoder.encode(payload));
+  if (!valid) return null;
+  try {
+    const value = JSON.parse(new TextDecoder().decode(unb64(payload))) as Partial<RtcUsageAccess>;
+    if (
+      typeof value.roomName !== "string" ||
+      !allowedRoom.test(value.roomName) ||
+      !isRtcProvider(value.provider) ||
+      typeof value.subject !== "string" ||
+      value.subject.length < 8 ||
+      !Number.isSafeInteger(value.expiresAt) ||
+      Number(value.expiresAt) < Date.now() / 1000
+    ) return null;
+    return value as RtcUsageAccess;
+  } catch {
+    return null;
+  }
+}
+
+async function roomPresencePrefix(roomName: string) {
+  return `rtc:presence:${await digest(roomName)}:`;
+}
+
+async function roomPresenceKey(roomName: string, subject: string) {
+  return `${await roomPresencePrefix(roomName)}${await digest(subject)}`;
+}
+
+async function roomPresenceCount(env: Env, roomName: string) {
+  const prefix = await roomPresencePrefix(roomName);
+  let cursor: string | undefined;
+  let count = 0;
+  do {
+    const page = await env.PRIVATE_ROOMS.list({ prefix, cursor, limit: 1_000 });
+    count += page.keys.length;
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor && count < 10_000);
+  return count;
+}
+
+async function handleRtcUsage(request: Request, env: Env) {
+  const body = (await request.json().catch(() => null)) as {
+    usageAccessToken?: unknown;
+    reportId?: unknown;
+    measuredFrom?: unknown;
+    measuredTo?: unknown;
+    leaving?: unknown;
+  } | null;
+  const token = typeof body?.usageAccessToken === "string" ? body.usageAccessToken : "";
+  const access = await verifyRtcUsageAccess(token, env.INVITE_SIGNING_KEY);
+  if (!access) return json({ error: "RTC usage token is invalid or expired" }, 401);
+  const reportId = typeof body?.reportId === "string" ? body.reportId : "";
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(reportId)) {
+    return json({ error: "Invalid RTC usage report" }, 400);
+  }
+  const measuredFrom = new Date(typeof body?.measuredFrom === "string" ? body.measuredFrom : "");
+  const measuredTo = new Date(typeof body?.measuredTo === "string" ? body.measuredTo : "");
+  const seconds = (measuredTo.getTime() - measuredFrom.getTime()) / 1000;
+  const now = Date.now();
+  if (
+    !Number.isFinite(seconds) ||
+    seconds < 10 ||
+    seconds > 90 ||
+    measuredTo.getTime() > now + 60_000 ||
+    measuredTo.getTime() < now - 10 * 60_000
+  ) return json({ error: "Invalid RTC usage window" }, 400);
+  const presenceKey = await roomPresenceKey(access.roomName, access.subject);
+  if (body?.leaving === true) await env.PRIVATE_ROOMS.delete(presenceKey);
+  else await env.PRIVATE_ROOMS.put(presenceKey, access.provider, { expirationTtl: 2 * 60 });
+  const usageWindow = Math.floor(measuredTo.getTime() / 60_000);
+  const windowKey = `rtc:usage-window:${access.provider}:${await digest(`${access.subject}:${usageWindow}`)}`;
+  if (await env.PRIVATE_ROOMS.get(windowKey)) {
+    return json({ accepted: true, recorded: false, duplicateWindow: true });
+  }
+  await env.PRIVATE_ROOMS.put(windowKey, reportId, { expirationTtl: 10 * 60 });
+  const amount = usageAmount(access.provider, seconds);
+  if (amount === null) return json({ accepted: true, metering: "provider" });
+  const cycle = monthlyUsageCycle(measuredTo);
+  const response = await serviceApi(env, "/rest/v1/rpc/record_rtc_provider_usage", {
+    method: "POST",
+    body: JSON.stringify({
+      p_report_id: reportId,
+      p_provider: access.provider,
+      p_cycle_start: cycle.start,
+      p_cycle_end: cycle.end,
+      p_room_hash: await digest(`${access.roomName}:${access.subject}`),
+      p_source: "worker",
+      p_measured_from: measuredFrom.toISOString(),
+      p_measured_to: measuredTo.toISOString(),
+      p_amount: amount,
+    }),
+  });
+  if (!response?.ok) {
+    await env.PRIVATE_ROOMS.delete(windowKey);
+    return json({ error: "RTC usage service is unavailable" }, 503);
+  }
+  const recorded = await response.json().catch(() => false);
+  return json({ accepted: true, recorded: recorded === true });
+}
+
+type ProviderHealthSnapshot = {
+  provider: string;
+  enabled: boolean;
+  used_percent: number | string;
+  state: string;
+};
+
+async function syncProviderHealth(env: Env) {
+  const response = await serviceApi(env, "/rest/v1/rpc/rtc_provider_health_snapshot", {
+    method: "POST",
+    body: "{}",
+  });
+  if (!response?.ok) return;
+  const payload = await response.json() as unknown;
+  if (!Array.isArray(payload)) return;
+  const snapshots = payload as ProviderHealthSnapshot[];
+  await Promise.all(snapshots.filter((item) => isRtcProvider(item.provider)).map((item) =>
+    updateProviderHealth(env, item.provider as RtcProviderId, {
+      usedPercent: Number(item.used_percent) || 0,
+      disabled: !item.enabled || ["disabled", "stale", "exhausted"].includes(item.state),
+    })
+  ));
+}
+
+const attachmentBucket = "mhtalk-room-attachments";
+type AttachmentRecord = {
+  id: string;
+  room_name: string;
+  owner_user_id: string;
+  object_path: string;
+  file_name: string;
+  mime_type: string;
+  size_bytes: number;
+  status: "pending" | "ready";
+  created_at: string;
+  expires_at: string;
+};
+
+function safeAttachmentName(value: string) {
+  const normalized = value.normalize("NFKC").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").trim().slice(0, 120);
+  return normalized || "Attachment";
+}
+
+function safeAttachmentMime(value: string) {
+  const normalized = value.trim().toLowerCase();
+  return /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(normalized)
+    ? normalized.slice(0, 120)
+    : "application/octet-stream";
+}
+
+function storageObjectPath(value: string) {
+  return value.split("/").map(encodeURIComponent).join("/");
+}
+
+async function storageApi(env: Env, path: string, init: RequestInit = {}) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) return null;
+  return fetch(`${env.SUPABASE_URL.replace(/\/$/, "")}/storage/v1${path}`, {
+    ...init,
+    headers: {
+      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+      authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      "content-type": "application/json",
+      ...(init.headers || {}),
+    },
+  });
+}
+
+async function attachmentRecord(env: Env, id: string) {
+  const response = await serviceApi(
+    env,
+    `/rest/v1/room_attachments?id=eq.${encodeURIComponent(id)}&select=*&limit=1`,
+  );
+  if (!response?.ok) return null;
+  return ((await response.json()) as AttachmentRecord[])[0] || null;
+}
+
+async function deleteStoredAttachment(env: Env, record: Pick<AttachmentRecord, "id" | "object_path">) {
+  await storageApi(env, `/object/${attachmentBucket}`, {
+    method: "DELETE",
+    body: JSON.stringify({ prefixes: [record.object_path] }),
+  });
+  await serviceApi(env, `/rest/v1/room_attachments?id=eq.${encodeURIComponent(record.id)}`, { method: "DELETE" });
+}
+
+async function handleAttachments(request: Request, env: Env, path: string, user: AuthUser) {
+  const body = (await request.json().catch(() => null)) as {
+    roomAccessToken?: unknown;
+    attachmentId?: unknown;
+    fileName?: unknown;
+    mimeType?: unknown;
+    size?: unknown;
+  } | null;
+  const roomAccessToken = typeof body?.roomAccessToken === "string" ? body.roomAccessToken : "";
+  const access = await verifyRoomAccess(roomAccessToken, user.id, env.INVITE_SIGNING_KEY);
+  if (!access) return json({ error: "Room access expired. Rejoin the room and try again." }, 401);
+
+  if (path === "/attachments/upload-ticket" && request.method === "POST") {
+    if (await rateLimited(request, env, "attachment-upload", user.id, 30, 60 * 60)) {
+      return json({ error: "Too many attachment uploads. Try again later." }, 429);
+    }
+    const fileName = safeAttachmentName(typeof body?.fileName === "string" ? body.fileName : "Attachment");
+    const mimeType = safeAttachmentMime(typeof body?.mimeType === "string" ? body.mimeType : "");
+    const size = Number(body?.size);
+    const profile = await profileFor(env, user);
+    const subscription = subscriptionFor(profile);
+    if (!Number.isSafeInteger(size) || size < 1) return json({ error: "Attachment size is invalid" }, 400);
+    if (size > subscription.entitlements.maxAttachmentBytes) {
+      return json({ error: `This plan allows attachments up to ${subscription.entitlements.maxAttachmentBytes} bytes` }, 413);
+    }
+    if (/\.(exe|msi|msix|bat|cmd|com|scr|ps1|apk|aab|jar|sh|vbs|reg|dll|dmg|deb|rpm|appimage|ipa)$/i.test(fileName)) {
+      return json({ error: "Executable attachments are not allowed" }, 415);
+    }
+    if (["text/html", "image/svg+xml", "application/xhtml+xml", "text/javascript", "application/javascript"].includes(mimeType)) {
+      return json({ error: "Active web content is not allowed as an attachment" }, 415);
+    }
+    const id = crypto.randomUUID();
+    const objectPath = `${user.id}/${id}/${fileName}`;
+    const expiresAt = new Date(Date.now() + subscription.entitlements.attachmentRetentionHours * 60 * 60 * 1000).toISOString();
+    const inserted = await serviceApi(env, "/rest/v1/room_attachments", {
+      method: "POST",
+      headers: { prefer: "return=representation" },
+      body: JSON.stringify({
+        id,
+        room_name: access.roomName,
+        owner_user_id: user.id,
+        object_path: objectPath,
+        file_name: fileName,
+        mime_type: mimeType,
+        size_bytes: size,
+        expires_at: expiresAt,
+      }),
+    });
+    if (!inserted?.ok) return json({ error: "Attachment service is temporarily unavailable" }, 503);
+    const signed = await storageApi(env, `/object/upload/sign/${attachmentBucket}/${storageObjectPath(objectPath)}`, {
+      method: "POST",
+      body: "{}",
+    });
+    if (!signed?.ok) {
+      await serviceApi(env, `/rest/v1/room_attachments?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+      return json({ error: "Could not prepare the attachment upload" }, 503);
+    }
+    const upload = await signed.json() as { url?: string };
+    if (!upload.url) {
+      await serviceApi(env, `/rest/v1/room_attachments?id=eq.${encodeURIComponent(id)}`, { method: "DELETE" });
+      return json({ error: "Attachment storage returned an invalid upload URL" }, 502);
+    }
+    return json({
+      attachmentId: id,
+      uploadUrl: `${env.SUPABASE_URL!.replace(/\/$/, "")}/storage/v1${upload.url}`,
+      fileName,
+      mimeType,
+      size,
+      expiresAt,
+    });
+  }
+
+  const attachmentId = typeof body?.attachmentId === "string" ? body.attachmentId : "";
+  const record = await attachmentRecord(env, attachmentId);
+  if (!record || record.room_name !== access.roomName) return json({ error: "Attachment is unavailable" }, 404);
+
+  if (path === "/attachments/complete" && request.method === "POST") {
+    if (record.owner_user_id !== user.id) return json({ error: "Forbidden" }, 403);
+    const infoResponse = await storageApi(env, `/object/info/${attachmentBucket}/${storageObjectPath(record.object_path)}`);
+    if (!infoResponse?.ok) return json({ error: "The attachment upload did not complete" }, 409);
+    const info = await infoResponse.json() as { size?: unknown; metadata?: { size?: unknown } };
+    const actualSize = Number(info.size ?? info.metadata?.size);
+    if (!Number.isSafeInteger(actualSize) || actualSize !== Number(record.size_bytes)) {
+      await deleteStoredAttachment(env, record);
+      return json({ error: "Uploaded attachment size does not match the declared size" }, 409);
+    }
+    const updated = await serviceApi(env, `/rest/v1/room_attachments?id=eq.${encodeURIComponent(record.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "ready" }),
+    });
+    if (!updated?.ok) return json({ error: "Could not finalize the attachment" }, 503);
+    return json({
+      attachmentId: record.id,
+      fileName: record.file_name,
+      mimeType: record.mime_type,
+      size: Number(record.size_bytes),
+      expiresAt: record.expires_at,
+    });
+  }
+
+  if (path === "/attachments/download-ticket" && request.method === "POST") {
+    if (record.status !== "ready" || Date.parse(record.expires_at) <= Date.now()) {
+      return json({ error: "Attachment expired" }, 410);
+    }
+    const signed = await storageApi(env, `/object/sign/${attachmentBucket}/${storageObjectPath(record.object_path)}`, {
+      method: "POST",
+      body: JSON.stringify({ expiresIn: 2 * 60 * 60 }),
+    });
+    if (!signed?.ok) return json({ error: "Could not prepare the attachment download" }, 503);
+    const value = await signed.json() as { signedURL?: string };
+    if (!value.signedURL) return json({ error: "Attachment storage returned an invalid download URL" }, 502);
+    return json({
+      attachmentId: record.id,
+      downloadUrl: `${env.SUPABASE_URL!.replace(/\/$/, "")}/storage/v1${value.signedURL}`,
+      fileName: record.file_name,
+      mimeType: record.mime_type,
+      size: Number(record.size_bytes),
+      expiresAt: record.expires_at,
+    });
+  }
+
+  if (path === "/attachments/delete" && request.method === "POST") {
+    if (record.owner_user_id !== user.id) return json({ error: "Forbidden" }, 403);
+    await deleteStoredAttachment(env, record);
+    return json({ deleted: true });
+  }
+
+  return json({ error: "Not found" }, 404);
+}
+
+async function cleanupExpiredAttachments(env: Env) {
+  const response = await serviceApi(
+    env,
+    `/rest/v1/room_attachments?expires_at=lt.${encodeURIComponent(new Date().toISOString())}&select=id,object_path&limit=100`,
+  );
+  if (!response?.ok) return;
+  const records = await response.json() as Pick<AttachmentRecord, "id" | "object_path">[];
+  for (const record of records) await deleteStoredAttachment(env, record);
 }
 function shortCode() {
   return `MHTALK-${[...crypto.getRandomValues(new Uint8Array(5))].map((n) => alphabet[n % alphabet.length]).join("")}`;
@@ -1143,6 +1552,12 @@ export default {
       const onboarding = await requireCompletedOnboarding(env, auth);
       return onboarding || handleSocial(request, env, path, auth);
     }
+    if (path.startsWith("/attachments/")) {
+      const auth = await authenticate(request, env);
+      if (auth instanceof Response) return auth;
+      const onboarding = await requireCompletedOnboarding(env, auth);
+      return onboarding || handleAttachments(request, env, path, auth);
+    }
     if (path === "/subscription/lava/sync" && request.method === "POST") {
       const auth = await authenticate(request, env);
       if (auth instanceof Response) return auth;
@@ -1171,6 +1586,7 @@ export default {
       return json(payload, response.status);
     }
     if (request.method !== "POST") return json({ error: "Not found" }, 404);
+    if (path === "/rtc/usage") return handleRtcUsage(request, env);
     if (path === "/moderate") {
       const body = (await request.json().catch(() => null)) as { text?: unknown; roomName?: unknown } | null;
       if (body?.roomName !== "Main" || typeof body.text !== "string") return json({ error: "Invalid moderation request" }, 400);
@@ -1192,10 +1608,8 @@ export default {
     if (path === "/room-count") {
       const body = (await request.json().catch(() => null)) as { roomName?: unknown } | null;
       if (body?.roomName !== "Main") return json({ error: "Only the Main room count is public" }, 400);
-      try {
-        const rooms = new RoomServiceClient(env.LIVEKIT_URL, env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET);
-        return json({ count: (await rooms.listParticipants("Main")).length });
-      } catch { return json({ error: "Room count unavailable" }, 503); }
+      try { return json({ count: await roomPresenceCount(env, "Main") }); }
+      catch { return json({ error: "Room count unavailable" }, 503); }
     }
     if (path === "/private-room") {
       const auth = await optionalAuth(request, env);
@@ -1216,7 +1630,10 @@ export default {
     const body = (await request.json().catch(() => null)) as {
       roomName?: unknown;
       inviteCode?: unknown;
+      capabilitiesVersion?: unknown;
       supportedRtcProviders?: unknown;
+      supportedMessagingProviders?: unknown;
+      supportedFileProviders?: unknown;
       excludedRtcProviders?: unknown;
     } | null;
     let roomName = typeof body?.roomName === "string" ? body.roomName.trim() : "";
@@ -1230,8 +1647,28 @@ export default {
     }
     if (!allowedRoom.test(roomName)) return json({ error: "Invalid room name" }, 400);
     if (roomName !== "Main" && typeof body?.inviteCode !== "string") return json({ error: "Private code required" }, 403);
+    if (await rateLimited(request, env, "room-token", auth?.id || "guest", 30, 60)) {
+      return json({ error: "Too many room connection attempts. Try again shortly." }, 429);
+    }
     const profile = auth ? await profileFor(env, auth) : null;
-    const supportedProviders = parseRtcProviders(body?.supportedRtcProviders);
+    const declaredCapabilities = body?.capabilitiesVersion === 2;
+    const supportedMessagingProviders = parseProviderCapabilities<MessagingProviderId>(
+      body?.supportedMessagingProviders,
+      knownMessagingProviders,
+    );
+    const supportedFileProviders = parseProviderCapabilities<FileProviderId>(
+      body?.supportedFileProviders,
+      knownFileProviders,
+    );
+    const supportedProviders = parseRtcProviders(body?.supportedRtcProviders).filter((provider) =>
+      !declaredCapabilities || routingIsSupported(provider, supportedMessagingProviders, supportedFileProviders)
+    );
+    if (declaredCapabilities && supportedProviders.length === 0) {
+      return json({
+        error: "This app build does not support a complete realtime, messaging and file route",
+        code: "CLIENT_CAPABILITY_MISMATCH",
+      }, 409);
+    }
     const excludedProviders = Array.isArray(body?.excludedRtcProviders)
       ? [...new Set(body.excludedRtcProviders.map((value) => String(value).toLowerCase()).filter(isRtcProvider))]
       : [];
@@ -1287,12 +1724,30 @@ export default {
       }, 503);
     }
     const routing = serviceRouting(env, profile, selected.provider, providerUrl);
+    const attachmentAccessToken = auth
+      ? await signedRoomAccess(roomName, auth.id, env.INVITE_SIGNING_KEY)
+      : undefined;
+    const usageSubject = auth?.id || await digest(`${request.headers.get("cf-connecting-ip") || "local"}:${request.headers.get("user-agent") || "unknown"}`);
+    const usageAccessToken = await signedRtcUsageAccess(
+      roomName,
+      selected.provider,
+      usageSubject,
+      env.INVITE_SIGNING_KEY,
+    );
+    await env.PRIVATE_ROOMS.put(
+      await roomPresenceKey(roomName, usageSubject),
+      selected.provider,
+      { expirationTtl: 2 * 60 },
+    );
     return json({
+      capabilitiesVersion: 2,
       token: providerToken,
       ...(providerIdentity ? { identity: providerIdentity } : {}),
       ...(screenToken ? { screenToken } : {}),
       ...(screenIdentity ? { screenIdentity } : {}),
       roomName,
+      ...(attachmentAccessToken ? { attachmentAccessToken } : {}),
+      usageAccessToken,
       provider: routing.rtc.provider,
       serverUrl: routing.rtc.serverUrl,
       routing,
@@ -1303,6 +1758,10 @@ export default {
     const usage = env.CLOUDFLARE_RTC_USAGE.get(
       env.CLOUDFLARE_RTC_USAGE.idFromName("account-egress"),
     );
-    await usage.fetch("https://internal/usage/refresh", { method: "POST" });
+    await Promise.all([
+      usage.fetch("https://internal/usage/refresh", { method: "POST" }),
+      cleanupExpiredAttachments(env),
+      syncProviderHealth(env),
+    ]);
   },
 };

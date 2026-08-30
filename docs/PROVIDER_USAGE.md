@@ -25,3 +25,18 @@ Quota values are stored in the provider's natural unit. Participant-minute
 providers use participant minutes, Cloudflare uses egress bytes, and credit
 providers use millionths of a US dollar. Collectors are responsible for
 converting raw provider data into that unit before reconciliation.
+
+Version 1.6 adds signed participant heartbeats. Windows and Android submit an
+idempotent UUID report after each connected minute and on a normal room exit.
+The Worker validates the signed provider/room capability, restricts report
+windows to 10–90 seconds and hashes the room/subject before storage. Agora,
+Tencent, Whereby and LiveKit are counted in participant minutes. Stream is
+charged internally at 12,000 micro-USD per minute—the published 4K ceiling—even
+though MHTalk caps output at 1080p; this deliberately underuses the monthly
+credit. Cloudflare remains governed by Durable Object egress accounting.
+
+Every ten minutes the Worker calls `rtc_provider_health_snapshot()` and copies
+the safe projection into KV for fast routing. Administrative disablement,
+staleness and exhaustion all remove a provider from new assignments. Provider
+dashboard reconciliation remains monotonic and can only raise the effective
+usage above the internal estimate.

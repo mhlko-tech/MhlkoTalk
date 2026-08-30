@@ -1,0 +1,36 @@
+name: Quality gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: mhtalk-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            worker/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install application dependencies
+        run: npm ci
+      - name: Install Worker dependencies
+        run: npm --prefix worker ci
+      - name: Run tests, builds, type checks and Rust checks
+        run: npm run check
