@@ -14,8 +14,8 @@
     "partytracks": "^0.0.56"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260714.1",
+    "@cloudflare/workers-types": "5.20260828.1",
     "typescript": "~5.8.3",
-    "wrangler": "4.110.0"
+    "wrangler": "4.127.1"
   }
 }
