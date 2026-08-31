@@ -839,12 +839,19 @@ async function syncProviderHealth(env: Env) {
   const payload = await response.json() as unknown;
   if (!Array.isArray(payload)) return;
   const snapshots = payload as ProviderHealthSnapshot[];
-  await Promise.all(snapshots.filter((item) => isRtcProvider(item.provider)).map((item) =>
-    updateProviderHealth(env, item.provider as RtcProviderId, {
+  await Promise.all(snapshots.filter((item) => isRtcProvider(item.provider)).map((item) => {
+    const provider = item.provider as RtcProviderId;
+    // Cloudflare has a dedicated Durable Object egress guard. Supabase remains
+    // the administrative enable switch, but must not overwrite its fresher,
+    // fail-closed usage telemetry with a stale provider snapshot.
+    if (provider === "cloudflare-realtime") {
+      return updateProviderHealth(env, provider, { disabled: !item.enabled });
+    }
+    return updateProviderHealth(env, provider, {
       usedPercent: Number(item.used_percent) || 0,
       disabled: !item.enabled || ["disabled", "stale", "exhausted"].includes(item.state),
-    })
-  ));
+    });
+  }));
 }
 
 const attachmentBucket = "mhtalk-room-attachments";
@@ -1787,8 +1794,10 @@ export default {
     const usage = env.CLOUDFLARE_RTC_USAGE.get(
       env.CLOUDFLARE_RTC_USAGE.idFromName("account-egress"),
     );
+    // Refresh Cloudflare's dedicated usage state before applying the shared
+    // administrative policies so the two health writers cannot race.
+    await usage.fetch("https://internal/usage/refresh", { method: "POST" });
     await Promise.all([
-      usage.fetch("https://internal/usage/refresh", { method: "POST" }),
       cleanupExpiredAttachments(env),
       syncProviderHealth(env),
     ]);
