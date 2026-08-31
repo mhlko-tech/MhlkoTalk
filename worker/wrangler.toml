@@ -26,6 +26,10 @@ class_name = "CloudflareRtcRoom"
 name = "CLOUDFLARE_RTC_USAGE"
 class_name = "CloudflareRtcUsage"
 
+[[durable_objects.bindings]]
+name = "JAAS_QUOTA"
+class_name = "JaasQuotaGuard"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["PresenceHub"]
@@ -37,6 +41,10 @@ new_sqlite_classes = ["CloudflareRtcRoom"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["CloudflareRtcUsage"]
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["JaasQuotaGuard"]
 
 [triggers]
 crons = ["*/10 * * * *"]

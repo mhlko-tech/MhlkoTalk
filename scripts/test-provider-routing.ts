@@ -102,6 +102,11 @@ assert.equal((await selectRtcProvider(environment, "Whereby", ["whereby"]))?.pro
 assert.equal((await selectRtcProvider(environment, "100ms", ["100ms"]))?.provider, "100ms");
 assert.equal((await selectRtcProvider(environment, "CometChat", ["cometchat"]))?.provider, "cometchat");
 assert.equal((await selectRtcProvider(environment, "JaaS", ["jaas"]))?.provider, "jaas");
+await updateProviderHealth(environment, "jaas", { usedPercent: 76 });
+assert.equal((await rtcCapabilities(environment)).find((item) => item.provider === "jaas")?.state, "draining");
+assert.equal(await selectRtcProvider(environment, "JaaS-new", ["jaas"]), null);
+await updateProviderHealth(environment, "jaas", { usedPercent: 80 });
+assert.equal(await selectRtcProvider(environment, "JaaS", ["jaas"]), null);
 assert.equal((await selectRtcProvider(environment, "MiroTalk", ["mirotalk"]))?.provider, "mirotalk");
 assert.equal((await selectRtcProvider(environment, "VideoSDK", ["videosdk"]))?.provider, "videosdk");
 assert.equal((await selectRtcProvider(environment, "Main", ["livekit"]))?.provider, "livekit");

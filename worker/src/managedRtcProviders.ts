@@ -6,6 +6,7 @@ export function isManagedRtcProvider(value: string): value is ManagedRtcProvider
 
 export interface ManagedRtcEnvironment {
   PRIVATE_ROOMS: KVNamespace;
+  JAAS_QUOTA?: DurableObjectNamespace;
   HMS_ACCESS_KEY?: string;
   HMS_APP_SECRET?: string;
   HMS_TEMPLATE_ID?: string;
@@ -39,6 +40,64 @@ type EmbedTicket =
 const encoder = new TextEncoder();
 const ticketLifetimeSeconds = 90;
 const apiTimeoutMs = 10_000;
+export const jaasMonthlyActiveUserLimit = 25;
+export const jaasMonthlyCredentialLimit = 20;
+export const jaasQuotaObjectName = "developer-plan";
+
+type JaasQuotaState = {
+  cycle: string;
+  issued: number;
+};
+
+function jaasQuotaCycle(now = new Date()) {
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+async function writeJaasHealth(env: Pick<ManagedRtcEnvironment, "PRIVATE_ROOMS">, state: JaasQuotaState) {
+  const usedPercent = Math.min(100, state.issued / jaasMonthlyActiveUserLimit * 100);
+  await env.PRIVATE_ROOMS.put("routing:health:rtc:jaas", JSON.stringify({
+    usedPercent,
+    disabled: state.issued >= jaasMonthlyCredentialLimit,
+    updatedAt: new Date().toISOString(),
+  }));
+  return { ...state, usedPercent, limit: jaasMonthlyCredentialLimit };
+}
+
+// JaaS bills overages after its 25-MAU developer allowance. Count every
+// credential issuance (not just unique MHTalk accounts) in a strongly
+// consistent Durable Object. This deliberately conservative model means a
+// credential can introduce at most one new JaaS endpoint, so stopping at 20
+// leaves five MAUs of safety margin even across devices and reinstalls.
+export class JaasQuotaGuard {
+  constructor(
+    private readonly state: DurableObjectState,
+    private readonly env: Pick<ManagedRtcEnvironment, "PRIVATE_ROOMS">,
+  ) {}
+
+  async fetch(request: Request) {
+    const url = new URL(request.url);
+    if (request.method !== "POST" || !["/reserve", "/refresh"].includes(url.pathname)) {
+      return Response.json({ error: "Not found" }, { status: 404 });
+    }
+    const cycle = jaasQuotaCycle();
+    const stored = await this.state.storage.get<JaasQuotaState>("quota");
+    const quota: JaasQuotaState = stored?.cycle === cycle
+      ? { cycle, issued: Math.max(0, Number(stored.issued) || 0) }
+      : { cycle, issued: 0 };
+    if (url.pathname === "/reserve") {
+      if (quota.issued >= jaasMonthlyCredentialLimit) {
+        const status = await writeJaasHealth(this.env, quota);
+        return Response.json({ allowed: false, ...status }, { status: 429 });
+      }
+      quota.issued += 1;
+      await this.state.storage.put("quota", quota);
+    } else if (stored?.cycle !== cycle) {
+      await this.state.storage.put("quota", quota);
+    }
+    const status = await writeJaasHealth(this.env, quota);
+    return Response.json({ allowed: true, ...status });
+  }
+}
 
 function encodeBase64Url(value: ArrayBuffer | Uint8Array) {
   const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
@@ -254,10 +313,15 @@ async function issueJaas(
   user: ManagedUser,
   profile: ManagedProfile,
 ) {
+  if (!user) throw new Error("JaaS requires an authenticated MHTalk account");
   const appId = requireValue(env.JAAS_APP_ID, "JaaS app ID");
   const keyId = requireValue(env.JAAS_KEY_ID, "JaaS key ID");
   const privateKey = requireValue(env.JAAS_PRIVATE_KEY, "JaaS private key");
-  const identity = identityFor(user);
+  if (!env.JAAS_QUOTA) throw new Error("JaaS quota guard is not configured");
+  const quota = env.JAAS_QUOTA.get(env.JAAS_QUOTA.idFromName(jaasQuotaObjectName));
+  const quotaResponse = await quota.fetch("https://internal/reserve", { method: "POST" });
+  if (!quotaResponse.ok) throw new Error("JaaS free-tier safety limit reached");
+  const identity = user.id;
   const alias = `mhtalk-${(await hash(roomName)).slice(0, 40)}`;
   const now = Math.floor(Date.now() / 1000);
   const jwt = await rsaJwt(privateKey, keyId, {

@@ -69,16 +69,29 @@ const cloudflareLowerPriorityAt = 50;
 const cloudflareStopNewRoomsAt = 55;
 const cloudflareDisableAt = 60;
 const cloudflareHealthMaxAgeMs = 20 * 60 * 1000;
+const jaasWarnAt = 60;
+const jaasLowerPriorityAt = 70;
+const jaasStopNewRoomsAt = 75;
+const jaasDisableAt = 80;
 
 function thresholds(provider: RtcProviderId) {
-  return provider === "cloudflare-realtime"
-    ? {
+  if (provider === "cloudflare-realtime") {
+    return {
         warnAt: cloudflareWarnAt,
         drainAt: cloudflareLowerPriorityAt,
         stopNewRoomsAt: cloudflareStopNewRoomsAt,
         disableAt: cloudflareDisableAt,
-      }
-    : { warnAt: drainAt, drainAt, stopNewRoomsAt: migrateAt, disableAt: migrateAt };
+      };
+  }
+  if (provider === "jaas") {
+    return {
+      warnAt: jaasWarnAt,
+      drainAt: jaasLowerPriorityAt,
+      stopNewRoomsAt: jaasStopNewRoomsAt,
+      disableAt: jaasDisableAt,
+    };
+  }
+  return { warnAt: drainAt, drainAt, stopNewRoomsAt: migrateAt, disableAt: migrateAt };
 }
 
 function healthIsStale(provider: RtcProviderId, health: ProviderHealth) {

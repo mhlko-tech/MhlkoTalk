@@ -26,9 +26,11 @@ import {
   handleManagedRtcEmbed,
   isManagedRtcProvider,
   issueManagedRtcCredentials,
+  JaasQuotaGuard,
+  jaasQuotaObjectName,
 } from "./managedRtcProviders";
 
-export { CloudflareRtcRoom, CloudflareRtcUsage };
+export { CloudflareRtcRoom, CloudflareRtcUsage, JaasQuotaGuard };
 
 export interface Env {
   LIVEKIT_API_KEY: string;
@@ -39,6 +41,7 @@ export interface Env {
   PRESENCE: DurableObjectNamespace;
   CLOUDFLARE_RTC_ROOMS: DurableObjectNamespace;
   CLOUDFLARE_RTC_USAGE: DurableObjectNamespace;
+  JAAS_QUOTA: DurableObjectNamespace;
   SUPABASE_URL?: string;
   SUPABASE_PUBLISHABLE_KEY?: string;
   SUPABASE_SERVICE_ROLE_KEY?: string;
@@ -186,6 +189,15 @@ async function serviceCapabilities(env: Env) {
         disablePercent: 60,
         telemetryMaxAgeMinutes: 20,
         accountingSafetyMarginPercent: 25,
+      },
+      jaas: {
+        warningPercent: 60,
+        lowerPriorityPercent: 70,
+        stopNewRoomsPercent: 75,
+        disablePercent: 80,
+        freeMonthlyActiveUsers: 25,
+        maxMonthlyCredentialIssuances: 20,
+        authenticatedAccountsOnly: true,
       },
     },
     rtc,
@@ -844,7 +856,7 @@ async function syncProviderHealth(env: Env) {
     // Cloudflare has a dedicated Durable Object egress guard. Supabase remains
     // the administrative enable switch, but must not overwrite its fresher,
     // fail-closed usage telemetry with a stale provider snapshot.
-    if (provider === "cloudflare-realtime") {
+    if (provider === "cloudflare-realtime" || provider === "jaas") {
       return updateProviderHealth(env, provider, { disabled: !item.enabled });
     }
     return updateProviderHealth(env, provider, {
@@ -1794,9 +1806,13 @@ export default {
     const usage = env.CLOUDFLARE_RTC_USAGE.get(
       env.CLOUDFLARE_RTC_USAGE.idFromName("account-egress"),
     );
-    // Refresh Cloudflare's dedicated usage state before applying the shared
-    // administrative policies so the two health writers cannot race.
-    await usage.fetch("https://internal/usage/refresh", { method: "POST" });
+    const jaasQuota = env.JAAS_QUOTA.get(env.JAAS_QUOTA.idFromName(jaasQuotaObjectName));
+    // Refresh dedicated quota state before applying shared administrative
+    // switches so stale provider snapshots cannot replace authoritative usage.
+    await Promise.all([
+      usage.fetch("https://internal/usage/refresh", { method: "POST" }),
+      jaasQuota.fetch("https://internal/refresh", { method: "POST" }),
+    ]);
     await Promise.all([
       cleanupExpiredAttachments(env),
       syncProviderHealth(env),

@@ -59,6 +59,21 @@ never the sole source used to protect the budget.
 - One legitimate provider account is used; account duplication is not a quota
   strategy.
 
+## JaaS zero-budget policy
+
+The JaaS Developer plan includes 25 monthly active users and documents paid
+overage above that allowance. MHTalk therefore never exposes anonymous JaaS
+access and does not rely on the provider invoice as a usage limiter.
+
+- Only authenticated MHTalk accounts can receive a JaaS credential.
+- A strongly consistent Durable Object counts every issued credential, which is
+  more conservative than counting unique users.
+- New rooms stop before 75% of the allowance and all issuance stops at 20 of 25
+  credentials per UTC month, reserving five MAUs for endpoint-count variance.
+- Recording, transcription, livestreaming and outbound calling remain disabled.
+- When the guard closes, the broker selects another healthy provider instead of
+  allowing a JaaS overage.
+
 ## Current readiness decision
 
 | Provider | Source adapter | Production decision |
@@ -66,12 +81,12 @@ never the sole source used to protect the budget.
 | Stream | Windows + Android + Worker | Eligible after staging; primary guarded route. |
 | Agora | Windows + Android + Worker | Eligible after staging and verified dashboard limit. |
 | Tencent | Windows + Android + Worker | Eligible only while the annual offer is verified and PAYG is off. |
-| Cloudflare Realtime | Windows + Android + Worker | Disabled until credentials exist; 60% hard internal cutoff. |
+| Cloudflare Realtime | Windows + Android + Worker | Enabled with dedicated usage telemetry and a 60% hard internal cutoff. |
 | LiveKit | Windows + Android + Worker | Compatible fallback; disabled while its current allowance is exhausted. |
 | Whereby | Embedded Windows + Android + Worker | Eligible after staging; conservative participant-minute guard. |
 | 100ms | Embedded Windows + Android + Worker | Adapter complete; activate after credentials and dashboard limit verification. |
 | CometChat | Embedded Windows + Android + Worker | Adapter complete; activate after credentials and free-plan reset verification. |
-| JaaS | Embedded Windows + Android + Worker | Adapter complete with stable MHTalk identity; keep the 25-MAU guard active. |
+| JaaS | Embedded Windows + Android + Worker | Enabled for authenticated accounts with an exact 20-credential monthly ceiling below the 25-MAU plan. |
 | MiroTalk | Embedded Windows + Android + Worker + Oracle A1 | Enabled self-hosted fallback; HTTPS, signed join issuance, and media reachability verified. |
 | VideoSDK | Embedded Windows + Android + Worker | Adapter complete; activate only with provider-side prepaid balance telemetry. |
 

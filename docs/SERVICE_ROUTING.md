@@ -19,10 +19,10 @@ messaging and file implementations. The broker rejects an incomplete route with
 `CLIENT_CAPABILITY_MISMATCH`; both clients also verify that the returned
 companion services exactly match the selected RTC provider.
 
-The current working tree contains Stream, Agora, Tencent, Cloudflare Realtime,
-Whereby Embedded,
-Daily Prebuilt and LiveKit adapters. Daily is a legacy Beta path and is not part
-of the target zero-budget portfolio.
+The current working tree contains matching Windows, Android and Worker routes
+for Stream, Agora, Tencent, Cloudflare Realtime, LiveKit, 100ms, CometChat,
+Whereby, JaaS, MiroTalk and VideoSDK. Daily Prebuilt remains a legacy Beta path
+and is not part of the target zero-budget portfolio.
 `PROVIDER_PORTFOLIO.md` is the authoritative list of the eleven target RTC
 providers and their activation order. A provider must not be returned as active
 until its server credential issuer and both native client adapters are installed
@@ -39,8 +39,10 @@ are ready. Secrets are never included in this response or stored in a client.
 - Clients send their supported adapter list. The broker cannot return a vendor
   that the installed Windows or Android build cannot use.
 - Thresholds are provider-specific. Cloudflare warns at 45%, loses priority at
-  50%, drains at 55%, and is disabled at 60%. Other providers use limits defined
-  in their verified quota policy rather than one unsafe global percentage.
+  50%, drains at 55%, and is disabled at 60%. JaaS warns at 60%, stops new rooms
+  before 75%, and its strongly consistent guard stops credential issuance at 20
+  of 25 monthly MAUs. Other providers use limits defined in their verified quota
+  policy rather than one unsafe global percentage.
 - `POST /service/provider-health` updates measured usage or disables a provider.
   It requires the `ROUTING_ADMIN_KEY` bearer secret. This endpoint is designed
   for a scheduled quota collector; it is not callable by the apps.
@@ -48,11 +50,10 @@ are ready. Secrets are never included in this response or stored in a client.
   on both clients. A failed provider therefore produces a clear error instead
   of an infinite spinner.
 
-Stream, Agora, Tencent, Cloudflare Realtime, Whereby and LiveKit have complete
-source adapters. Runtime readiness still requires credentials, a green staging
-matrix and a healthy quota policy. Every other target entry remains visibly
-unavailable until its credential issuer and both client adapters are deployed.
-This is an intentional release-safety rule, not a placeholder route.
+All eleven targets have complete source adapters. Runtime readiness remains
+independent: a route is visibly unavailable until its real credentials, account
+plan and healthy quota policy are present. This is an intentional release-safety
+rule, not a placeholder route.
 
 For Stream, Agora, Tencent and Cloudflare routes, authenticated attachments use
 a private Supabase Storage bucket. The Worker issues short-lived upload and
