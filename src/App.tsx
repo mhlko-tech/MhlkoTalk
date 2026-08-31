@@ -32,6 +32,7 @@ import {
 } from "./core/subscription";
 import { profileAvatarImageSource } from "./core/profileAvatar";
 import { usernameError } from "./core/authRules";
+import { isEmbeddedRtcProvider } from "./core/rtcProviders";
 import { liveKitTokenEndpoint } from "./config/serviceConfig";
 import { roomSession } from "./services/roomSession";
 import {
@@ -1062,7 +1063,7 @@ export function App() {
 
   return (
     <main
-      className={`app-shell ${session.rtcProvider === "daily" || session.rtcProvider === "whereby" ? "embedded-provider" : ""}`}
+      className={`app-shell ${isEmbeddedRtcProvider(session.rtcProvider) ? "embedded-provider" : ""}`}
       style={{ "--chat-width": `${chatWidth}px` } as React.CSSProperties}
       onContextMenu={(event) => event.preventDefault()}
       onDragEnter={(event) => {
@@ -1343,8 +1344,8 @@ export function App() {
           </span>
         </header>
 
-        <div className={`stage ${session.rtcProvider === "daily" || session.rtcProvider === "whereby" ? "embedded-stage" : ""}`}>
-          {active && (session.rtcProvider === "daily" || session.rtcProvider === "whereby") && session.embeddedCallUrl ? (
+        <div className={`stage ${isEmbeddedRtcProvider(session.rtcProvider) ? "embedded-stage" : ""}`}>
+          {active && isEmbeddedRtcProvider(session.rtcProvider) && session.embeddedCallUrl ? (
             <iframe
               className="embedded-call-frame"
               src={session.embeddedCallUrl}
@@ -1410,7 +1411,7 @@ export function App() {
           )}
         </div>
 
-        {session.rtcProvider !== "daily" && session.rtcProvider !== "whereby" && <footer className="controls">
+        {!isEmbeddedRtcProvider(session.rtcProvider) && <footer className="controls">
           <button
             className="control icon-control record-control"
             onClick={openRecorderStudio}
@@ -1475,8 +1476,8 @@ export function App() {
           </button>
         </footer>}
       </section>
-      {session.rtcProvider !== "daily" && session.rtcProvider !== "whereby" && <div className="chat-resizer" onPointerDown={resizeChat} />}
-      {session.rtcProvider !== "daily" && session.rtcProvider !== "whereby" && <aside className={`chat-panel ${dragging ? "dragging" : ""}`}>
+      {!isEmbeddedRtcProvider(session.rtcProvider) && <div className="chat-resizer" onPointerDown={resizeChat} />}
+      {!isEmbeddedRtcProvider(session.rtcProvider) && <aside className={`chat-panel ${dragging ? "dragging" : ""}`}>
         <div className="chat-header">
           <strong>Room chat</strong>
           <small>

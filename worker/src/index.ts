@@ -22,6 +22,11 @@ import {
 import { generateTencentUserSig } from "./tencentUserSig";
 import { CloudflareRtcRoom, CloudflareRtcUsage, proxyCloudflareRtc } from "./cloudflareRtc";
 import { monthlyUsageCycle, usageAmount } from "./rtcUsage";
+import {
+  handleManagedRtcEmbed,
+  isManagedRtcProvider,
+  issueManagedRtcCredentials,
+} from "./managedRtcProviders";
 
 export { CloudflareRtcRoom, CloudflareRtcUsage };
 
@@ -52,7 +57,23 @@ export interface Env {
   CLOUDFLARE_REALTIME_API_TOKEN?: string;
   HMS_ACCESS_KEY?: string;
   HMS_APP_SECRET?: string;
+  HMS_TEMPLATE_ID?: string;
+  HMS_TEMPLATE_SUBDOMAIN?: string;
+  HMS_ROLE?: string;
+  COMETCHAT_APP_ID?: string;
+  COMETCHAT_REGION?: string;
+  COMETCHAT_REST_API_KEY?: string;
+  COMETCHAT_AUTH_KEY?: string;
   WHEREBY_API_KEY?: string;
+  JAAS_APP_ID?: string;
+  JAAS_KEY_ID?: string;
+  JAAS_PRIVATE_KEY?: string;
+  MIROTALK_BASE_URL?: string;
+  MIROTALK_API_KEY_SECRET?: string;
+  MIROTALK_HOST_USERNAME?: string;
+  MIROTALK_HOST_PASSWORD?: string;
+  VIDEOSDK_API_KEY?: string;
+  VIDEOSDK_API_SECRET?: string;
   DAILY_API_KEY?: string;
   ROUTING_ADMIN_KEY?: string;
   LAVA_MEMBERSHIP_BACKEND_URL?: string;
@@ -125,10 +146,9 @@ function subscriptionFor(profile: Profile | null) {
   return { tier, expiresAt, entitlements: subscriptionEntitlements[tier] };
 }
 function serviceRouting(env: Env, profile: Profile | null, provider: RtcProviderId, providerUrl?: string) {
-  if (provider !== "stream" && provider !== "agora" && provider !== "tencent" && provider !== "cloudflare-realtime" && provider !== "whereby" && provider !== "daily" && provider !== "livekit")
-    throw new Error(`RTC adapter ${provider} is not deployed`);
   const daily = provider === "daily";
   const whereby = provider === "whereby";
+  const embedded = daily || whereby || isManagedRtcProvider(provider);
   const stream = provider === "stream";
   const agora = provider === "agora";
   const tencent = provider === "tencent";
@@ -137,7 +157,7 @@ function serviceRouting(env: Env, profile: Profile | null, provider: RtcProvider
   return {
     rtc: {
       provider,
-      serverUrl: daily || whereby || cloudflare ? providerUrl || "" : stream || agora || tencent ? "" : env.LIVEKIT_URL.replace(/^http/, "ws"),
+      serverUrl: embedded || cloudflare ? providerUrl || "" : stream || agora || tencent ? "" : env.LIVEKIT_URL.replace(/^http/, "ws"),
       ...(stream ? { clientKey: env.STREAM_API_KEY || "" } : {}),
       ...(agora ? { clientKey: env.AGORA_APP_ID || "" } : {}),
       ...(tencent ? { clientKey: env.TENCENT_SDK_APP_ID || "" } : {}),
@@ -1498,6 +1518,10 @@ export default {
     if (request.method === "GET" && path === "/terms") return termsPage();
     if (request.method === "GET" && path === "/auth/complete") return oauthCompletePage(request);
     if (request.method === "GET" && path === "/service/capabilities") return json(await serviceCapabilities(env));
+    if (request.method === "GET" && path.startsWith("/rtc/embed/")) {
+      const response = await handleManagedRtcEmbed(request, env, path.slice("/rtc/embed/".length));
+      return response || json({ error: "Not found" }, 404);
+    }
     if (path === "/service/provider-health" && request.method === "POST") {
       if (!env.ROUTING_ADMIN_KEY || request.headers.get("authorization") !== `Bearer ${env.ROUTING_ADMIN_KEY}`) {
         return json({ error: "Unauthorized" }, 401);
@@ -1706,6 +1730,11 @@ export default {
           const whereby = await issueWherebyCredentials(env, roomName);
           providerToken = whereby.token;
           providerUrl = whereby.roomUrl;
+        } else if (isManagedRtcProvider(selected.provider)) {
+          const managed = await issueManagedRtcCredentials(request, env, selected.provider, roomName, auth, profile);
+          providerToken = managed.token;
+          providerIdentity = managed.identity;
+          providerUrl = managed.serverUrl;
         } else {
           providerToken = await issueToken(roomName, env, auth, profile);
           providerIdentity = auth?.id;

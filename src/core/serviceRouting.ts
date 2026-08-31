@@ -64,14 +64,18 @@ export const routingForRtcProvider = (provider: RtcProviderId) => ({
             ? "agora-data"
             : provider === "tencent"
               ? "tencent-data"
-              : "livekit-data",
+              : provider === "livekit"
+                ? "livekit-data"
+                : "supabase-realtime",
   files: provider === "daily"
     ? "daily-prebuilt"
     : provider === "whereby"
       ? "whereby-prebuilt"
       : provider === "stream" || provider === "agora" || provider === "tencent" || provider === "cloudflare-realtime"
         ? "supabase-storage"
-        : "livekit-stream",
+        : provider === "livekit"
+          ? "livekit-stream"
+          : "supabase-storage",
 }) satisfies { messaging: MessagingProviderId; files: FileProviderId };
 
 export function routingIsSupported(

@@ -4,6 +4,9 @@ import { readFileSync } from "node:fs";
 const sql = readFileSync(
   new URL("../supabase/migrations/202608280003_rtc_provider_usage.sql", import.meta.url),
   "utf8",
+) + readFileSync(
+  new URL("../supabase/migrations/202608310001_replace_vonage_with_mirotalk.sql", import.meta.url),
+  "utf8",
 );
 
 const providers = [
@@ -16,7 +19,7 @@ const providers = [
   "cometchat",
   "whereby",
   "jaas",
-  "vonage",
+  "mirotalk",
   "videosdk",
 ];
 

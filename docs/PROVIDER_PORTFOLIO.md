@@ -18,14 +18,14 @@ both Windows and Android client adapters pass the same integration contract.
 7. `cometchat` - small-community fallback subject to its free-plan user limit.
 8. `whereby` - hard-limited embedded fallback.
 9. `jaas` - limited-MAU fallback; never route an uncounted user to it.
-10. `vonage` - one-time trial reserve, disabled after its verified credit ends.
+10. `mirotalk` - self-hosted SFU reserve on Oracle Always Free in Frankfurt.
 11. `videosdk` - prepaid trial-credit reserve, disabled before its balance ends.
 
 `daily` is not part of the target portfolio because its usage-based billing
 does not provide the zero-dollar protection required for the Beta. `zegocloud`
 is not part of the core eleven because its no-card allocation is a short trial.
-Self-hosted Jitsi remains a future VPS route rather than a managed free-tier
-provider.
+MiroTalk is the self-hosted route and is protected by signed, short-lived join
+links issued only by the MHTalk Worker.
 
 ## Cloudflare zero-budget policy
 
@@ -59,7 +59,7 @@ never the sole source used to protect the budget.
 - One legitimate provider account is used; account duplication is not a quota
   strategy.
 
-## Version 1.6 readiness decision
+## Current readiness decision
 
 | Provider | Source adapter | Production decision |
 | --- | --- | --- |
@@ -69,14 +69,15 @@ never the sole source used to protect the budget.
 | Cloudflare Realtime | Windows + Android + Worker | Disabled until credentials exist; 60% hard internal cutoff. |
 | LiveKit | Windows + Android + Worker | Compatible fallback; disabled while its current allowance is exhausted. |
 | Whereby | Embedded Windows + Android + Worker | Eligible after staging; conservative participant-minute guard. |
-| 100ms | Credential placeholders only | Not routable; native clients and zero-cost cutoff are unverified. |
-| CometChat | Credential placeholders only | Not routable; native clients and reset policy are unverified. |
-| JaaS | Credential placeholders only | Not routable; MAU identity guard and native clients are missing. |
-| Vonage | Credential placeholders only | Not routable; trial balance and native clients are unverified. |
-| VideoSDK | Credential placeholders only | Not routable; prepaid balance collector and native clients are missing. |
+| 100ms | Embedded Windows + Android + Worker | Adapter complete; activate after credentials and dashboard limit verification. |
+| CometChat | Embedded Windows + Android + Worker | Adapter complete; activate after credentials and free-plan reset verification. |
+| JaaS | Embedded Windows + Android + Worker | Adapter complete with stable MHTalk identity; keep the 25-MAU guard active. |
+| MiroTalk | Embedded Windows + Android + Worker + Oracle A1 | Enabled self-hosted fallback; HTTPS, signed join issuance, and media reachability verified. |
+| VideoSDK | Embedded Windows + Android + Worker | Adapter complete; activate only with provider-side prepaid balance telemetry. |
 
-This evaluation intentionally leaves five providers behind `adapterReady =
-false`. Adding a provider name or secret is never treated as implementation.
+All eleven target providers now have a Worker credential issuer and matching
+Windows/Android adapters. A source adapter is still unavailable until its real
+account credentials are configured and its quota policy is verified.
 
 ## Delivery sequence
 

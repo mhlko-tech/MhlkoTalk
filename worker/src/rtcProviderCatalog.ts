@@ -8,7 +8,7 @@ export const targetRtcProviders = [
   "cometchat",
   "whereby",
   "jaas",
-  "vonage",
+  "mirotalk",
   "videosdk",
 ] as const;
 

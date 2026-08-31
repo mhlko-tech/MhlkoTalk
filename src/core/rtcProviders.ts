@@ -8,7 +8,7 @@ export const targetRtcProviders = [
   "cometchat",
   "whereby",
   "jaas",
-  "vonage",
+  "mirotalk",
   "videosdk",
 ] as const;
 
@@ -23,4 +23,18 @@ const knownRtcProviders = new Set<string>([
 
 export function isRtcProvider(value: unknown): value is RtcProviderId {
   return typeof value === "string" && knownRtcProviders.has(value);
+}
+
+const embeddedRtcProviders = new Set<RtcProviderId>([
+  "100ms",
+  "cometchat",
+  "whereby",
+  "jaas",
+  "mirotalk",
+  "videosdk",
+  "daily",
+]);
+
+export function isEmbeddedRtcProvider(value: unknown): value is RtcProviderId {
+  return isRtcProvider(value) && embeddedRtcProviders.has(value);
 }

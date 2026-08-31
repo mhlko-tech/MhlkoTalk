@@ -1,0 +1,15 @@
+services:
+  mirotalksfu:
+    image: mirotalk/sfu@sha256:cac62884c8a35f17ff7badf1a259341c60ca671a038c5575b4c527ecc88c886f
+    container_name: mirotalksfu
+    hostname: mirotalksfu
+    user: "1000:1000"
+    restart: unless-stopped
+    network_mode: host
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - ./app/src/config.js:/src/app/src/config.js:ro
+      - ./.env:/src/.env:ro

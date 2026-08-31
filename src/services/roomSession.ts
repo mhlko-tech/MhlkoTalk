@@ -102,6 +102,7 @@ const supportedMessagingProviders: MessagingProviderId[] = [
   "daily-chat",
   "whereby-chat",
   "livekit-data",
+  "supabase-realtime",
 ];
 
 const supportedFileProviders: FileProviderId[] = [
@@ -227,8 +228,28 @@ export class RoomSession {
       connect: (credentials) => this.joinCloudflare(credentials),
     },
     {
+      provider: "100ms",
+      connect: (credentials) => this.joinEmbedded(credentials),
+    },
+    {
+      provider: "cometchat",
+      connect: (credentials) => this.joinEmbedded(credentials),
+    },
+    {
       provider: "whereby",
       connect: (credentials) => this.joinWhereby(credentials),
+    },
+    {
+      provider: "jaas",
+      connect: (credentials) => this.joinEmbedded(credentials),
+    },
+    {
+      provider: "mirotalk",
+      connect: (credentials) => this.joinEmbedded(credentials),
+    },
+    {
+      provider: "videosdk",
+      connect: (credentials) => this.joinEmbedded(credentials),
     },
     {
       provider: "daily",
@@ -1428,6 +1449,8 @@ export class RoomSession {
   }
 
   private async joinDaily(credentials: RoomConnectionCredentials) {
+    this.routing = credentials.routing;
+    this.attachmentAccessToken = credentials.attachmentAccessToken;
     const callUrl = new URL(credentials.routing.rtc.serverUrl);
     callUrl.searchParams.set("t", credentials.token);
     callUrl.searchParams.set("userName", this.profile.name);
@@ -1442,6 +1465,8 @@ export class RoomSession {
   }
 
   private async joinWhereby(credentials: RoomConnectionCredentials) {
+    this.routing = credentials.routing;
+    this.attachmentAccessToken = credentials.attachmentAccessToken;
     const callUrl = new URL(credentials.routing.rtc.serverUrl);
     callUrl.searchParams.set("displayName", this.profile.name);
     callUrl.searchParams.set("skipMediaPermissionPrompt", "on");
@@ -1452,6 +1477,18 @@ export class RoomSession {
       roomName: credentials.roomName,
       rtcProvider: "whereby",
       embeddedCallUrl: callUrl.toString(),
+      connectionMessage: null,
+    });
+  }
+
+  private async joinEmbedded(credentials: RoomConnectionCredentials) {
+    this.routing = credentials.routing;
+    this.attachmentAccessToken = credentials.attachmentAccessToken;
+    this.update({
+      state: "connected",
+      roomName: credentials.roomName,
+      rtcProvider: credentials.routing.rtc.provider,
+      embeddedCallUrl: credentials.routing.rtc.serverUrl,
       connectionMessage: null,
     });
   }
