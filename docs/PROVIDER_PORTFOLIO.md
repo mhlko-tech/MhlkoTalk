@@ -59,6 +59,25 @@ never the sole source used to protect the budget.
 - One legitimate provider account is used; account duplication is not a quota
   strategy.
 
+## Version 1.6 readiness decision
+
+| Provider | Source adapter | Production decision |
+| --- | --- | --- |
+| Stream | Windows + Android + Worker | Eligible after staging; primary guarded route. |
+| Agora | Windows + Android + Worker | Eligible after staging and verified dashboard limit. |
+| Tencent | Windows + Android + Worker | Eligible only while the annual offer is verified and PAYG is off. |
+| Cloudflare Realtime | Windows + Android + Worker | Disabled until credentials exist; 60% hard internal cutoff. |
+| LiveKit | Windows + Android + Worker | Compatible fallback; disabled while its current allowance is exhausted. |
+| Whereby | Embedded Windows + Android + Worker | Eligible after staging; conservative participant-minute guard. |
+| 100ms | Credential placeholders only | Not routable; native clients and zero-cost cutoff are unverified. |
+| CometChat | Credential placeholders only | Not routable; native clients and reset policy are unverified. |
+| JaaS | Credential placeholders only | Not routable; MAU identity guard and native clients are missing. |
+| Vonage | Credential placeholders only | Not routable; trial balance and native clients are unverified. |
+| VideoSDK | Credential placeholders only | Not routable; prepaid balance collector and native clients are missing. |
+
+This evaluation intentionally leaves five providers behind `adapterReady =
+false`. Adding a provider name or secret is never treated as implementation.
+
 ## Delivery sequence
 
 The implementation order is deliberately different from the eventual routing

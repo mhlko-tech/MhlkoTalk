@@ -23,6 +23,66 @@ export type FileProviderId =
   | "supabase-storage"
   | "backblaze-b2";
 
+export type ClientServiceCapabilities = {
+  version: 2;
+  rtcProviders: RtcProviderId[];
+  messagingProviders: MessagingProviderId[];
+  fileProviders: FileProviderId[];
+};
+
+export const knownMessagingProviders: readonly MessagingProviderId[] = [
+  "daily-chat",
+  "livekit-data",
+  "stream-events",
+  "agora-data",
+  "tencent-data",
+  "whereby-chat",
+  "supabase-realtime",
+  "cloudflare-realtime",
+  "firebase",
+];
+
+export const knownFileProviders: readonly FileProviderId[] = [
+  "daily-prebuilt",
+  "whereby-prebuilt",
+  "livekit-stream",
+  "cloudflare-r2",
+  "supabase-storage",
+  "backblaze-b2",
+];
+
+export const routingForRtcProvider = (provider: RtcProviderId) => ({
+  messaging: provider === "daily"
+    ? "daily-chat"
+    : provider === "whereby"
+      ? "whereby-chat"
+      : provider === "cloudflare-realtime"
+        ? "cloudflare-realtime"
+        : provider === "stream"
+          ? "stream-events"
+          : provider === "agora"
+            ? "agora-data"
+            : provider === "tencent"
+              ? "tencent-data"
+              : "livekit-data",
+  files: provider === "daily"
+    ? "daily-prebuilt"
+    : provider === "whereby"
+      ? "whereby-prebuilt"
+      : provider === "stream" || provider === "agora" || provider === "tencent" || provider === "cloudflare-realtime"
+        ? "supabase-storage"
+        : "livekit-stream",
+}) satisfies { messaging: MessagingProviderId; files: FileProviderId };
+
+export function routingIsSupported(
+  provider: RtcProviderId,
+  messagingProviders: readonly MessagingProviderId[],
+  fileProviders: readonly FileProviderId[],
+) {
+  const required = routingForRtcProvider(provider);
+  return messagingProviders.includes(required.messaging) && fileProviders.includes(required.files);
+}
+
 export type RoomServiceRouting = {
   rtc: { provider: RtcProviderId; serverUrl: string; clientKey?: string };
   messaging: { provider: MessagingProviderId };
@@ -58,9 +118,10 @@ export function parseRoomServiceRouting(
   const provider = payload.routing?.rtc?.provider ?? payload.provider;
   const serverUrl = payload.routing?.rtc?.serverUrl ?? payload.serverUrl;
   const clientKey = payload.routing?.rtc?.clientKey;
-  return {
+  const rtcProvider = isRtcProvider(provider) ? provider : "livekit";
+  const parsed: RoomServiceRouting = {
     rtc: {
-      provider: isRtcProvider(provider) ? provider : "livekit",
+      provider: rtcProvider,
       serverUrl: typeof serverUrl === "string" && serverUrl
         ? serverUrl
         : fallbackServerUrl,
@@ -78,29 +139,20 @@ export function parseRoomServiceRouting(
     },
     subscription: resolveSubscriptionPlan(payload.subscription),
   };
+  const required = routingForRtcProvider(rtcProvider);
+  if (
+    parsed.messaging.provider !== required.messaging ||
+    parsed.files.provider !== required.files
+  ) {
+    throw new Error("The server selected an incompatible room service route");
+  }
+  return parsed;
 }
 
 function isMessagingProvider(value: unknown): value is MessagingProviderId {
-  return [
-    "daily-chat",
-    "livekit-data",
-    "stream-events",
-    "agora-data",
-    "tencent-data",
-    "whereby-chat",
-    "supabase-realtime",
-    "cloudflare-realtime",
-    "firebase",
-  ].includes(String(value));
+  return knownMessagingProviders.includes(String(value) as MessagingProviderId);
 }
 
 function isFileProvider(value: unknown): value is FileProviderId {
-  return [
-    "daily-prebuilt",
-    "whereby-prebuilt",
-    "livekit-stream",
-    "cloudflare-r2",
-    "supabase-storage",
-    "backblaze-b2",
-  ].includes(String(value));
+  return knownFileProviders.includes(String(value) as FileProviderId);
 }

@@ -1,0 +1,41 @@
+name = "mhtalk-token-service-staging"
+main = "src/index.ts"
+compatibility_date = "2026-08-18"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+LIVEKIT_URL = "https://replace-with-staging-livekit-host"
+RTC_PROVIDER_ORDER = "stream,agora,tencent,cloudflare-realtime,whereby,livekit"
+LAVA_MEMBERSHIP_BACKEND_URL = "https://replace-with-staging-membership-worker"
+AUTH_REQUIRED = "true"
+
+[[kv_namespaces]]
+binding = "PRIVATE_ROOMS"
+id = "replace-with-staging-kv-id"
+
+[[durable_objects.bindings]]
+name = "PRESENCE"
+class_name = "PresenceHub"
+
+[[durable_objects.bindings]]
+name = "CLOUDFLARE_RTC_ROOMS"
+class_name = "CloudflareRtcRoom"
+
+[[durable_objects.bindings]]
+name = "CLOUDFLARE_RTC_USAGE"
+class_name = "CloudflareRtcUsage"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["PresenceHub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["CloudflareRtcRoom"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["CloudflareRtcUsage"]
+
+[triggers]
+crons = ["*/10 * * * *"]
