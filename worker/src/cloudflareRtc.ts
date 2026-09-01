@@ -299,7 +299,6 @@ export class CloudflareRtcUsage implements DurableObject {
         usage.estimatedEgressBytes += bytes;
         usage.updatedAt = new Date().toISOString();
         await this.state.storage.put("usage", usage);
-        await this.writeHealth(usage);
         return usage;
       }));
     }

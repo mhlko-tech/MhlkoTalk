@@ -40,12 +40,21 @@ are ready. Secrets are never included in this response or stored in a client.
   that the installed Windows or Android build cannot use.
 - Thresholds are provider-specific. Cloudflare warns at 45%, loses priority at
   50%, drains at 55%, and is disabled at 60%. JaaS warns at 60%, stops new rooms
-  before 75%, and its strongly consistent guard stops credential issuance at 20
-  of 25 monthly MAUs. Other providers use limits defined in their verified quota
-  policy rather than one unsafe global percentage.
+  at 72%, and its strongly consistent guard stops credential issuance at 19 of
+  25 monthly MAUs. Other vendor-metered providers warn at 60%, lose priority at
+  65%, stop new rooms at 70%, and disable by 75%. MiroTalk is self-hosted and
+  fails closed on its HTTPS health probe instead of a synthetic vendor quota.
 - `POST /service/provider-health` updates measured usage or disables a provider.
   It requires the `ROUTING_ADMIN_KEY` bearer secret. This endpoint is designed
   for a scheduled quota collector; it is not callable by the apps.
+- `POST /service/provider-policies/harden` idempotently applies the reviewed
+  sub-80% policy set through the Worker's Supabase service role. It requires the
+  same administrator secret and does not accept arbitrary policy values.
+- `POST /service/providers/whereby/smoke` creates, reads and deletes a short-lived
+  Whereby meeting without enabling live routing. After it succeeds,
+  `/service/providers/whereby/enable` reapplies the guarded policies, repeats the
+  probe and enables only Whereby. `/service/providers/whereby/disable` is the
+  immediate rollback switch. All three require the administrator secret.
 - Token acquisition is limited to 12 seconds and RTC connection to 18 seconds
   on both clients. A failed provider therefore produces a clear error instead
   of an infinite spinner.

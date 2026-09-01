@@ -1,0 +1,25 @@
+name: Monitor RTC provider safety
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-safety-monitor
+  cancel-in-progress: true
+
+jobs:
+  provider-health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Verify production RTC safety
+        run: node scripts/check-provider-health.mjs

@@ -68,8 +68,9 @@ access and does not rely on the provider invoice as a usage limiter.
 - Only authenticated MHTalk accounts can receive a JaaS credential.
 - A strongly consistent Durable Object counts every issued credential, which is
   more conservative than counting unique users.
-- New rooms stop before 75% of the allowance and all issuance stops at 20 of 25
-  credentials per UTC month, reserving five MAUs for endpoint-count variance.
+- New rooms stop at 72% of the allowance and all issuance stops at 19 of 25
+  credentials per UTC month, keeping measured usage below 80% even with
+  endpoint-count variance.
 - Recording, transcription, livestreaming and outbound calling remain disabled.
 - When the guard closes, the broker selects another healthy provider instead of
   allowing a JaaS overage.
@@ -86,7 +87,7 @@ access and does not rely on the provider invoice as a usage limiter.
 | Whereby | Embedded Windows + Android + Worker | Eligible after staging; conservative participant-minute guard. |
 | 100ms | Embedded Windows + Android + Worker | Adapter complete; activate after credentials and dashboard limit verification. |
 | CometChat | Embedded Windows + Android + Worker | Adapter complete; activate after credentials and free-plan reset verification. |
-| JaaS | Embedded Windows + Android + Worker | Enabled for authenticated accounts with an exact 20-credential monthly ceiling below the 25-MAU plan. |
+| JaaS | Embedded Windows + Android + Worker | Enabled for authenticated accounts with an exact 19-credential monthly ceiling below 80% of the 25-MAU plan. |
 | MiroTalk | Embedded Windows + Android + Worker + Oracle A1 | Enabled self-hosted fallback; HTTPS, signed join issuance, and media reachability verified. |
 | VideoSDK | Embedded Windows + Android + Worker | Adapter complete; activate only with provider-side prepaid balance telemetry. |
 

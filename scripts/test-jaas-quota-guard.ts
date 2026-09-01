@@ -22,7 +22,7 @@ const env = {
 const guard = new JaasQuotaGuard(state, env);
 
 assert.equal(jaasMonthlyActiveUserLimit, 25);
-assert.equal(jaasMonthlyCredentialLimit, 20);
+assert.equal(jaasMonthlyCredentialLimit, 19);
 for (let index = 1; index <= jaasMonthlyCredentialLimit; index += 1) {
   const response = await guard.fetch(new Request("https://internal/reserve", { method: "POST" }));
   assert.equal(response.status, 200);
@@ -38,7 +38,7 @@ const health = JSON.parse(healthValues.get("routing:health:rtc:jaas") || "{}") a
   usedPercent?: number;
   disabled?: boolean;
 };
-assert.equal(health.usedPercent, 80);
+assert.equal(health.usedPercent, 76);
 assert.equal(health.disabled, true);
 
 durableValues.set("quota", { cycle: "2000-01", issued: jaasMonthlyCredentialLimit });
@@ -46,4 +46,4 @@ const newCycle = await guard.fetch(new Request("https://internal/reserve", { met
 assert.equal(newCycle.status, 200);
 assert.equal((await newCycle.json() as { issued: number }).issued, 1);
 
-console.log("JaaS quota guard tests passed: exact 20-credential monthly ceiling");
+console.log("JaaS quota guard tests passed: exact 19-credential monthly ceiling");

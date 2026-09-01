@@ -4,6 +4,7 @@ import {
   targetRtcProviders,
   type RtcProviderId,
 } from "./rtcProviderCatalog";
+import { routingThresholds } from "./providerSafety";
 
 export type { RtcProviderId } from "./rtcProviderCatalog";
 
@@ -61,43 +62,19 @@ export type ProviderCapability = {
 };
 
 const defaultOrder: RtcProviderId[] = [...targetRtcProviders];
-const drainAt = 85;
-const migrateAt = 95;
 const stickySeconds = 2 * 60 * 60;
-const cloudflareWarnAt = 45;
-const cloudflareLowerPriorityAt = 50;
-const cloudflareStopNewRoomsAt = 55;
-const cloudflareDisableAt = 60;
 const cloudflareHealthMaxAgeMs = 20 * 60 * 1000;
-const jaasWarnAt = 60;
-const jaasLowerPriorityAt = 70;
-const jaasStopNewRoomsAt = 75;
-const jaasDisableAt = 80;
+const providerHealthMaxAgeMs = 25 * 60 * 1000;
+const sharedHealthKey = "routing:health:rtc:shared";
 
-function thresholds(provider: RtcProviderId) {
-  if (provider === "cloudflare-realtime") {
-    return {
-        warnAt: cloudflareWarnAt,
-        drainAt: cloudflareLowerPriorityAt,
-        stopNewRoomsAt: cloudflareStopNewRoomsAt,
-        disableAt: cloudflareDisableAt,
-      };
-  }
-  if (provider === "jaas") {
-    return {
-      warnAt: jaasWarnAt,
-      drainAt: jaasLowerPriorityAt,
-      stopNewRoomsAt: jaasStopNewRoomsAt,
-      disableAt: jaasDisableAt,
-    };
-  }
-  return { warnAt: drainAt, drainAt, stopNewRoomsAt: migrateAt, disableAt: migrateAt };
-}
+type SharedProviderHealth = Partial<Record<RtcProviderId, ProviderHealth>>;
 
 function healthIsStale(provider: RtcProviderId, health: ProviderHealth) {
-  if (provider !== "cloudflare-realtime") return false;
   const updatedAt = Date.parse(health.updatedAt);
-  return !Number.isFinite(updatedAt) || Date.now() - updatedAt > cloudflareHealthMaxAgeMs;
+  const maxAge = provider === "cloudflare-realtime"
+    ? cloudflareHealthMaxAgeMs
+    : providerHealthMaxAgeMs;
+  return !Number.isFinite(updatedAt) || Date.now() - updatedAt > maxAge;
 }
 
 function providerOrder(value?: string): RtcProviderId[] {
@@ -132,7 +109,12 @@ function adapterReady(provider: RtcProviderId) {
 }
 
 async function providerHealth(env: RoutingEnvironment, provider: RtcProviderId): Promise<ProviderHealth> {
-  const stored = await env.PRIVATE_ROOMS.get(`routing:health:rtc:${provider}`, "json") as Partial<ProviderHealth> | null;
+  const dedicated = provider === "cloudflare-realtime" || provider === "jaas";
+  const shared = dedicated
+    ? null
+    : await env.PRIVATE_ROOMS.get(sharedHealthKey, "json") as SharedProviderHealth | null;
+  const stored = shared?.[provider] ||
+    await env.PRIVATE_ROOMS.get(`routing:health:rtc:${provider}`, "json") as Partial<ProviderHealth> | null;
   return {
     usedPercent: Math.min(100, Math.max(0, Number(stored?.usedPercent) || 0)),
     disabled: stored?.disabled === true,
@@ -145,8 +127,8 @@ export async function rtcCapabilities(env: RoutingEnvironment): Promise<Provider
     const configured = providerConfigured(provider, env);
     const hasAdapter = adapterReady(provider);
     const health = await providerHealth(env, provider);
-    const policy = thresholds(provider);
-    const stale = healthIsStale(provider, health);
+    const policy = routingThresholds(provider);
+    const stale = !health.disabled && healthIsStale(provider, health);
     const ready = configured && hasAdapter && !stale && !health.disabled && health.usedPercent < policy.disableAt;
     const state: ProviderCapability["state"] = !configured || !hasAdapter
       ? "unavailable"
@@ -164,7 +146,7 @@ export async function rtcCapabilities(env: RoutingEnvironment): Promise<Provider
       : !hasAdapter
         ? "Client and token adapters are not deployed"
         : stale
-          ? "Usage telemetry is missing or stale; Cloudflare routing fails closed"
+          ? "Provider health or usage telemetry is missing or stale; routing fails closed"
         : health.disabled
           ? "Provider is administratively disabled"
           : health.usedPercent >= policy.disableAt
@@ -191,7 +173,7 @@ export async function selectRtcProvider(
   const current = candidates.find((item) => item.provider === sticky);
   if (current) return current;
 
-  const acceptingNewRooms = candidates.filter((item) => item.usedPercent === null || item.usedPercent < thresholds(item.provider).stopNewRoomsAt);
+  const acceptingNewRooms = candidates.filter((item) => item.usedPercent === null || item.usedPercent < routingThresholds(item.provider).stopNewRoomsAt);
   const selected = acceptingNewRooms.find((item) => item.state === "healthy") || acceptingNewRooms[0] || null;
   if (selected) await env.PRIVATE_ROOMS.put(stickyKey, selected.provider, { expirationTtl: stickySeconds });
   return selected;
@@ -218,8 +200,36 @@ export async function updateProviderHealth(
     disabled: update.disabled ?? current.disabled,
     updatedAt: new Date().toISOString(),
   };
-  await env.PRIVATE_ROOMS.put(`routing:health:rtc:${provider}`, JSON.stringify(next));
+  if (provider === "cloudflare-realtime" || provider === "jaas") {
+    await env.PRIVATE_ROOMS.put(`routing:health:rtc:${provider}`, JSON.stringify(next));
+  } else {
+    const shared = await env.PRIVATE_ROOMS.get(sharedHealthKey, "json") as SharedProviderHealth | null;
+    await env.PRIVATE_ROOMS.put(sharedHealthKey, JSON.stringify({ ...(shared || {}), [provider]: next }));
+  }
   return next;
+}
+
+export async function updateProviderHealthBatch(
+  env: RoutingEnvironment,
+  updates: Partial<Record<RtcProviderId, { usedPercent?: number; disabled?: boolean }>>,
+) {
+  const shared = await env.PRIVATE_ROOMS.get(sharedHealthKey, "json") as SharedProviderHealth | null || {};
+  const updatedAt = new Date().toISOString();
+  for (const [providerValue, update] of Object.entries(updates)) {
+    if (!isRtcProvider(providerValue) || providerValue === "cloudflare-realtime" || providerValue === "jaas" || !update) continue;
+    const provider = providerValue as RtcProviderId;
+    const legacy = shared[provider] ||
+      await env.PRIVATE_ROOMS.get(`routing:health:rtc:${provider}`, "json") as Partial<ProviderHealth> | null;
+    shared[provider] = {
+      usedPercent: update.usedPercent === undefined
+        ? Math.min(100, Math.max(0, Number(legacy?.usedPercent) || 0))
+        : Math.min(100, Math.max(0, update.usedPercent)),
+      disabled: update.disabled ?? legacy?.disabled === true,
+      updatedAt,
+    };
+  }
+  await env.PRIVATE_ROOMS.put(sharedHealthKey, JSON.stringify(shared));
+  return shared;
 }
 
 export { isRtcProvider, knownRtcProviders };

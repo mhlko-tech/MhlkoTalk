@@ -17,6 +17,7 @@ import {
   rtcCapabilities,
   selectRtcProvider,
   updateProviderHealth,
+  updateProviderHealthBatch,
   type RtcProviderId,
 } from "./providerRouting";
 import { generateTencentUserSig } from "./tencentUserSig";
@@ -29,6 +30,15 @@ import {
   JaasQuotaGuard,
   jaasQuotaObjectName,
 } from "./managedRtcProviders";
+import {
+  cloudflareProviderThresholds,
+  databaseProviderSafetyPolicies,
+  defaultProviderThresholds,
+  jaasMonthlyActiveUserLimit,
+  jaasMonthlyCredentialLimit,
+  jaasProviderThresholds,
+  validateProviderSafetyPolicies,
+} from "./providerSafety";
 
 export { CloudflareRtcRoom, CloudflareRtcUsage, JaasQuotaGuard };
 
@@ -109,6 +119,10 @@ const headers = {
   "access-control-allow-headers": "authorization, content-type",
 };
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers });
+const routingAdminAuthorized = (request: Request, env: Env) => Boolean(
+  env.ROUTING_ADMIN_KEY &&
+  request.headers.get("authorization") === `Bearer ${env.ROUTING_ADMIN_KEY}`
+);
 const subscriptionEntitlements = {
   free: {
     maxCameraQuality: "medium",
@@ -174,6 +188,9 @@ async function serviceCapabilities(env: Env) {
   const rtc = await rtcCapabilities(env);
   const activeRtc = rtc.find((item) => item.ready)?.provider || null;
   const activeRouting = activeRtc ? routingForRtcProvider(activeRtc) : null;
+  const alerts = rtc
+    .filter((item) => item.configured && item.state !== "healthy")
+    .map((item) => ({ provider: item.provider, state: item.state, reason: item.reason || "Provider requires attention" }));
   return {
     active: {
       rtc: activeRtc,
@@ -181,24 +198,38 @@ async function serviceCapabilities(env: Env) {
       files: activeRouting?.files ?? null,
     },
     thresholds: {
-      default: { warningPercent: 70, drainPercent: 85, migratePercent: 95 },
+      default: {
+        warningPercent: defaultProviderThresholds.warnAt,
+        lowerPriorityPercent: defaultProviderThresholds.drainAt,
+        stopNewRoomsPercent: defaultProviderThresholds.stopNewRoomsAt,
+        disablePercent: defaultProviderThresholds.disableAt,
+        telemetryMaxAgeMinutes: 25,
+      },
       "cloudflare-realtime": {
-        warningPercent: 45,
-        lowerPriorityPercent: 50,
-        stopNewRoomsPercent: 55,
-        disablePercent: 60,
+        warningPercent: cloudflareProviderThresholds.warnAt,
+        lowerPriorityPercent: cloudflareProviderThresholds.drainAt,
+        stopNewRoomsPercent: cloudflareProviderThresholds.stopNewRoomsAt,
+        disablePercent: cloudflareProviderThresholds.disableAt,
         telemetryMaxAgeMinutes: 20,
         accountingSafetyMarginPercent: 25,
       },
       jaas: {
-        warningPercent: 60,
-        lowerPriorityPercent: 70,
-        stopNewRoomsPercent: 75,
-        disablePercent: 80,
-        freeMonthlyActiveUsers: 25,
-        maxMonthlyCredentialIssuances: 20,
+        warningPercent: jaasProviderThresholds.warnAt,
+        lowerPriorityPercent: jaasProviderThresholds.drainAt,
+        stopNewRoomsPercent: jaasProviderThresholds.stopNewRoomsAt,
+        disablePercent: jaasProviderThresholds.disableAt,
+        freeMonthlyActiveUsers: jaasMonthlyActiveUserLimit,
+        maxMonthlyCredentialIssuances: jaasMonthlyCredentialLimit,
         authenticatedAccountsOnly: true,
       },
+    },
+    monitoring: {
+      refreshMinutes: 15,
+      failClosedAfterMinutes: 25,
+      targetMaximumPercent: 79,
+      readyProviders: rtc.filter((item) => item.ready).length,
+      configuredProviders: rtc.filter((item) => item.configured).length,
+      alerts,
     },
     rtc,
     messaging: ["daily-chat", "whereby-chat", "livekit-data", "stream-events", "agora-data", "tencent-data", "cloudflare-realtime", "supabase-realtime", "firebase"],
@@ -842,7 +873,10 @@ type ProviderHealthSnapshot = {
   state: string;
 };
 
-async function syncProviderHealth(env: Env) {
+async function syncProviderHealth(
+  env: Env,
+  overrides: Partial<Record<RtcProviderId, { usedPercent?: number; disabled?: boolean }>> = {},
+) {
   const response = await serviceApi(env, "/rest/v1/rpc/rtc_provider_health_snapshot", {
     method: "POST",
     body: "{}",
@@ -851,19 +885,93 @@ async function syncProviderHealth(env: Env) {
   const payload = await response.json() as unknown;
   if (!Array.isArray(payload)) return;
   const snapshots = payload as ProviderHealthSnapshot[];
-  await Promise.all(snapshots.filter((item) => isRtcProvider(item.provider)).map((item) => {
+  const sharedUpdates: Partial<Record<RtcProviderId, { usedPercent?: number; disabled?: boolean }>> = {};
+  await Promise.all(snapshots.filter((item) => isRtcProvider(item.provider)).map(async (item) => {
     const provider = item.provider as RtcProviderId;
+    const override = overrides[provider];
     // Cloudflare has a dedicated Durable Object egress guard. Supabase remains
     // the administrative enable switch, but must not overwrite its fresher,
     // fail-closed usage telemetry with a stale provider snapshot.
     if (provider === "cloudflare-realtime" || provider === "jaas") {
-      return updateProviderHealth(env, provider, { disabled: !item.enabled });
+      const key = `routing:health:rtc:${provider}`;
+      const current = await env.PRIVATE_ROOMS.get(key, "json") as {
+        usedPercent?: number;
+        disabled?: boolean;
+        updatedAt?: string;
+      } | null;
+      const disabled = override?.disabled ?? !item.enabled;
+      if (!current || current.disabled !== disabled) {
+        await updateProviderHealth(env, provider, {
+          usedPercent: current ? Number(current.usedPercent) || 0 : provider === "cloudflare-realtime" ? 60 : 76,
+          disabled,
+        });
+      }
+      return;
     }
-    return updateProviderHealth(env, provider, {
-      usedPercent: Number(item.used_percent) || 0,
-      disabled: !item.enabled || ["disabled", "stale", "exhausted"].includes(item.state),
-    });
+    sharedUpdates[provider] = {
+      usedPercent: override?.usedPercent ?? (Number(item.used_percent) || 0),
+      disabled: override?.disabled ?? (!item.enabled || ["disabled", "stale", "exhausted"].includes(item.state)),
+    };
   }));
+  await updateProviderHealthBatch(env, { ...sharedUpdates, ...overrides });
+}
+
+async function applyProviderSafetyPolicies(env: Env) {
+  validateProviderSafetyPolicies();
+  const updatedAt = new Date().toISOString();
+  const updatedProviders: string[] = [];
+  for (const [provider, policy] of Object.entries(databaseProviderSafetyPolicies)) {
+    const response = await serviceApi(
+      env,
+      `/rest/v1/rtc_provider_policies?provider=eq.${encodeURIComponent(provider)}`,
+      {
+        method: "PATCH",
+        headers: { prefer: "return=minimal" },
+        body: JSON.stringify({ ...policy, updated_at: updatedAt }),
+      },
+    );
+    if (!response?.ok) {
+      const detail = response ? (await response.text().catch(() => "")).slice(0, 500) : "service unavailable";
+      throw new Error(`Could not harden ${provider} provider policy (${response?.status || 503}): ${detail}`);
+    }
+    updatedProviders.push(provider);
+  }
+  return updatedProviders;
+}
+
+async function setWherebyProviderEnabled(env: Env, enabled: boolean) {
+  if (enabled) {
+    await applyProviderSafetyPolicies(env);
+    await smokeWhereby(env);
+  }
+  const response = await serviceApi(env, "/rest/v1/rtc_provider_policies?provider=eq.whereby", {
+    method: "PATCH",
+    headers: { prefer: "return=minimal" },
+    body: JSON.stringify({ enabled, updated_at: new Date().toISOString() }),
+  });
+  if (!response?.ok) throw new Error("Whereby provider state could not be changed");
+  await syncProviderHealth(env);
+  return (await rtcCapabilities(env)).find((item) => item.provider === "whereby");
+}
+
+async function probeMiroTalkHealth(env: Env) {
+  if (!env.MIROTALK_BASE_URL) return 75;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const healthUrl = new URL("/api/v1/health", env.MIROTALK_BASE_URL);
+    if (healthUrl.protocol !== "https:") throw new Error("MiroTalk health URL must use HTTPS");
+    const response = await fetch(healthUrl, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+    return response.ok ? 0 : 75;
+  } catch {
+    return 75;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 const attachmentBucket = "mhtalk-room-attachments";
@@ -1197,47 +1305,81 @@ type WherebyRoom = {
   endDate?: string;
 };
 
-async function ensureWherebyRoom(env: Env, roomName: string) {
+async function wherebyRequest(env: Env, path: string, init: RequestInit = {}) {
   if (!env.WHEREBY_API_KEY) throw new Error("Whereby is not configured");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  try {
+    return await fetch(`https://api.whereby.dev/v1${path}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        authorization: `Bearer ${env.WHEREBY_API_KEY}`,
+        "content-type": "application/json",
+        ...(init.headers || {}),
+      },
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function createWherebyRoom(env: Env, endDate: string) {
+  const response = await wherebyRequest(env, "/meetings", {
+    method: "POST",
+    body: JSON.stringify({
+      endDate,
+      isLocked: false,
+      roomMode: "group",
+      roomNamePrefix: "mhtalk-",
+      roomNamePattern: "uuid",
+    }),
+  });
+  if (!response.ok) throw new Error(`Whereby room service returned ${response.status}`);
+  const room = await response.json() as WherebyRoom;
+  if (!room.meetingId || !room.roomUrl) throw new Error("Whereby returned an invalid room");
+  const roomUrl = new URL(room.roomUrl);
+  if (roomUrl.protocol !== "https:") throw new Error("Whereby returned an insecure room URL");
+  return { ...room, endDate: room.endDate || endDate } as Required<WherebyRoom>;
+}
+
+async function ensureWherebyRoom(env: Env, roomName: string) {
   const cacheKey = `routing:whereby:room:${await digest(roomName)}`;
   const cached = await env.PRIVATE_ROOMS.get(cacheKey, "json") as WherebyRoom | null;
   if (cached?.meetingId && cached.roomUrl && cached.endDate && new Date(cached.endDate).getTime() > Date.now() + 60_000) {
     return cached as Required<WherebyRoom>;
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8_000);
-  try {
-    const endDate = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
-    const response = await fetch("https://api.whereby.dev/v1/meetings", {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        authorization: `Bearer ${env.WHEREBY_API_KEY}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        endDate,
-        isLocked: false,
-        roomMode: "group",
-        roomNamePrefix: "mhtalk-",
-        roomNamePattern: "uuid",
-      }),
-    });
-    if (!response.ok) throw new Error(`Whereby room service returned ${response.status}`);
-    const room = await response.json() as WherebyRoom;
-    if (!room.meetingId || !room.roomUrl) throw new Error("Whereby returned an invalid room");
-    const stored = { ...room, endDate: room.endDate || endDate } as Required<WherebyRoom>;
-    await env.PRIVATE_ROOMS.put(cacheKey, JSON.stringify(stored), { expirationTtl: 2 * 60 * 60 });
-    return stored;
-  } finally {
-    clearTimeout(timeout);
-  }
+  const endDate = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
+  const room = await createWherebyRoom(env, endDate);
+  await env.PRIVATE_ROOMS.put(cacheKey, JSON.stringify(room), { expirationTtl: 2 * 60 * 60 });
+  return room;
 }
 
 async function issueWherebyCredentials(env: Env, roomName: string) {
   const room = await ensureWherebyRoom(env, roomName);
   return { token: room.meetingId, roomUrl: room.roomUrl };
+}
+
+async function smokeWhereby(env: Env) {
+  const endDate = new Date(Date.now() + 15 * 60 * 1_000).toISOString();
+  let meetingId = "";
+  try {
+    const room = await createWherebyRoom(env, endDate);
+    meetingId = room.meetingId;
+    const read = await wherebyRequest(env, `/meetings/${encodeURIComponent(meetingId)}`);
+    if (!read.ok) throw new Error(`Whereby meeting verification returned ${read.status}`);
+    const verified = await read.json() as WherebyRoom;
+    if (verified.meetingId !== meetingId || !verified.roomUrl) {
+      throw new Error("Whereby meeting verification returned invalid data");
+    }
+    return { created: true, verified: true };
+  } finally {
+    if (meetingId) {
+      const removed = await wherebyRequest(env, `/meetings/${encodeURIComponent(meetingId)}`, { method: "DELETE" });
+      if (!removed.ok) throw new Error(`Whereby meeting cleanup returned ${removed.status}`);
+    }
+  }
 }
 
 type DailyRoom = { name?: string; url?: string };
@@ -1541,10 +1683,37 @@ export default {
       const response = await handleManagedRtcEmbed(request, env, path.slice("/rtc/embed/".length));
       return response || json({ error: "Not found" }, 404);
     }
-    if (path === "/service/provider-health" && request.method === "POST") {
-      if (!env.ROUTING_ADMIN_KEY || request.headers.get("authorization") !== `Bearer ${env.ROUTING_ADMIN_KEY}`) {
-        return json({ error: "Unauthorized" }, 401);
+    if (path === "/service/provider-policies/harden" && request.method === "POST") {
+      if (!routingAdminAuthorized(request, env)) return json({ error: "Unauthorized" }, 401);
+      try {
+        const providers = await applyProviderSafetyPolicies(env);
+        return json({ hardened: true, providers });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "Unknown provider policy error";
+        return json({ error: "Provider safety policies could not be applied", detail }, 503);
       }
+    }
+    if (path === "/service/providers/whereby/smoke" && request.method === "POST") {
+      if (!routingAdminAuthorized(request, env)) return json({ error: "Unauthorized" }, 401);
+      try {
+        return json({ provider: "whereby", ...(await smokeWhereby(env)), cleanedUp: true });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : "Unknown Whereby error";
+        return json({ error: "Whereby smoke test failed", detail }, 503);
+      }
+    }
+    if ((path === "/service/providers/whereby/enable" || path === "/service/providers/whereby/disable") && request.method === "POST") {
+      if (!routingAdminAuthorized(request, env)) return json({ error: "Unauthorized" }, 401);
+      const enabled = path.endsWith("/enable");
+      try {
+        const capability = await setWherebyProviderEnabled(env, enabled);
+        return json({ provider: "whereby", enabled, capability });
+      } catch {
+        return json({ error: `Whereby could not be ${enabled ? "enabled" : "disabled"}` }, 503);
+      }
+    }
+    if (path === "/service/provider-health" && request.method === "POST") {
+      if (!routingAdminAuthorized(request, env)) return json({ error: "Unauthorized" }, 401);
       const body = (await request.json().catch(() => null)) as { provider?: unknown; usedPercent?: unknown; disabled?: unknown } | null;
       if (!isRtcProvider(body?.provider)) return json({ error: "Invalid provider" }, 400);
       if (body?.usedPercent !== undefined && (typeof body.usedPercent !== "number" || !Number.isFinite(body.usedPercent))) {
@@ -1809,13 +1978,12 @@ export default {
     const jaasQuota = env.JAAS_QUOTA.get(env.JAAS_QUOTA.idFromName(jaasQuotaObjectName));
     // Refresh dedicated quota state before applying shared administrative
     // switches so stale provider snapshots cannot replace authoritative usage.
-    await Promise.all([
+    const [, , mirotalkUsedPercent] = await Promise.all([
       usage.fetch("https://internal/usage/refresh", { method: "POST" }),
       jaasQuota.fetch("https://internal/refresh", { method: "POST" }),
+      probeMiroTalkHealth(env),
     ]);
-    await Promise.all([
-      cleanupExpiredAttachments(env),
-      syncProviderHealth(env),
-    ]);
+    await syncProviderHealth(env, { mirotalk: { usedPercent: mirotalkUsedPercent } });
+    await cleanupExpiredAttachments(env);
   },
 };

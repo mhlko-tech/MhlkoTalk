@@ -5,6 +5,7 @@ import {
   rtcCapabilities,
   selectRtcProvider,
   updateProviderHealth,
+  updateProviderHealthBatch,
   type RoutingEnvironment,
 } from "../worker/src/providerRouting";
 import { targetRtcProviders as clientTargetRtcProviders } from "../src/core/rtcProviders";
@@ -71,6 +72,12 @@ assert.equal(routingIsSupported("livekit", ["livekit-data"], ["livekit-stream"])
 assert.equal(routingIsSupported("100ms", ["supabase-realtime"], ["supabase-storage"]), true);
 
 const environment = testEnvironment();
+const missingTelemetry = await rtcCapabilities(environment);
+assert.equal(missingTelemetry.find((item) => item.provider === "stream")?.ready, false);
+assert.match(missingTelemetry.find((item) => item.provider === "stream")?.reason || "", /stale/i);
+for (const provider of knownRtcProviders.filter((item) => item !== "cloudflare-realtime")) {
+  await updateProviderHealth(environment, provider, { usedPercent: 0 });
+}
 const capabilities = await rtcCapabilities(environment);
 assert.equal(capabilities.find((item) => item.provider === "stream")?.ready, true);
 assert.equal(capabilities.find((item) => item.provider === "agora")?.ready, true);
@@ -102,22 +109,41 @@ assert.equal((await selectRtcProvider(environment, "Whereby", ["whereby"]))?.pro
 assert.equal((await selectRtcProvider(environment, "100ms", ["100ms"]))?.provider, "100ms");
 assert.equal((await selectRtcProvider(environment, "CometChat", ["cometchat"]))?.provider, "cometchat");
 assert.equal((await selectRtcProvider(environment, "JaaS", ["jaas"]))?.provider, "jaas");
-await updateProviderHealth(environment, "jaas", { usedPercent: 76 });
+await updateProviderHealth(environment, "jaas", { usedPercent: 72 });
 assert.equal((await rtcCapabilities(environment)).find((item) => item.provider === "jaas")?.state, "draining");
 assert.equal(await selectRtcProvider(environment, "JaaS-new", ["jaas"]), null);
-await updateProviderHealth(environment, "jaas", { usedPercent: 80 });
+await updateProviderHealth(environment, "jaas", { usedPercent: 76 });
 assert.equal(await selectRtcProvider(environment, "JaaS", ["jaas"]), null);
 assert.equal((await selectRtcProvider(environment, "MiroTalk", ["mirotalk"]))?.provider, "mirotalk");
 assert.equal((await selectRtcProvider(environment, "VideoSDK", ["videosdk"]))?.provider, "videosdk");
 assert.equal((await selectRtcProvider(environment, "Main", ["livekit"]))?.provider, "livekit");
 
-await updateProviderHealth(environment, "livekit", { usedPercent: 90 });
+await updateProviderHealth(environment, "livekit", { usedPercent: 70 });
 assert.equal((await selectRtcProvider(environment, "Main", ["livekit"]))?.provider, "livekit");
+assert.equal(await selectRtcProvider(environment, "LiveKit-new", ["livekit"]), null);
 
-await updateProviderHealth(environment, "livekit", { usedPercent: 95 });
+await updateProviderHealth(environment, "livekit", { usedPercent: 75 });
 assert.equal(await selectRtcProvider(environment, "Another", ["livekit"]), null);
 
 await updateProviderHealth(environment, "livekit", { usedPercent: 0, disabled: true });
 assert.equal(await selectRtcProvider(environment, "Disabled", ["livekit"]), null);
+
+const batchedEnvironment = testEnvironment();
+let batchWrites = 0;
+const batchValues = new Map<string, string>();
+batchedEnvironment.PRIVATE_ROOMS = {
+  async get(key: string, type?: string) {
+    const value = batchValues.get(key) ?? null;
+    return type === "json" && value ? JSON.parse(value) : value;
+  },
+  async put(key: string, value: string) { batchWrites += 1; batchValues.set(key, value); },
+} as unknown as KVNamespace;
+await updateProviderHealthBatch(batchedEnvironment, {
+  stream: { usedPercent: 1, disabled: false },
+  agora: { usedPercent: 2, disabled: false },
+  whereby: { usedPercent: 3, disabled: true },
+});
+assert.equal(batchWrites, 1, "shared provider telemetry must use one KV write per refresh");
+assert.equal((await rtcCapabilities(batchedEnvironment)).find((item) => item.provider === "stream")?.usedPercent, 1);
 
 console.log("Provider routing tests passed for all 11 target providers plus legacy Daily");

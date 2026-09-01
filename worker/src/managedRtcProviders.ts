@@ -1,3 +1,13 @@
+import {
+  jaasMonthlyActiveUserLimit,
+  jaasMonthlyCredentialLimit,
+} from "./providerSafety";
+
+export {
+  jaasMonthlyActiveUserLimit,
+  jaasMonthlyCredentialLimit,
+} from "./providerSafety";
+
 export type ManagedRtcProvider = "100ms" | "cometchat" | "jaas" | "mirotalk" | "videosdk";
 
 export function isManagedRtcProvider(value: string): value is ManagedRtcProvider {
@@ -40,8 +50,6 @@ type EmbedTicket =
 const encoder = new TextEncoder();
 const ticketLifetimeSeconds = 90;
 const apiTimeoutMs = 10_000;
-export const jaasMonthlyActiveUserLimit = 25;
-export const jaasMonthlyCredentialLimit = 20;
 export const jaasQuotaObjectName = "developer-plan";
 
 type JaasQuotaState = {
@@ -66,8 +74,8 @@ async function writeJaasHealth(env: Pick<ManagedRtcEnvironment, "PRIVATE_ROOMS">
 // JaaS bills overages after its 25-MAU developer allowance. Count every
 // credential issuance (not just unique MHTalk accounts) in a strongly
 // consistent Durable Object. This deliberately conservative model means a
-// credential can introduce at most one new JaaS endpoint, so stopping at 20
-// leaves five MAUs of safety margin even across devices and reinstalls.
+// credential can introduce at most one new JaaS endpoint, so stopping at 19
+// keeps usage below 80% even across devices and reinstalls.
 export class JaasQuotaGuard {
   constructor(
     private readonly state: DurableObjectState,

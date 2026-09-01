@@ -35,8 +35,19 @@ charged internally at 12,000 micro-USD per minute—the published 4K ceiling—e
 though MHTalk caps output at 1080p; this deliberately underuses the monthly
 credit. Cloudflare remains governed by Durable Object egress accounting.
 
-Every ten minutes the Worker calls `rtc_provider_health_snapshot()` and copies
-the safe projection into KV for fast routing. Administrative disablement,
-staleness and exhaustion all remove a provider from new assignments. Provider
-dashboard reconciliation remains monotonic and can only raise the effective
-usage above the internal estimate.
+Every 15 minutes the Worker calls `rtc_provider_health_snapshot()` and copies
+the safe projection into KV for fast routing. General provider snapshots share
+one KV document, while Cloudflare Realtime and JaaS keep dedicated guarded
+records. Cloudflare per-room egress samples accumulate in its Durable Object
+and reach KV only during this refresh. The baseline is therefore roughly 288
+KV writes per day instead of exceeding the 1,000-write free daily allowance.
+Administrative disablement, staleness and exhaustion all remove a provider
+from new assignments. Provider dashboard reconciliation remains monotonic and
+can only raise the effective usage above the internal estimate.
+
+The routing cache itself also fails closed when its refresh timestamp is older
+than 25 minutes (20 minutes for Cloudflare Realtime). Vendor-metered routes
+disable by 75% unless a stricter provider-specific cutoff applies: Cloudflare
+disables at 60%, and JaaS stops at 19 of 25 possible monthly endpoints (76%).
+MiroTalk is probed over HTTPS every 15 minutes and is removed at once when the
+self-hosted SFU is unreachable.
