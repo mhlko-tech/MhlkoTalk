@@ -195,7 +195,16 @@ export async function selectRtcProvider(
 
   const acceptingNewRooms = candidates.filter((item) => item.usedPercent === null || item.usedPercent < routingThresholds(item.provider).stopNewRoomsAt);
   const selected = acceptingNewRooms.find((item) => item.state === "healthy") || acceptingNewRooms[0] || null;
-  if (selected) await env.PRIVATE_ROOMS.put(stickyKey, selected.provider, { expirationTtl: stickySeconds });
+  // Sticky routing is an optimization, not a prerequisite for joining. If the
+  // account's daily KV write allowance is temporarily exhausted, keep the
+  // selected healthy provider and allow the room to open.
+  if (selected) {
+    try {
+      await env.PRIVATE_ROOMS.put(stickyKey, selected.provider, { expirationTtl: stickySeconds });
+    } catch {
+      // The next request will select from the same ordered healthy candidates.
+    }
+  }
   return selected;
 }
 

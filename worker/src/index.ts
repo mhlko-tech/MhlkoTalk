@@ -276,11 +276,16 @@ async function digest(value: string) {
 }
 async function rateLimited(request: Request, env: Env, action: string, identifier: string, maximum: number, seconds: number) {
   const ip = request.headers.get("cf-connecting-ip") || "local";
-  const key = `rate:${action}:${await digest(`${ip}:${identifier.toLowerCase()}`)}`;
-  const current = Number(await env.PRIVATE_ROOMS.get(key) || "0");
-  if (current >= maximum) return true;
-  await env.PRIVATE_ROOMS.put(key, String(current + 1), { expirationTtl: seconds });
-  return false;
+  const key = await digest(`${action}:${ip}:${identifier.toLowerCase()}`);
+  const hub = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
+  const response = await hub.fetch("https://internal/rate-limit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ key, maximum, seconds }),
+  });
+  if (!response.ok) return true;
+  const payload = await response.json() as { limited?: unknown };
+  return payload.limited === true;
 }
 async function publicAuthApi(env: Env, path: string, body: unknown) {
   return fetch(supabaseUrl(env, path), {
@@ -1612,6 +1617,24 @@ export class PresenceHub implements DurableObject {
       ledger.presence[body.subject] = { room: body.room, expiresAt: Date.now() + 2 * 60_000 };
       await this.state.storage.put("rtc-ledger", ledger);
       return json({ accepted: true });
+    }
+    if (path === "/rate-limit" && request.method === "POST") {
+      const body = await request.json() as { key: string; maximum: number; seconds: number };
+      const now = Date.now();
+      const rates = await this.state.storage.get<Record<string, { count: number; expiresAt: number }>>("rate-limits") || {};
+      for (const [key, entry] of Object.entries(rates)) {
+        if (entry.expiresAt <= now) delete rates[key];
+      }
+      const current = rates[body.key];
+      const limited = Boolean(current && current.count >= body.maximum);
+      if (!limited) {
+        rates[body.key] = {
+          count: (current?.count || 0) + 1,
+          expiresAt: current?.expiresAt || now + body.seconds * 1_000,
+        };
+      }
+      await this.state.storage.put("rate-limits", rates);
+      return json({ limited });
     }
     if (path === "/room-count" && request.method === "GET") {
       const ledger = await this.rtcLedger();
