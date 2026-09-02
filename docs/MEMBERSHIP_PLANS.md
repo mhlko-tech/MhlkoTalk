@@ -15,13 +15,12 @@ One membership for MHTalk and MVDownloader, with a verified Plus badge beside yo
 - MHTalk Plus badge on Windows and Android.
 - MHTalk camera and screen sharing up to 1080p.
 - MHTalk source-resolution recording up to 120 FPS.
-- MHTalk premium profiles, themes, frames, emojis, soundboard, invites, larger attachments, and more saved rooms.
 - Unlimited MVDownloader audio and 720p downloads.
 - Up to 10 Full HD downloads every 24 hours.
 
 **LAVA/Patreon description**
 
-Upgrade both apps with one Plus membership. Get the verified MHTalk Plus badge and the full paid MHTalk experience on Windows and Android. In MVDownloader, enjoy unlimited audio and 720p downloads, plus up to 10 Full HD downloads every 24 hours.
+Upgrade both apps with one Plus membership. Get the verified MHTalk Plus badge, camera and screen sharing up to 1080p, and source-quality screen recording up to 120 FPS on Windows and Android. In MVDownloader, enjoy unlimited audio and 720p downloads, plus up to 10 Full HD downloads every 24 hours.
 
 ### Pro — $7/month
 
@@ -32,60 +31,63 @@ The complete membership for both apps, with a verified Pro badge beside your MHT
 **Benefits**
 
 - MHTalk Pro badge on Windows and Android.
-- All paid MHTalk features included with Plus.
+- Everything included with MHTalk Plus.
+- MHTalk files up to 100 MB with seven-day retention.
+- MHTalk animated profiles, banners, themes, frames and custom app icons.
+- MHTalk custom emojis, soundboard, invite links and up to 20 saved rooms.
 - Unlimited MVDownloader video up to 1080p.
 - Unlimited high-quality MVDownloader audio.
 
 **LAVA/Patreon description**
 
-Get the verified MHTalk Pro badge and the full paid MHTalk experience on Windows and Android. In MVDownloader, unlock unlimited 1080p, 720p and high-quality audio downloads.
+Get everything in Plus, then unlock the complete MHTalk experience with the verified Pro badge, 100 MB files, longer retention, animated profiles, themes, frames, custom emojis, soundboard, invites and more saved rooms. In MVDownloader, unlock unlimited 1080p, 720p and high-quality audio downloads.
 
 ### Ultimate — $10/month
 
 **Short description**
 
-The maximum-quality MVDownloader plan, with a verified Ultimate recognition badge in MHTalk.
+Maximum MVDownloader quality with every MHTalk Pro feature and the exclusive Ultimate badge.
 
 **Benefits**
 
 - Unlimited MVDownloader video at every source quality, including 2K and 4K+.
 - Unlimited MVDownloader 1080p and 720p video.
 - Premium MVDownloader audio up to 320 kbps.
-- MHTalk Ultimate recognition badge on Windows and Android.
-- No paid MHTalk feature entitlement; MHTalk remains on the Free baseline.
+- Every MHTalk Pro feature on Windows and Android.
+- Exclusive MHTalk Ultimate badge.
 
 **LAVA/Patreon description**
 
-Unlock every MVDownloader source quality, including 2K and 4K+, with unlimited video and premium audio up to 320 kbps. Your linked MHTalk account receives the verified Ultimate recognition badge only; paid MHTalk features are not included.
+Unlock every MVDownloader source quality, including 2K and 4K+, with unlimited video and premium audio up to 320 kbps. In MHTalk, get every Pro feature with the exclusive Ultimate badge.
 
 ### Max Supporter — $15/month
 
 **Short description**
 
-All Ultimate MVDownloader benefits plus extra support for continued development and a verified Max Supporter recognition badge in MHTalk.
+Every Ultimate benefit plus extra support for continued development and the exclusive Max Supporter badge in MHTalk.
 
 **Benefits**
 
 - Everything included with Ultimate in MVDownloader.
 - Extra support for the continued development of MVDownloader.
-- MHTalk Max Supporter recognition badge on Windows and Android.
-- No paid MHTalk feature entitlement; MHTalk remains on the Free baseline.
+- Every MHTalk Pro feature on Windows and Android.
+- Exclusive MHTalk Max Supporter badge.
 
 **LAVA/Patreon description**
 
-Get every Ultimate MVDownloader benefit while giving extra support to continued development. Your linked MHTalk account receives the verified Max Supporter recognition badge only; paid MHTalk features are not included.
+Get every Ultimate MVDownloader benefit while giving extra support to continued development. In MHTalk, get every Pro feature with the exclusive Max Supporter badge.
 
 ## MHTalk entitlement rule
 
-All four tiers are public monthly memberships shared with MVDownloader. Inside MHTalk, only Plus and Pro unlock the paid feature set. Ultimate and Max Supporter remain Free-feature accounts with their matching verified recognition badge.
+All four tiers are public monthly memberships shared with MVDownloader. Inside MHTalk, Plus unlocks 1080p camera/screen sharing and source-quality recording. Pro adds the complete customization, file and room feature set. Ultimate and Max Supporter inherit every Pro feature; only their exclusive badge differs.
 
 ## Internal IDs
 
 | Display name | Internal plan ID | MHTalk feature entitlement | MHTalk badge |
 | --- | --- | --- | --- |
-| Plus | `plus` | Paid | Plus |
-| Pro | `pro` | Paid | Pro |
-| Ultimate | `ultimate` | Free baseline | Ultimate |
-| Max Supporter | `max_supporter` | Free baseline | Max Supporter |
+| Plus | `plus` | HD media | Plus |
+| Pro | `pro` | Complete | Pro |
+| Ultimate | `ultimate` | Complete (same as Pro) | Ultimate |
+| Max Supporter | `max_supporter` | Complete (same as Pro) | Max Supporter |
 
 All four IDs are valid inputs to the public LAVA checkout. Every Patreon mapping requires its exact server-configured tier ID; pledge amount is only a defensive fallback.

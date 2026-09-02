@@ -135,6 +135,11 @@ const freeSubscriptionEntitlements = {
     customInvites: false,
     savedRoomLimit: 3,
 } as const;
+const plusSubscriptionEntitlements = {
+    ...freeSubscriptionEntitlements,
+    maxCameraQuality: "high",
+    maxScreenShareQuality: "high",
+} as const;
 const premiumSubscriptionEntitlements = {
     maxCameraQuality: "high",
     maxScreenShareQuality: "high",
@@ -152,10 +157,10 @@ const premiumSubscriptionEntitlements = {
 } as const;
 const subscriptionEntitlements = {
   free: freeSubscriptionEntitlements,
-  plus: premiumSubscriptionEntitlements,
+  plus: plusSubscriptionEntitlements,
   pro: premiumSubscriptionEntitlements,
-  ultimate: freeSubscriptionEntitlements,
-  max_supporter: freeSubscriptionEntitlements,
+  ultimate: premiumSubscriptionEntitlements,
+  max_supporter: premiumSubscriptionEntitlements,
 } as const;
 function subscriptionFor(profile: Profile | null) {
   const expiresAt = profile?.subscription_expires_at || undefined;

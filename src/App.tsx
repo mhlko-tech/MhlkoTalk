@@ -1911,8 +1911,8 @@ export function App() {
                 onClick={() => setMembershipPlan("plus")}
               >
                 <span className="membership-plan-top"><strong>Plus</strong><b>$5 <small>/ month</small></b></span>
-                <span className="membership-plan-copy">The balanced plan for both apps.</span>
-                <span className="membership-plan-benefits">✓ MHTalk Plus badge: 1080p sharing, studio recording and personalization</span>
+                <span className="membership-plan-copy">HD media essentials for MHTalk, plus higher MVDownloader limits.</span>
+                <span className="membership-plan-benefits">✓ MHTalk Plus badge, 1080p camera/screen sharing and source-quality recording up to 120 FPS</span>
                 <span className="membership-plan-benefits">✓ MVDownloader: unlimited audio and 720p, plus 10 Full HD downloads every 24 hours</span>
               </button>
               <button
@@ -1922,8 +1922,8 @@ export function App() {
                 onClick={() => setMembershipPlan("pro")}
               >
                 <span className="membership-plan-top"><strong>Pro</strong><b>$7 <small>/ month</small></b></span>
-                <span className="membership-plan-copy">The full paid MHTalk experience with unlimited Full HD downloads.</span>
-                <span className="membership-plan-benefits">✓ MHTalk Pro badge and all paid features on Windows and Android</span>
+                <span className="membership-plan-copy">The complete MHTalk experience with unlimited Full HD downloads.</span>
+                <span className="membership-plan-benefits">✓ Everything in Plus, plus 100 MB files, 7-day retention, profiles, themes, frames, emojis, soundboard and custom invites</span>
                 <span className="membership-plan-benefits">✓ MVDownloader: unlimited 1080p, 720p and high-quality audio</span>
               </button>
               <button
@@ -1933,9 +1933,9 @@ export function App() {
                 onClick={() => setMembershipPlan("ultimate")}
               >
                 <span className="membership-plan-top"><strong>Ultimate</strong><b>$10 <small>/ month</small></b></span>
-                <span className="membership-plan-copy">Maximum MVDownloader quality with an Ultimate recognition badge in MHTalk.</span>
+                <span className="membership-plan-copy">Maximum MVDownloader quality with the complete MHTalk experience.</span>
                 <span className="membership-plan-benefits">✓ MVDownloader: unlimited 2K, 4K and higher source-quality video</span>
-                <span className="membership-plan-benefits">✓ MHTalk Ultimate badge only; paid MHTalk features are not included</span>
+                <span className="membership-plan-benefits">✓ Every MHTalk Pro feature with the exclusive Ultimate badge</span>
               </button>
               <button
                 type="button"
@@ -1946,10 +1946,10 @@ export function App() {
                 <span className="membership-plan-top"><strong>Max Supporter</strong><b>$15 <small>/ month</small></b></span>
                 <span className="membership-plan-copy">All Ultimate MVDownloader benefits plus extra support for the project.</span>
                 <span className="membership-plan-benefits">✓ MVDownloader: everything included with Ultimate</span>
-                <span className="membership-plan-benefits">✓ MHTalk Max Supporter badge only; paid MHTalk features are not included</span>
+                <span className="membership-plan-benefits">✓ Every MHTalk Pro feature with the exclusive Max Supporter badge</span>
               </button>
             </div>
-            <p className="support-tier-note">All four plans are shared with MVDownloader. In MHTalk, Plus and Pro unlock paid features; Ultimate and Max Supporter add their matching recognition badge only.</p>
+            <p className="support-tier-note">Plus focuses on HD sharing and recording. Pro unlocks the rest of MHTalk. Ultimate and Max Supporter include every Pro feature with their own exclusive badge.</p>
             {membershipMessage && <div className="support-membership-status">{membershipMessage}</div>}
             <div className="support-membership-link">
               <label htmlFor="membership-activation-code">Already have a shared membership?</label>
@@ -2190,7 +2190,7 @@ export function App() {
                 <li>Camera and screen sharing up to {isPaidSubscription(subscription.tier) ? "1080p" : "720p"}</li>
                 <li>Screen recording {isPaidSubscription(subscription.tier) ? "at source resolution and up to 120 FPS" : "up to 720p at 60 FPS"}</li>
                 <li>Files up to {formatAttachmentLimit(subscription.entitlements.maxAttachmentBytes)}</li>
-                {isPaidSubscription(subscription.tier) && (
+                {subscription.entitlements.animatedProfile && (
                   <>
                     <li>Animated profiles, banners, themes and profile frames</li>
                     <li>Custom emojis, stickers, soundboard and invite links</li>

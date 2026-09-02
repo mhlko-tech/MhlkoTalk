@@ -36,7 +36,7 @@ Run the pinned Python unit suite and `pip-audit==2.10.1` against `requirements_b
 4. Purchase all four tiers independently through LAVA test mode; verify canonical prices, webhook-driven activation, renewal, and expiry.
 5. Replay each webhook and confirm idempotency; alter one signature byte and confirm rejection.
 6. Cancel/refund/revoke and confirm the entitlement becomes Free after authoritative status changes.
-7. Verify Ultimate and Max Supporter show distinct badges but receive the Free MHTalk entitlement object.
+7. Verify Ultimate and Max Supporter show distinct badges and receive the same complete MHTalk entitlement object as Pro.
 8. Attempt to forge a participant tier from Windows and Android; verify viewers render the server tier.
 9. Exercise expired OAuth state, reused state, invalid campaign, invalid tier, malformed UUID, 51 badge IDs, oversized body, and rate-limit paths.
 10. Confirm logs contain no bearer token, access token, refresh token, client secret, webhook secret, email beyond operational necessity, or full provider payload.

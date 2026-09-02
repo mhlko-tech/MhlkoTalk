@@ -18,8 +18,8 @@ This does not guarantee 100% security.
 
 ## Principal results
 
-- Public checkout is restricted to `Plus` and `Pro`.
-- `Ultimate` and `Max Supporter` remain recognition badges only. They grant no paid MHTalk product entitlement.
+- Public checkout is restricted to the four canonical plans and prices.
+- Plus grants HD media entitlements. Pro, Ultimate, and Max Supporter grant the complete MHTalk feature set while preserving distinct verified badges.
 - OAuth access and refresh tokens are no longer forwarded through a custom URI.
 - Patreon OAuth and webhook verification moved to the server-owned gateway.
 - Public badges are returned by an authenticated, rate-limited server endpoint and override client-supplied participant metadata.

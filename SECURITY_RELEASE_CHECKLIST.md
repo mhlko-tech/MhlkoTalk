@@ -25,7 +25,7 @@
 ## Functional policy
 
 - [x] Plus, Pro, Ultimate, and Max Supporter are public purchase plans with canonical prices.
-- [x] Plus and Pro show their matching verified badge beside the MHTalk name.
-- [x] Ultimate and Max Supporter keep their own badge and grant no paid MHTalk feature.
+- [x] All four tiers show their matching verified badge beside the MHTalk name.
+- [x] Plus grants HD media entitlements; Pro, Ultimate, and Max Supporter grant the complete MHTalk entitlement set.
 - [x] Windows and Android use the same server-owned tier names and entitlement mapping.
 - [x] No redirect, client amount, local profile, or participant payload can independently activate membership.

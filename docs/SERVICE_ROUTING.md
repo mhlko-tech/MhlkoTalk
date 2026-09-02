@@ -76,11 +76,11 @@ reach either client.
 - Free: voice, optional microphone noise cancellation, camera/screen sharing up
   to 720p, local screen recording up to 720p/60 FPS, 20 MB attachments, and
   every core safety feature.
-- Plus and Pro: camera/screen sharing up to 1080p, local recording at source resolution
-  and up to 120 FPS when the device can sustain it, 100 MB attachments, and
-  cosmetic profile, theme, emoji, soundboard and invite entitlements. Each plan
-  keeps its verified name badge. Ultimate and Max Supporter retain distinct
-  recognition badges but grant no paid MHTalk feature.
+- Plus: camera/screen sharing up to 1080p and local recording at source resolution
+  and up to 120 FPS when the device can sustain it.
+- Pro: every Plus media feature plus 100 MB attachments, seven-day retention,
+  cosmetic profile, theme, emoji, soundboard, invite and expanded-room entitlements.
+- Ultimate and Max Supporter: every Pro entitlement with their own exclusive badge.
 
 The database owns `subscription_tier` and `subscription_expires_at`. Only the
 service role can update them. Clients clamp quality and file sizes locally for a

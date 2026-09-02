@@ -35,7 +35,6 @@ import {
 } from "../core/serviceRouting";
 import {
   formatAttachmentLimit,
-  isPaidSubscription,
   limitMediaQuality,
 } from "../core/subscription";
 import {
@@ -1134,7 +1133,7 @@ export class RoomSession {
     const maximum = this.routing.subscription.entitlements.maxAttachmentBytes;
     if (file.size > maximum) {
       throw new Error(
-        `${isPaidSubscription(this.routing.subscription.tier) ? "Plus and Pro members" : "Free and supporter-badge accounts"} can send files up to ${formatAttachmentLimit(maximum)}.`,
+        `Your current plan can send files up to ${formatAttachmentLimit(maximum)}.`,
       );
     }
     const id = crypto.randomUUID();
@@ -1241,7 +1240,7 @@ export class RoomSession {
     const maximum = this.routing.subscription.entitlements.maxAttachmentBytes;
     if (file.size > maximum) {
       throw new Error(
-        `${isPaidSubscription(this.routing.subscription.tier) ? "Plus and Pro members" : "Free and supporter-badge accounts"} can send files up to ${formatAttachmentLimit(maximum)}.`,
+        `Your current plan can send files up to ${formatAttachmentLimit(maximum)}.`,
       );
     }
     const ticket = await this.attachmentApi<{

@@ -47,6 +47,12 @@ const freeEntitlements: SubscriptionEntitlements = {
     savedRoomLimit: 3,
 };
 
+const plusEntitlements: SubscriptionEntitlements = {
+    ...freeEntitlements,
+    maxCameraQuality: "high",
+    maxScreenShareQuality: "high",
+};
+
 const premiumEntitlements: SubscriptionEntitlements = {
     maxCameraQuality: "high",
     maxScreenShareQuality: "high",
@@ -65,12 +71,10 @@ const premiumEntitlements: SubscriptionEntitlements = {
 
 export const subscriptionEntitlements: Record<SubscriptionTier, SubscriptionEntitlements> = {
   free: freeEntitlements,
-  plus: premiumEntitlements,
+  plus: plusEntitlements,
   pro: premiumEntitlements,
-  // Supporter tiers are recognition badges only inside MHTalk. They do not
-  // grant any MHTalk product entitlement.
-  ultimate: freeEntitlements,
-  max_supporter: freeEntitlements,
+  ultimate: premiumEntitlements,
+  max_supporter: premiumEntitlements,
 };
 
 export const subscriptionLabels: Record<SubscriptionTier, string> = {
@@ -82,9 +86,11 @@ export const subscriptionLabels: Record<SubscriptionTier, string> = {
 };
 
 export const hasMembershipBadge = (tier: SubscriptionTier) => tier !== "free";
-export const isPaidSubscription = (tier: SubscriptionTier) => tier === "plus" || tier === "pro";
-export const isPaidSubscriptionValue = (tier: unknown): tier is "plus" | "pro" =>
-  tier === "plus" || tier === "pro";
+export const isPaidSubscription = (tier: SubscriptionTier) => tier !== "free";
+export const isPaidSubscriptionValue = (
+  tier: unknown,
+): tier is "plus" | "pro" | "ultimate" | "max_supporter" =>
+  tier === "plus" || tier === "pro" || tier === "ultimate" || tier === "max_supporter";
 
 const isKnownSubscriptionTierValue = (tier: unknown): tier is SubscriptionTier =>
   tier === "free" || tier === "plus" || tier === "pro" || tier === "ultimate" || tier === "max_supporter";
