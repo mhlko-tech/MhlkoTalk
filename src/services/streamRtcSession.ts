@@ -175,6 +175,44 @@ export class StreamRtcSession {
     );
   }
 
+  async waitForParticipantVideo(
+    identity: string,
+    source: "camera" | "screen",
+    timeoutMs = 6_000,
+  ): Promise<MediaStream | undefined> {
+    const call = this.callInstance;
+    if (!call) return undefined;
+    const streamFor = (participants: StreamVideoParticipant[]) => {
+      const participant = participants.find((item) => item.userId === identity);
+      return source === "camera"
+        ? participant?.videoStream
+        : participant?.screenShareStream;
+    };
+    const current = streamFor(call.state.participants);
+    if (current?.getVideoTracks().some((track) => track.readyState === "live")) {
+      return current;
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      let subscription: { unsubscribe(): void } | undefined;
+      const finish = (stream?: MediaStream) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        subscription?.unsubscribe();
+        resolve(stream);
+      };
+      const timer = window.setTimeout(() => finish(), timeoutMs);
+      subscription = call.state.participants$.subscribe((participants) => {
+        const stream = streamFor(participants);
+        if (stream?.getVideoTracks().some((track) => track.readyState === "live")) {
+          finish(stream);
+        }
+      });
+      if (settled) subscription.unsubscribe();
+    });
+  }
+
   async sendCustomEvent(payload: Record<string, unknown>) {
     await this.callInstance?.sendCustomEvent(payload);
   }

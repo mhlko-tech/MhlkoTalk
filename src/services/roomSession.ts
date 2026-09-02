@@ -854,15 +854,34 @@ export class RoomSession {
     if (this.streamRtc.call) {
       const participant = this.streamRtc.participant(identity);
       if (!participant) return false;
+      const published = source === "camera"
+        ? streamPublishes(participant, StreamTrackType.VIDEO)
+        : streamPublishes(participant, StreamTrackType.SCREEN_SHARE);
+      if (!published) return false;
       const maximum = this.getParticipantMaximumQuality(identity, source);
       const quality = capQuality(requestedQuality, maximum);
       this.selectedRemoteQuality.set(`${identity}:${source}`, quality);
       this.watchedMedia.add(`${identity}:${source}`);
       this.streamRtc.setParticipantVideoQuality(identity, quality);
-      this.syncStreamParticipants(this.streamRtc.participants);
-      return source === "camera"
-        ? streamPublishes(participant, StreamTrackType.VIDEO)
-        : streamPublishes(participant, StreamTrackType.SCREEN_SHARE);
+      const stream = await this.streamRtc.waitForParticipantVideo(identity, source);
+      if (!this.watchedMedia.has(`${identity}:${source}`)) return false;
+      if (!stream) {
+        this.watchedMedia.delete(`${identity}:${source}`);
+        const stillWatching = (["camera", "screen"] as const).some((item) =>
+          this.watchedMedia.has(`${identity}:${item}`),
+        );
+        if (!stillWatching) this.streamRtc.setParticipantVideoQuality(identity);
+        return false;
+      }
+      const refreshed = this.streamRtc.participant(identity);
+      this.attachStreamVideo(
+        stream,
+        `stream-${source}-${refreshed?.sessionId ?? participant.sessionId}`,
+        source === "camera" ? "Camera" : "Screen share",
+        identity,
+        source,
+      );
+      return true;
     }
     const participant = this.room?.remoteParticipants.get(identity);
     if (!participant) return false;
@@ -2763,7 +2782,10 @@ export class RoomSession {
     video.autoplay = true;
     video.playsInline = true;
     video.srcObject = stream;
-    video.muted = participantIdentity === "local";
+    // Stream publishes voice and screen audio as separate streams. Keeping the
+    // video element muted avoids desktop WebView/browser autoplay rejection;
+    // sound continues through attachStreamAudio with the user's volume rules.
+    video.muted = true;
     stream.getVideoTracks().forEach((track) => {
       track.addEventListener("ended", () => this.detachMedia(id), { once: true });
     });
