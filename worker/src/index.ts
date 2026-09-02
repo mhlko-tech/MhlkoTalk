@@ -1791,6 +1791,15 @@ export default {
         body: JSON.stringify({ planId }),
       });
       if (!payload) return json({ error: "Membership service is temporarily unavailable. Please try again." }, 503);
+      if (response.ok && typeof payload.subscriptionUrl === "string") {
+        try {
+          const subscriptionUrl = new URL(payload.subscriptionUrl);
+          subscriptionUrl.searchParams.set("app", "mhtalk");
+          payload.subscriptionUrl = subscriptionUrl.toString();
+        } catch {
+          return json({ error: "Membership service returned an invalid checkout link." }, 503);
+        }
+      }
       if (response.ok && typeof payload.desktopToken === "string") {
         const fingerprint = await digest(`lava:${payload.desktopToken}`);
         await env.PRIVATE_ROOMS.put(`membership:lava:owner:${fingerprint}`, auth.id);
