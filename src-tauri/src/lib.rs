@@ -1,6 +1,8 @@
 use tauri::Manager;
 
 const AUTH_VAULT_SERVICE: &str = "MHTalk";
+const CONNECTION_TOKEN_ENDPOINT: &str =
+    "https://mhtalk-token-service.mhlkotalk.workers.dev/livekit/token";
 const AUTH_CHUNK_MANIFEST_PREFIX: &str = "mhtalk-chunks:v1:";
 // Windows Credential Manager allows a maximum 2560-byte credential blob.
 // keyring stores passwords as UTF-16, so stay comfortably below that limit.
@@ -182,6 +184,59 @@ fn open_report_bug() -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConnectionServiceResponse {
+    status: u16,
+    body: String,
+}
+
+// Token acquisition uses native networking so a broken WebView2 cache,
+// extension, or per-WebView network policy cannot prevent room connections.
+// The destination is fixed to MHTalk's service to avoid exposing a generic
+// native HTTP proxy to renderer content.
+#[tauri::command]
+async fn fetch_connection_token(
+    request_body: serde_json::Value,
+    access_token: Option<String>,
+) -> Result<ConnectionServiceResponse, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|_| "Could not initialize the native connection service".to_string())?;
+    let mut request = client.post(CONNECTION_TOKEN_ENDPOINT).json(&request_body);
+    if let Some(token) = access_token.filter(|value| !value.is_empty()) {
+        if token.len() > 16_384 {
+            return Err("The stored account session is invalid".to_string());
+        }
+        request = request.bearer_auth(token);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|_| "The native connection service could not be reached".to_string())?;
+    let status = response.status().as_u16();
+    if response
+        .content_length()
+        .is_some_and(|length| length > 131_072)
+    {
+        return Err("The connection service returned an invalid response".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "The connection service response was interrupted".to_string())?;
+    if bytes.len() > 131_072 {
+        return Err("The connection service returned an invalid response".to_string());
+    }
+    Ok(ConnectionServiceResponse {
+        status,
+        body: String::from_utf8(bytes.to_vec())
+            .map_err(|_| "The connection service returned invalid text".to_string())?,
+    })
+}
+
 #[tauri::command]
 fn auth_secret_get(key: String) -> Result<Option<String>, String> {
     let Some(value) = auth_raw_get(&key)? else {
@@ -338,6 +393,7 @@ pub fn run() {
             save_attachment,
             read_dropped_file,
             open_report_bug,
+            fetch_connection_token,
             apply_window_icon,
             switch_input_language,
             auth_secret_get,

@@ -9,6 +9,7 @@ import {
   Track,
   VideoPresets,
 } from "livekit-client";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   ChatListener,
   ChatMessage,
@@ -2550,7 +2551,7 @@ export class RoomSession {
     supportedRtcProviders = this.rtcAdapters.supportedProviders(),
   ) {
     const accountToken = accountSession.getAccessToken();
-    const body = JSON.stringify({
+    const requestBody = {
       roomName,
       inviteCode: this.inviteCode,
       clientPlatform: "windows",
@@ -2558,7 +2559,8 @@ export class RoomSession {
       supportedRtcProviders,
       supportedMessagingProviders,
       supportedFileProviders,
-    });
+    };
+    const body = JSON.stringify(requestBody);
     let response: Response | null = null;
     let lastNetworkError: unknown = null;
 
@@ -2575,15 +2577,26 @@ export class RoomSession {
       const controller = new AbortController();
       const timer = window.setTimeout(() => controller.abort(), 8_000);
       try {
-        response = await fetch(liveKitTokenEndpoint, {
-          method: "POST",
-          signal: controller.signal,
-          headers: {
-            "content-type": "application/json",
-            ...(accountToken ? { authorization: `Bearer ${accountToken}` } : {}),
-          },
-          body,
-        });
+        if (isTauri()) {
+          const native = await invoke<{ status: number; body: string }>("fetch_connection_token", {
+            requestBody,
+            accessToken: accountToken || null,
+          });
+          response = new Response(native.body, {
+            status: native.status,
+            headers: { "content-type": "application/json" },
+          });
+        } else {
+          response = await fetch(liveKitTokenEndpoint, {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              "content-type": "application/json",
+              ...(accountToken ? { authorization: `Bearer ${accountToken}` } : {}),
+            },
+            body,
+          });
+        }
       } catch (error) {
         lastNetworkError = error;
       } finally {
