@@ -25,6 +25,8 @@ assert.equal(evaluateCloudflareRtcUsageHealth(fresh(cloudflareRtcDisableAtPercen
 
 const durableValues = new Map<string, unknown>();
 let kvWrites = 0;
+let healthWrites = 0;
+let providerHealth: Record<string, { usedPercent: number; disabled: boolean; updatedAt: string }> = {};
 const usageState = {
   storage: {
     async get<T>(key: string) { return durableValues.get(key) as T | undefined; },
@@ -37,6 +39,30 @@ const usage = new CloudflareRtcUsage(usageState, {
     async get() { return null; },
     async put() { kvWrites += 1; },
   } as unknown as KVNamespace,
+  PRESENCE: {
+    idFromName() { return {} as DurableObjectId; },
+    get() {
+      return {
+        async fetch(_input: RequestInfo | URL, init?: RequestInit) {
+          if ((init?.method || "GET") === "POST") {
+            healthWrites += 1;
+            const updates = (JSON.parse(String(init?.body || "{}")) as {
+              updates?: Record<string, { usedPercent?: number; disabled?: boolean }>;
+            }).updates || {};
+            for (const [provider, update] of Object.entries(updates)) {
+              const current = providerHealth[provider];
+              providerHealth[provider] = {
+                usedPercent: update.usedPercent ?? current?.usedPercent ?? 0,
+                disabled: update.disabled ?? current?.disabled ?? false,
+                updatedAt: new Date().toISOString(),
+              };
+            }
+          }
+          return Response.json(providerHealth);
+        },
+      } as unknown as DurableObjectStub;
+    },
+  } as unknown as DurableObjectNamespace,
 } as never);
 assert.equal((await usage.fetch(new Request("https://internal/usage/add", {
   method: "POST",
@@ -44,6 +70,7 @@ assert.equal((await usage.fetch(new Request("https://internal/usage/add", {
 }))).status, 200);
 assert.equal(kvWrites, 0, "per-room accounting must not spend a KV write");
 assert.equal((await usage.fetch(new Request("https://internal/usage/refresh", { method: "POST" }))).status, 200);
-assert.equal(kvWrites, 1, "scheduled accounting refresh writes one guarded KV record");
+assert.equal(kvWrites, 0, "scheduled accounting refresh must not spend KV writes");
+assert.equal(healthWrites, 1, "scheduled accounting refresh writes one Durable Object health record");
 
 console.log("Cloudflare Realtime usage guard tests passed: 9");

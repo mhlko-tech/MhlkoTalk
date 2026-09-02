@@ -12,12 +12,14 @@ import {
   type MessagingProviderId,
 } from "../../src/core/serviceRouting";
 import {
+  getProviderHealth,
   isRtcProvider,
   parseRtcProviders,
   rtcCapabilities,
   selectRtcProvider,
   updateProviderHealth,
   updateProviderHealthBatch,
+  type ProviderHealth,
   type RtcProviderId,
 } from "./providerRouting";
 import { generateTencentUserSig } from "./tencentUserSig";
@@ -191,7 +193,11 @@ function serviceRouting(env: Env, profile: Profile | null, provider: RtcProvider
   } as const;
 }
 async function serviceCapabilities(env: Env) {
-  const rtc = await rtcCapabilities(env);
+  let rtc = await rtcCapabilities(env);
+  if (!rtc.some((item) => item.ready)) {
+    await refreshProviderHealthIfNeeded(env);
+    rtc = await rtcCapabilities(env);
+  }
   const activeRtc = rtc.find((item) => item.ready)?.provider || null;
   const activeRouting = activeRtc ? routingForRtcProvider(activeRtc) : null;
   const alerts = rtc
@@ -882,16 +888,11 @@ async function syncProviderHealth(
     // the administrative enable switch, but must not overwrite its fresher,
     // fail-closed usage telemetry with a stale provider snapshot.
     if (provider === "cloudflare-realtime" || provider === "jaas") {
-      const key = `routing:health:rtc:${provider}`;
-      const current = await env.PRIVATE_ROOMS.get(key, "json") as {
-        usedPercent?: number;
-        disabled?: boolean;
-        updatedAt?: string;
-      } | null;
+      const current = await getProviderHealth(env, provider);
       const disabled = override?.disabled ?? !item.enabled;
-      if (!current || current.disabled !== disabled) {
+      if (current.disabled !== disabled) {
         await updateProviderHealth(env, provider, {
-          usedPercent: current ? Number(current.usedPercent) || 0 : provider === "cloudflare-realtime" ? 60 : 76,
+          usedPercent: Number(current.usedPercent) || 0,
           disabled,
         });
       }
@@ -903,6 +904,28 @@ async function syncProviderHealth(
     };
   }));
   await updateProviderHealthBatch(env, { ...sharedUpdates, ...overrides });
+}
+
+async function refreshProviderHealth(env: Env) {
+  const usage = env.CLOUDFLARE_RTC_USAGE.get(
+    env.CLOUDFLARE_RTC_USAGE.idFromName("account-egress"),
+  );
+  const jaasQuota = env.JAAS_QUOTA.get(env.JAAS_QUOTA.idFromName(jaasQuotaObjectName));
+  const [, , mirotalkUsedPercent] = await Promise.all([
+    usage.fetch("https://internal/usage/refresh", { method: "POST" }),
+    jaasQuota.fetch("https://internal/refresh", { method: "POST" }),
+    probeMiroTalkHealth(env),
+  ]);
+  await syncProviderHealth(env, { mirotalk: { usedPercent: mirotalkUsedPercent } });
+}
+
+async function refreshProviderHealthIfNeeded(env: Env) {
+  const registry = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
+  const lease = await registry.fetch("https://presence.internal/provider-health/refresh-lease", {
+    method: "POST",
+  });
+  if (!lease.ok || !(await lease.json() as { granted?: boolean }).granted) return;
+  await refreshProviderHealth(env);
 }
 
 async function applyProviderSafetyPolicies(env: Env) {
@@ -1661,6 +1684,42 @@ export class PresenceHub implements DurableObject {
       await this.state.storage.put("rtc-ledger", ledger);
       return json({ accepted: true });
     }
+    if (path === "/provider-health" && request.method === "GET") {
+      const health = await this.state.storage.get<Partial<Record<RtcProviderId, ProviderHealth>>>("provider-health:v1") || {};
+      return json(health);
+    }
+    if (path === "/provider-health" && request.method === "POST") {
+      const body = await request.json().catch(() => null) as {
+        updates?: Partial<Record<RtcProviderId, { usedPercent?: unknown; disabled?: unknown }>>;
+      } | null;
+      if (!body?.updates || typeof body.updates !== "object") {
+        return json({ error: "Invalid provider health update" }, 400);
+      }
+      const health = await this.state.storage.get<Partial<Record<RtcProviderId, ProviderHealth>>>("provider-health:v1") || {};
+      const updatedAt = new Date().toISOString();
+      for (const [providerValue, update] of Object.entries(body.updates)) {
+        if (!isRtcProvider(providerValue) || !update || typeof update !== "object") continue;
+        const provider = providerValue as RtcProviderId;
+        const current = health[provider];
+        const requestedUsage = update.usedPercent;
+        health[provider] = {
+          usedPercent: typeof requestedUsage === "number" && Number.isFinite(requestedUsage)
+            ? Math.min(100, Math.max(0, requestedUsage))
+            : Math.min(100, Math.max(0, Number(current?.usedPercent) || 0)),
+          disabled: typeof update.disabled === "boolean" ? update.disabled : current?.disabled === true,
+          updatedAt,
+        };
+      }
+      await this.state.storage.put("provider-health:v1", health);
+      return json(health);
+    }
+    if (path === "/provider-health/refresh-lease" && request.method === "POST") {
+      const now = Date.now();
+      const lastAttempt = await this.state.storage.get<number>("provider-health-refresh-at") || 0;
+      if (now - lastAttempt < 60_000) return json({ granted: false });
+      await this.state.storage.put("provider-health-refresh-at", now);
+      return json({ granted: true });
+    }
     if (path === "/private-room/create" && request.method === "POST") {
       const body = await request.json() as { roomName?: string; invite?: string };
       if (!body.roomName || !body.invite) return json({ error: "Invalid private room" }, 400);
@@ -2062,6 +2121,10 @@ export default {
       ? [...new Set(body.excludedRtcProviders.map((value) => String(value).toLowerCase()).filter(isRtcProvider))]
       : [];
     let selected = await selectRtcProvider(env, roomName, supportedProviders, excludedProviders);
+    if (!selected) {
+      await refreshProviderHealthIfNeeded(env);
+      selected = await selectRtcProvider(env, roomName, supportedProviders, excludedProviders);
+    }
     let providerToken = "";
     let providerUrl: string | undefined;
     let providerIdentity: string | undefined;
@@ -2162,18 +2225,7 @@ export default {
     }
   },
   async scheduled(_controller: ScheduledController, env: Env) {
-    const usage = env.CLOUDFLARE_RTC_USAGE.get(
-      env.CLOUDFLARE_RTC_USAGE.idFromName("account-egress"),
-    );
-    const jaasQuota = env.JAAS_QUOTA.get(env.JAAS_QUOTA.idFromName(jaasQuotaObjectName));
-    // Refresh dedicated quota state before applying shared administrative
-    // switches so stale provider snapshots cannot replace authoritative usage.
-    const [, , mirotalkUsedPercent] = await Promise.all([
-      usage.fetch("https://internal/usage/refresh", { method: "POST" }),
-      jaasQuota.fetch("https://internal/refresh", { method: "POST" }),
-      probeMiroTalkHealth(env),
-    ]);
-    await syncProviderHealth(env, { mirotalk: { usedPercent: mirotalkUsedPercent } });
+    await refreshProviderHealth(env);
     await cleanupExpiredAttachments(env);
   },
 };

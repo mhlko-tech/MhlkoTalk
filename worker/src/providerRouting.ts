@@ -10,6 +10,7 @@ export type { RtcProviderId } from "./rtcProviderCatalog";
 
 export interface RoutingEnvironment {
   PRIVATE_ROOMS: KVNamespace;
+  PRESENCE: DurableObjectNamespace;
   RTC_PROVIDER_ORDER?: string;
   LIVEKIT_URL: string;
   LIVEKIT_API_KEY: string;
@@ -65,9 +66,23 @@ const defaultOrder: RtcProviderId[] = [...targetRtcProviders];
 const stickySeconds = 2 * 60 * 60;
 const cloudflareHealthMaxAgeMs = 20 * 60 * 1000;
 const providerHealthMaxAgeMs = 25 * 60 * 1000;
-const sharedHealthKey = "routing:health:rtc:shared";
+const providerHealthStoreUrl = "https://presence.internal/provider-health";
 
 type SharedProviderHealth = Partial<Record<RtcProviderId, ProviderHealth>>;
+type ProviderHealthEnvironment = Pick<RoutingEnvironment, "PRESENCE">;
+
+function providerHealthStore(env: ProviderHealthEnvironment) {
+  return env.PRESENCE.get(env.PRESENCE.idFromName("global"));
+}
+
+async function providerHealthSnapshot(env: ProviderHealthEnvironment): Promise<SharedProviderHealth> {
+  const response = await providerHealthStore(env).fetch(providerHealthStoreUrl);
+  if (!response.ok) return {};
+  const value = await response.json().catch(() => null) as unknown;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as SharedProviderHealth
+    : {};
+}
 
 function healthIsStale(provider: RtcProviderId, health: ProviderHealth) {
   const updatedAt = Date.parse(health.updatedAt);
@@ -108,13 +123,8 @@ function adapterReady(provider: RtcProviderId) {
   return knownRtcProviders.includes(provider);
 }
 
-async function providerHealth(env: RoutingEnvironment, provider: RtcProviderId): Promise<ProviderHealth> {
-  const dedicated = provider === "cloudflare-realtime" || provider === "jaas";
-  const shared = dedicated
-    ? null
-    : await env.PRIVATE_ROOMS.get(sharedHealthKey, "json") as SharedProviderHealth | null;
-  const stored = shared?.[provider] ||
-    await env.PRIVATE_ROOMS.get(`routing:health:rtc:${provider}`, "json") as Partial<ProviderHealth> | null;
+export async function getProviderHealth(env: ProviderHealthEnvironment, provider: RtcProviderId): Promise<ProviderHealth> {
+  const stored = (await providerHealthSnapshot(env))[provider];
   return {
     usedPercent: Math.min(100, Math.max(0, Number(stored?.usedPercent) || 0)),
     disabled: stored?.disabled === true,
@@ -123,20 +133,12 @@ async function providerHealth(env: RoutingEnvironment, provider: RtcProviderId):
 }
 
 export async function rtcCapabilities(env: RoutingEnvironment): Promise<ProviderCapability[]> {
-  // Read the shared snapshot once per request. The previous implementation
-  // fetched the same KV key once for every provider, which multiplied account
-  // KV usage whenever a client requested capabilities or joined a room.
-  const [shared, cloudflare, jaas] = await Promise.all([
-    env.PRIVATE_ROOMS.get(sharedHealthKey, "json") as Promise<SharedProviderHealth | null>,
-    env.PRIVATE_ROOMS.get("routing:health:rtc:cloudflare-realtime", "json") as Promise<Partial<ProviderHealth> | null>,
-    env.PRIVATE_ROOMS.get("routing:health:rtc:jaas", "json") as Promise<Partial<ProviderHealth> | null>,
-  ]);
+  // Health changes frequently and must remain writable even if the account's
+  // daily KV allowance is exhausted. The existing global Durable Object gives
+  // us one strongly consistent snapshot without spending KV operations.
+  const shared = await providerHealthSnapshot(env);
   const healthFor = (provider: RtcProviderId): ProviderHealth => {
-    const stored = provider === "cloudflare-realtime"
-      ? cloudflare
-      : provider === "jaas"
-        ? jaas
-        : shared?.[provider];
+    const stored = shared[provider];
     return {
       usedPercent: Math.min(100, Math.max(0, Number(stored?.usedPercent) || 0)),
       disabled: stored?.disabled === true,
@@ -191,7 +193,12 @@ export async function selectRtcProvider(
   // Versioned so the LiveKit-parity rollout cannot leave updated Android and
   // Windows clients split across a previous Stream-sticky room.
   const stickyKey = `routing:v2:room:rtc:${roomName}`;
-  const sticky = await env.PRIVATE_ROOMS.get(stickyKey);
+  let sticky: string | null = null;
+  try {
+    sticky = await env.PRIVATE_ROOMS.get(stickyKey);
+  } catch {
+    // A KV allowance outage must not prevent deterministic provider routing.
+  }
   const current = candidates.find((item) => item.provider === sticky);
   if (current) return current;
 
@@ -219,48 +226,31 @@ export function parseRtcProviders(value: unknown): RtcProviderId[] {
 }
 
 export async function updateProviderHealth(
-  env: RoutingEnvironment,
+  env: ProviderHealthEnvironment,
   provider: RtcProviderId,
   update: { usedPercent?: number; disabled?: boolean },
 ) {
-  const current = await providerHealth(env, provider);
-  const next: ProviderHealth = {
-    usedPercent: update.usedPercent === undefined
-      ? current.usedPercent
-      : Math.min(100, Math.max(0, update.usedPercent)),
-    disabled: update.disabled ?? current.disabled,
-    updatedAt: new Date().toISOString(),
-  };
-  if (provider === "cloudflare-realtime" || provider === "jaas") {
-    await env.PRIVATE_ROOMS.put(`routing:health:rtc:${provider}`, JSON.stringify(next));
-  } else {
-    const shared = await env.PRIVATE_ROOMS.get(sharedHealthKey, "json") as SharedProviderHealth | null;
-    await env.PRIVATE_ROOMS.put(sharedHealthKey, JSON.stringify({ ...(shared || {}), [provider]: next }));
-  }
-  return next;
+  const response = await providerHealthStore(env).fetch(providerHealthStoreUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ updates: { [provider]: update } }),
+  });
+  if (!response.ok) throw new Error("Provider health store is unavailable");
+  const snapshot = await response.json() as SharedProviderHealth;
+  return snapshot[provider] || getProviderHealth(env, provider);
 }
 
 export async function updateProviderHealthBatch(
-  env: RoutingEnvironment,
+  env: ProviderHealthEnvironment,
   updates: Partial<Record<RtcProviderId, { usedPercent?: number; disabled?: boolean }>>,
 ) {
-  const shared = await env.PRIVATE_ROOMS.get(sharedHealthKey, "json") as SharedProviderHealth | null || {};
-  const updatedAt = new Date().toISOString();
-  for (const [providerValue, update] of Object.entries(updates)) {
-    if (!isRtcProvider(providerValue) || providerValue === "cloudflare-realtime" || providerValue === "jaas" || !update) continue;
-    const provider = providerValue as RtcProviderId;
-    const legacy = shared[provider] ||
-      await env.PRIVATE_ROOMS.get(`routing:health:rtc:${provider}`, "json") as Partial<ProviderHealth> | null;
-    shared[provider] = {
-      usedPercent: update.usedPercent === undefined
-        ? Math.min(100, Math.max(0, Number(legacy?.usedPercent) || 0))
-        : Math.min(100, Math.max(0, update.usedPercent)),
-      disabled: update.disabled ?? legacy?.disabled === true,
-      updatedAt,
-    };
-  }
-  await env.PRIVATE_ROOMS.put(sharedHealthKey, JSON.stringify(shared));
-  return shared;
+  const response = await providerHealthStore(env).fetch(providerHealthStoreUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ updates }),
+  });
+  if (!response.ok) throw new Error("Provider health store is unavailable");
+  return response.json() as Promise<SharedProviderHealth>;
 }
 
 export { isRtcProvider, knownRtcProviders };

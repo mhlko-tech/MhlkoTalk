@@ -2,6 +2,7 @@ import {
   jaasMonthlyActiveUserLimit,
   jaasMonthlyCredentialLimit,
 } from "./providerSafety";
+import { updateProviderHealth } from "./providerRouting";
 
 export {
   jaasMonthlyActiveUserLimit,
@@ -16,6 +17,7 @@ export function isManagedRtcProvider(value: string): value is ManagedRtcProvider
 
 export interface ManagedRtcEnvironment {
   PRIVATE_ROOMS: KVNamespace;
+  PRESENCE?: DurableObjectNamespace;
   JAAS_QUOTA?: DurableObjectNamespace;
   HMS_ACCESS_KEY?: string;
   HMS_APP_SECRET?: string;
@@ -61,13 +63,13 @@ function jaasQuotaCycle(now = new Date()) {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-async function writeJaasHealth(env: Pick<ManagedRtcEnvironment, "PRIVATE_ROOMS">, state: JaasQuotaState) {
+async function writeJaasHealth(env: Pick<ManagedRtcEnvironment, "PRESENCE">, state: JaasQuotaState) {
   const usedPercent = Math.min(100, state.issued / jaasMonthlyActiveUserLimit * 100);
-  await env.PRIVATE_ROOMS.put("routing:health:rtc:jaas", JSON.stringify({
+  if (!env.PRESENCE) throw new Error("JaaS provider health store is unavailable");
+  await updateProviderHealth({ PRESENCE: env.PRESENCE }, "jaas", {
     usedPercent,
     disabled: state.issued >= jaasMonthlyCredentialLimit,
-    updatedAt: new Date().toISOString(),
-  }));
+  });
   return { ...state, usedPercent, limit: jaasMonthlyCredentialLimit };
 }
 
@@ -79,7 +81,7 @@ async function writeJaasHealth(env: Pick<ManagedRtcEnvironment, "PRIVATE_ROOMS">
 export class JaasQuotaGuard {
   constructor(
     private readonly state: DurableObjectState,
-    private readonly env: Pick<ManagedRtcEnvironment, "PRIVATE_ROOMS">,
+    private readonly env: Pick<ManagedRtcEnvironment, "PRESENCE">,
   ) {}
 
   async fetch(request: Request) {

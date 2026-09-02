@@ -1,4 +1,5 @@
 import { routePartyTracksRequest } from "partytracks/server";
+import { getProviderHealth, updateProviderHealth } from "./providerRouting";
 
 export type CloudflareRtcTrack = {
   location?: "local" | "remote";
@@ -31,12 +32,12 @@ export interface CloudflareRtcEnvironment {
   CLOUDFLARE_REALTIME_API_TOKEN?: string;
   CLOUDFLARE_RTC_USAGE: DurableObjectNamespace;
   PRIVATE_ROOMS: KVNamespace;
+  PRESENCE: DurableObjectNamespace;
 }
 
 const rtcApiPrefix = "/rtc/cloudflare/partytracks";
 export const cloudflareRtcDisableAtPercent = 60;
 export const cloudflareRtcTelemetryMaxAgeMs = 20 * 60 * 1_000;
-const usageHealthKey = "routing:health:rtc:cloudflare-realtime";
 const usageGuardCacheMs = 15_000;
 
 type UsageHealth = {
@@ -78,7 +79,7 @@ export function evaluateCloudflareRtcUsageHealth(
 async function cloudflareRtcUsageGuard(env: CloudflareRtcEnvironment) {
   const now = Date.now();
   if (cachedUsageGuard && cachedUsageGuard.expiresAt > now) return cachedUsageGuard.value;
-  const health = await env.PRIVATE_ROOMS.get(usageHealthKey, "json") as UsageHealth | null;
+  const health = await getProviderHealth(env, "cloudflare-realtime") as UsageHealth;
   const value = evaluateCloudflareRtcUsageHealth(health, now);
   cachedUsageGuard = { expiresAt: now + usageGuardCacheMs, value };
   return value;
@@ -323,12 +324,11 @@ export class CloudflareRtcUsage implements DurableObject {
   }
 
   private async writeHealth(usage: UsageState) {
-    const previous = await this.env.PRIVATE_ROOMS.get(usageHealthKey, "json") as { disabled?: boolean } | null;
-    await this.env.PRIVATE_ROOMS.put(usageHealthKey, JSON.stringify({
+    const previous = await getProviderHealth(this.env, "cloudflare-realtime");
+    await updateProviderHealth(this.env, "cloudflare-realtime", {
       usedPercent: Math.min(100, usage.estimatedEgressBytes / freeEgressBytes * 100),
-      disabled: previous?.disabled === true,
-      updatedAt: usage.updatedAt,
-    }));
+      disabled: previous.disabled,
+    });
     cachedUsageGuard = null;
   }
 }

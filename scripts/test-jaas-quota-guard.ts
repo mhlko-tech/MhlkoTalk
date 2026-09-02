@@ -6,7 +6,7 @@ import {
 } from "../worker/src/managedRtcProviders";
 
 const durableValues = new Map<string, unknown>();
-const healthValues = new Map<string, string>();
+let health: Record<string, { usedPercent: number; disabled: boolean; updatedAt: string }> = {};
 const state = {
   storage: {
     async get<T>(key: string) { return durableValues.get(key) as T | undefined; },
@@ -14,10 +14,29 @@ const state = {
   },
 } as unknown as DurableObjectState;
 const env = {
-  PRIVATE_ROOMS: {
-    async get(key: string) { return healthValues.get(key) ?? null; },
-    async put(key: string, value: string) { healthValues.set(key, value); },
-  } as unknown as KVNamespace,
+  PRESENCE: {
+    idFromName() { return {} as DurableObjectId; },
+    get() {
+      return {
+        async fetch(_input: RequestInfo | URL, init?: RequestInit) {
+          if ((init?.method || "GET") === "POST") {
+            const updates = (JSON.parse(String(init?.body || "{}")) as {
+              updates?: Record<string, { usedPercent?: number; disabled?: boolean }>;
+            }).updates || {};
+            for (const [provider, update] of Object.entries(updates)) {
+              const current = health[provider];
+              health[provider] = {
+                usedPercent: update.usedPercent ?? current?.usedPercent ?? 0,
+                disabled: update.disabled ?? current?.disabled ?? false,
+                updatedAt: new Date().toISOString(),
+              };
+            }
+          }
+          return Response.json(health);
+        },
+      } as unknown as DurableObjectStub;
+    },
+  } as unknown as DurableObjectNamespace,
 };
 const guard = new JaasQuotaGuard(state, env);
 
@@ -34,12 +53,8 @@ for (let index = 1; index <= jaasMonthlyCredentialLimit; index += 1) {
 const blocked = await guard.fetch(new Request("https://internal/reserve", { method: "POST" }));
 assert.equal(blocked.status, 429);
 assert.equal((await blocked.json() as { allowed: boolean }).allowed, false);
-const health = JSON.parse(healthValues.get("routing:health:rtc:jaas") || "{}") as {
-  usedPercent?: number;
-  disabled?: boolean;
-};
-assert.equal(health.usedPercent, 76);
-assert.equal(health.disabled, true);
+assert.equal(health.jaas?.usedPercent, 76);
+assert.equal(health.jaas?.disabled, true);
 
 durableValues.set("quota", { cycle: "2000-01", issued: jaasMonthlyCredentialLimit });
 const newCycle = await guard.fetch(new Request("https://internal/reserve", { method: "POST" }));

@@ -14,6 +14,7 @@ import { targetRtcProviders as workerTargetRtcProviders } from "../worker/src/rt
 
 function testEnvironment() {
   const values = new Map<string, string>();
+  let providerHealth: Record<string, { usedPercent: number; disabled: boolean; updatedAt: string }> = {};
   const kv = {
     async get(key: string, type?: string) {
       const value = values.get(key) ?? null;
@@ -22,8 +23,31 @@ function testEnvironment() {
     async put(key: string, value: string) { values.set(key, value); },
     async delete(key: string) { values.delete(key); },
   } as unknown as KVNamespace;
+  const providerHealthStub = {
+    async fetch(_input: RequestInfo | URL, init?: RequestInit) {
+      if ((init?.method || "GET") === "POST") {
+        const body = JSON.parse(String(init?.body || "{}")) as {
+          updates?: Record<string, { usedPercent?: number; disabled?: boolean }>;
+        };
+        const updatedAt = new Date().toISOString();
+        for (const [provider, update] of Object.entries(body.updates || {})) {
+          const current = providerHealth[provider];
+          providerHealth[provider] = {
+            usedPercent: update.usedPercent ?? current?.usedPercent ?? 0,
+            disabled: update.disabled ?? current?.disabled ?? false,
+            updatedAt,
+          };
+        }
+      }
+      return Response.json(providerHealth);
+    },
+  } as unknown as DurableObjectStub;
   return {
     PRIVATE_ROOMS: kv,
+    PRESENCE: {
+      idFromName() { return {} as DurableObjectId; },
+      get() { return providerHealthStub; },
+    } as unknown as DurableObjectNamespace,
     RTC_PROVIDER_ORDER: "stream,agora,tencent,cloudflare-realtime,livekit,100ms,cometchat,whereby,jaas,mirotalk,videosdk,daily",
     LIVEKIT_URL: "https://example.livekit.cloud",
     LIVEKIT_API_KEY: "key",
@@ -129,21 +153,21 @@ await updateProviderHealth(environment, "livekit", { usedPercent: 0, disabled: t
 assert.equal(await selectRtcProvider(environment, "Disabled", ["livekit"]), null);
 
 const batchedEnvironment = testEnvironment();
-let batchWrites = 0;
+let batchKvWrites = 0;
 const batchValues = new Map<string, string>();
 batchedEnvironment.PRIVATE_ROOMS = {
   async get(key: string, type?: string) {
     const value = batchValues.get(key) ?? null;
     return type === "json" && value ? JSON.parse(value) : value;
   },
-  async put(key: string, value: string) { batchWrites += 1; batchValues.set(key, value); },
+  async put(key: string, value: string) { batchKvWrites += 1; batchValues.set(key, value); },
 } as unknown as KVNamespace;
 await updateProviderHealthBatch(batchedEnvironment, {
   stream: { usedPercent: 1, disabled: false },
   agora: { usedPercent: 2, disabled: false },
   whereby: { usedPercent: 3, disabled: true },
 });
-assert.equal(batchWrites, 1, "shared provider telemetry must use one KV write per refresh");
+assert.equal(batchKvWrites, 0, "provider telemetry must not spend KV writes");
 assert.equal((await rtcCapabilities(batchedEnvironment)).find((item) => item.provider === "stream")?.usedPercent, 1);
 
 const readBoundEnvironment = testEnvironment();
@@ -157,6 +181,6 @@ readBoundEnvironment.PRIVATE_ROOMS = {
   async put() {},
 } as unknown as KVNamespace;
 await rtcCapabilities(readBoundEnvironment);
-assert.equal(capabilityReads, 3, "capability discovery must use a fixed three KV reads");
+assert.equal(capabilityReads, 0, "capability discovery must not spend KV reads");
 
 console.log("Provider routing tests passed for all 11 target providers plus legacy Daily");
