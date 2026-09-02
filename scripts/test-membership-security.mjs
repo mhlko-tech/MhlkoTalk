@@ -25,7 +25,7 @@ assert.match(worker, /subscriptionFor\(profile\)\.tier/);
 assert.match(worker, /!\["plus", "pro", "ultimate", "max_supporter"\]\.includes\(planId\)/);
 assert.match(worker, /membership\.entitlementTier === "patreon_plus" \|\| membership\.entitlementTier === "patreon_pro"/);
 assert.match(worker, /LAVA_MEMBERSHIP_BACKEND\?: Fetcher/);
-assert.match(worker, /service\.fetch\(url/);
+assert.match(worker, /service\.fetch\(new Request\(url/);
 assert.match(workerConfig, /binding = "LAVA_MEMBERSHIP_BACKEND"/);
 assert.match(workerConfig, /service = "mvdownloader-lava-staging"/);
 

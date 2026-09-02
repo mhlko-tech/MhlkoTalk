@@ -597,7 +597,7 @@ async function membershipBackendRequest(url: string, init: RequestInit = {}, ser
       // The public URL remains as a safe fallback for local development and
       // for deployments created before the binding was configured.
       const response = service
-        ? await service.fetch(url, { ...init, signal: controller.signal })
+        ? await service.fetch(new Request(url, { ...init, signal: controller.signal }))
         : await fetch(url, { ...init, signal: controller.signal });
       lastStatus = response.status;
       const raw = await response.text();
@@ -613,7 +613,12 @@ async function membershipBackendRequest(url: string, init: RequestInit = {}, ser
       const retryable = response.status === 429 || response.status >= 500 || (response.ok && !payload);
       if (retryable && attempt === 0) continue;
       return { response, payload };
-    } catch {
+    } catch (error) {
+      console.warn("Membership backend request failed", {
+        transport: service ? "service-binding" : "public-fetch",
+        attempt: attempt + 1,
+        error: error instanceof Error ? error.name : "UnknownError",
+      });
       if (attempt === 0) continue;
     } finally {
       clearTimeout(timeout);
