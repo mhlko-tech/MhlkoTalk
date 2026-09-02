@@ -2684,22 +2684,6 @@ export class RoomSession {
     item.className = "media-item";
     item.dataset.participantIdentity = participantIdentity;
     item.dataset.mediaSource = source;
-    item.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      window.dispatchEvent(
-        new CustomEvent("mhtalk-media-context", {
-          detail: {
-            x: event.clientX,
-            y: event.clientY,
-            id,
-            identity:
-              participantIdentity === "local" ? undefined : participantIdentity,
-            local: id.startsWith("local-"),
-            source,
-          },
-        }),
-      );
-    });
     const video = track.attach() as HTMLVideoElement;
     video.autoplay = true;
     video.playsInline = true;
@@ -2712,7 +2696,7 @@ export class RoomSession {
     const caption = document.createElement("div");
     caption.className = "media-label";
     caption.textContent = label;
-    item.append(video, caption);
+    this.decorateMediaItem(item, video, caption, id, participantIdentity, source);
     host.appendChild(item);
     this.attachedMediaElements.add(video);
   }
@@ -2742,21 +2726,6 @@ export class RoomSession {
     item.className = "media-item";
     item.dataset.participantIdentity = participantIdentity;
     item.dataset.mediaSource = source;
-    item.addEventListener("contextmenu", (event) => {
-      event.preventDefault();
-      window.dispatchEvent(
-        new CustomEvent("mhtalk-media-context", {
-          detail: {
-            x: event.clientX,
-            y: event.clientY,
-            id,
-            identity: participantIdentity === "local" ? undefined : participantIdentity,
-            local: id.startsWith("local-"),
-            source,
-          },
-        }),
-      );
-    });
     const video = document.createElement("video");
     video.autoplay = true;
     video.playsInline = true;
@@ -2771,7 +2740,7 @@ export class RoomSession {
     const caption = document.createElement("div");
     caption.className = "media-label";
     caption.textContent = label;
-    item.append(video, caption);
+    this.decorateMediaItem(item, video, caption, id, participantIdentity, source);
     host.appendChild(item);
     this.attachedMediaElements.add(video);
     void video.play().catch(() => undefined);
@@ -2800,7 +2769,7 @@ export class RoomSession {
     const caption = document.createElement("div");
     caption.className = "media-label";
     caption.textContent = source === "camera" ? "Camera" : "Screen share";
-    item.append(video, caption);
+    this.decorateMediaItem(item, video, caption, id, participant.userId, source);
     host.appendChild(item);
     const unbind = this.streamRtc.bindParticipantVideoElement(
       video,
@@ -2814,6 +2783,63 @@ export class RoomSession {
     this.streamVideoBindings.set(id, unbind);
     this.attachedMediaElements.add(video);
     return true;
+  }
+
+  private decorateMediaItem(
+    item: HTMLDivElement,
+    video: HTMLVideoElement,
+    caption: HTMLDivElement,
+    id: string,
+    participantIdentity: string,
+    source: "camera" | "screen",
+  ) {
+    const local = participantIdentity === "local" || id.startsWith("local-");
+    const openMenu = (x: number, y: number) => {
+      window.dispatchEvent(
+        new CustomEvent("mhtalk-media-context", {
+          detail: {
+            x,
+            y,
+            id,
+            identity: local ? undefined : participantIdentity,
+            local,
+            source,
+          },
+        }),
+      );
+    };
+    item.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      openMenu(event.clientX, event.clientY);
+    });
+
+    const controls = document.createElement("div");
+    controls.className = "media-overlay-controls";
+    const fullscreen = document.createElement("button");
+    fullscreen.type = "button";
+    fullscreen.className = "media-overlay-button";
+    fullscreen.title = local && source === "screen" ? "Full screen is unavailable for your own screen share" : "Full screen";
+    fullscreen.setAttribute("aria-label", fullscreen.title);
+    fullscreen.textContent = "⛶";
+    fullscreen.disabled = local && source === "screen";
+    fullscreen.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!fullscreen.disabled) void video.requestFullscreen?.();
+    });
+
+    const pip = document.createElement("button");
+    pip.type = "button";
+    pip.className = "media-overlay-button media-overlay-pip";
+    pip.title = "Picture in Picture";
+    pip.setAttribute("aria-label", pip.title);
+    pip.textContent = "PiP";
+    pip.disabled = !document.pictureInPictureEnabled || typeof video.requestPictureInPicture !== "function";
+    pip.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (!pip.disabled) void video.requestPictureInPicture().catch(() => undefined);
+    });
+    controls.append(fullscreen, pip);
+    item.append(video, caption, controls);
   }
 
   private attachStreamAudio(

@@ -1049,6 +1049,7 @@ button {
   width: 100%;
 }
 .media-item {
+  position: relative;
   overflow: hidden;
   border-radius: 16px;
   background: #080a14;
@@ -1062,11 +1063,63 @@ button {
   background: #05060b;
   object-fit: contain;
 }
+.media-item video:fullscreen,
+.media-item video:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  background: #000;
+  object-fit: contain;
+}
 .media-label {
-  padding: 8px 11px;
+  position: absolute;
+  left: 9px;
+  bottom: 9px;
+  z-index: 2;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #080a14c7;
+  backdrop-filter: blur(8px);
   color: #c4cae4;
   font-size: 12px;
   font-weight: 700;
+}
+.media-overlay-controls {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  z-index: 3;
+  display: flex;
+  gap: 6px;
+}
+.media-overlay-button {
+  display: grid;
+  place-items: center;
+  min-width: 38px;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #69729b;
+  border-radius: 11px;
+  background: #080a14d9;
+  box-shadow: 0 6px 18px #0008;
+  color: #f4f5ff;
+  font-size: 17px;
+  font-weight: 800;
+  backdrop-filter: blur(10px);
+}
+.media-overlay-pip {
+  font-size: 10px;
+  letter-spacing: .02em;
+}
+.media-overlay-button:hover,
+.media-overlay-button:focus-visible {
+  border-color: #8d7cff;
+  background: #29244d;
+  outline: none;
+}
+.media-overlay-button:disabled {
+  cursor: not-allowed;
+  opacity: .42;
 }
 .voice-card {
   text-align: center;
