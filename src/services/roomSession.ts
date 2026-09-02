@@ -188,6 +188,7 @@ export class RoomSession {
   private usageWindowStartedAt: number | undefined;
   private usageReportTimer: number | undefined;
   private attachedMediaElements = new Set<HTMLMediaElement>();
+  private streamVideoBindings = new Map<string, () => void>();
   private remoteVoiceAudio = new Map<string, Set<HTMLAudioElement>>();
   private remoteStreamAudio = new Map<string, Set<HTMLAudioElement>>();
   private remoteMediaQuality = new Map<
@@ -863,9 +864,7 @@ export class RoomSession {
       this.selectedRemoteQuality.set(`${identity}:${source}`, quality);
       this.watchedMedia.add(`${identity}:${source}`);
       this.streamRtc.setParticipantVideoQuality(identity, quality);
-      const stream = await this.streamRtc.waitForParticipantVideo(identity, source);
-      if (!this.watchedMedia.has(`${identity}:${source}`)) return false;
-      if (!stream) {
+      if (!this.bindStreamParticipantVideo(participant, source)) {
         this.watchedMedia.delete(`${identity}:${source}`);
         const stillWatching = (["camera", "screen"] as const).some((item) =>
           this.watchedMedia.has(`${identity}:${item}`),
@@ -873,14 +872,6 @@ export class RoomSession {
         if (!stillWatching) this.streamRtc.setParticipantVideoQuality(identity);
         return false;
       }
-      const refreshed = this.streamRtc.participant(identity);
-      this.attachStreamVideo(
-        stream,
-        `stream-${source}-${refreshed?.sessionId ?? participant.sessionId}`,
-        source === "camera" ? "Camera" : "Screen share",
-        identity,
-        source,
-      );
       return true;
     }
     const participant = this.room?.remoteParticipants.get(identity);
@@ -2223,23 +2214,11 @@ export class RoomSession {
       } else {
         this.detachStreamAudio(participant.userId, "screen");
       }
-      if (this.watchedMedia.has(`${participant.userId}:camera`) && participant.videoStream) {
-        this.attachStreamVideo(
-          participant.videoStream,
-          `stream-camera-${participant.sessionId}`,
-          "Camera",
-          participant.userId,
-          "camera",
-        );
+      if (this.watchedMedia.has(`${participant.userId}:camera`)) {
+        this.bindStreamParticipantVideo(participant, "camera");
       }
-      if (this.watchedMedia.has(`${participant.userId}:screen`) && participant.screenShareStream) {
-        this.attachStreamVideo(
-          participant.screenShareStream,
-          `stream-screen-${participant.sessionId}`,
-          "Screen share",
-          participant.userId,
-          "screen",
-        );
+      if (this.watchedMedia.has(`${participant.userId}:screen`)) {
+        this.bindStreamParticipantVideo(participant, "screen");
       }
 
       const dataProfile = this.remoteProfiles.get(participant.userId);
@@ -2798,6 +2777,45 @@ export class RoomSession {
     void video.play().catch(() => undefined);
   }
 
+  private bindStreamParticipantVideo(
+    participant: StreamVideoParticipant,
+    source: "camera" | "screen",
+  ) {
+    const id = `stream-${source}-${participant.sessionId}`;
+    if (document.getElementById(id)) return true;
+    const host = document.getElementById(
+      `media-host-${encodeURIComponent(participant.userId)}-${source}`,
+    );
+    if (!host) return false;
+    this.detachParticipantSource(participant.userId, source);
+    const item = document.createElement("div");
+    item.id = id;
+    item.className = "media-item";
+    item.dataset.participantIdentity = participant.userId;
+    item.dataset.mediaSource = source;
+    const video = document.createElement("video");
+    video.autoplay = true;
+    video.playsInline = true;
+    video.muted = true;
+    const caption = document.createElement("div");
+    caption.className = "media-label";
+    caption.textContent = source === "camera" ? "Camera" : "Screen share";
+    item.append(video, caption);
+    host.appendChild(item);
+    const unbind = this.streamRtc.bindParticipantVideoElement(
+      video,
+      participant.userId,
+      source,
+    );
+    if (!unbind) {
+      item.remove();
+      return false;
+    }
+    this.streamVideoBindings.set(id, unbind);
+    this.attachedMediaElements.add(video);
+    return true;
+  }
+
   private attachStreamAudio(
     stream: MediaStream,
     identity: string,
@@ -2833,6 +2851,8 @@ export class RoomSession {
 
   private detachMedia(id?: string) {
     if (id) {
+      this.streamVideoBindings.get(id)?.();
+      this.streamVideoBindings.delete(id);
       const item = document.getElementById(id);
       if (item)
         window.dispatchEvent(
@@ -2844,6 +2864,8 @@ export class RoomSession {
       item?.remove();
       return;
     }
+    this.streamVideoBindings.forEach((unbind) => unbind());
+    this.streamVideoBindings.clear();
     this.attachedMediaElements.forEach((element) => element.remove());
     document
       .querySelectorAll("#media-stage .media-item")
@@ -2867,6 +2889,8 @@ export class RoomSession {
         element.remove();
       });
     host?.querySelectorAll<HTMLElement>(".media-item").forEach((item) => {
+      this.streamVideoBindings.get(item.id)?.();
+      this.streamVideoBindings.delete(item.id);
       window.dispatchEvent(
         new CustomEvent("mhtalk-media-detached", {
           detail: { id: item.id },
