@@ -2048,7 +2048,7 @@ export default {
       if (onboarding) return onboarding;
       const body = (await request.json().catch(() => null)) as { planId?: unknown } | null;
       const planId = typeof body?.planId === "string" ? body.planId : "";
-      if (!["plus", "pro"].includes(planId)) return json({ error: "Invalid membership plan" }, 400);
+      if (!["plus", "pro", "ultimate", "max_supporter"].includes(planId)) return json({ error: "Invalid membership plan" }, 400);
       const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
       const { response, payload } = await membershipBackendRequest(`${backend}/v1/subscription-sessions`, {
         method: "POST",

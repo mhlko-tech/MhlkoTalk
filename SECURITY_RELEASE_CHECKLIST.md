@@ -5,9 +5,8 @@
 - [ ] Confirm whether a real Patreon client secret was ever shipped in any public MVDownloader build. If yes or uncertain, rotate it before release.
 - [ ] Review and approve the Supabase migration `202609020002_membership_badge_tiers.sql`.
 - [ ] Review and approve the D1 migration `0003_patreon_memberships.sql`.
-- [ ] Configure server-only LAVA offer IDs for Plus ($5) and Pro ($10).
-- [ ] Configure Patreon client ID/secret, campaign ID, webhook secret, and exact Plus/Pro tier IDs as Worker secrets/variables.
-- [ ] If existing Ultimate/Max Supporter Patreon tiers are retained, configure their exact IDs; do not expose them as new public checkout plans.
+- [ ] Configure server-only LAVA offer IDs for Plus ($5), Pro ($7), Ultimate ($10), and Max Supporter ($15).
+- [ ] Configure Patreon client ID/secret, campaign ID, webhook secret, and all four exact tier IDs as Worker secrets/variables.
 - [ ] Complete all sandbox tests in `SECURITY_TEST_PLAN.md`.
 - [ ] Obtain explicit owner approval for production migration and deployment.
 
@@ -25,7 +24,7 @@
 
 ## Functional policy
 
-- [x] Only Plus and Pro are public purchase plans.
+- [x] Plus, Pro, Ultimate, and Max Supporter are public purchase plans with canonical prices.
 - [x] Plus and Pro show their matching verified badge beside the MHTalk name.
 - [x] Ultimate and Max Supporter keep their own badge and grant no paid MHTalk feature.
 - [x] Windows and Android use the same server-owned tier names and entitlement mapping.

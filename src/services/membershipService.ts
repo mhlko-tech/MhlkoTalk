@@ -8,7 +8,7 @@ const legacyMembershipTokenKey = "mhtalk.membership.lava-token";
 const lastSyncKey = "mhtalk.membership.last-sync";
 const runningInTauri = () => Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 
-export type MembershipPlanId = "plus" | "pro";
+export type MembershipPlanId = "plus" | "pro" | "ultimate" | "max_supporter";
 
 type MembershipSync = {
   status: string;

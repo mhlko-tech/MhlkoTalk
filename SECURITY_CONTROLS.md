@@ -10,7 +10,7 @@
 ## Membership and payments
 
 - Public plan identifiers are an allow-list: `plus`, `pro`.
-- `Ultimate` and `Max Supporter` may be mapped only from configured Patreon supporter tiers; inside MHTalk they grant a verified recognition badge and no paid feature.
+- `Ultimate` and `Max Supporter` may be activated only by authoritative LAVA or Patreon confirmation; inside MHTalk they grant a verified recognition badge and no paid feature.
 - LAVA and Patreon secrets are server-only Cloudflare bindings.
 - Patreon uses OAuth state, server exchange, campaign/tier verification, signature verification, replay protection, and idempotent persistence.
 - Membership bearer tokens are bounded, fingerprinted for ownership, and never placed in status URLs.

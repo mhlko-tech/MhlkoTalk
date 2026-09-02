@@ -1921,13 +1921,35 @@ export function App() {
                 aria-pressed={membershipPlan === "pro"}
                 onClick={() => setMembershipPlan("pro")}
               >
-                <span className="membership-plan-top"><strong>Pro</strong><b>$10 <small>/ month</small></b></span>
-                <span className="membership-plan-copy">The full paid MHTalk experience with the best MVDownloader limits.</span>
+                <span className="membership-plan-top"><strong>Pro</strong><b>$7 <small>/ month</small></b></span>
+                <span className="membership-plan-copy">The full paid MHTalk experience with unlimited Full HD downloads.</span>
                 <span className="membership-plan-benefits">✓ MHTalk Pro badge and all paid features on Windows and Android</span>
-                <span className="membership-plan-benefits">✓ Unlimited source-quality video and premium audio up to 320 kbps</span>
+                <span className="membership-plan-benefits">✓ MVDownloader: unlimited 1080p, 720p and high-quality audio</span>
+              </button>
+              <button
+                type="button"
+                className={`membership-plan-card ${membershipPlan === "ultimate" ? "selected" : ""}`}
+                aria-pressed={membershipPlan === "ultimate"}
+                onClick={() => setMembershipPlan("ultimate")}
+              >
+                <span className="membership-plan-top"><strong>Ultimate</strong><b>$10 <small>/ month</small></b></span>
+                <span className="membership-plan-copy">Maximum MVDownloader quality with an Ultimate recognition badge in MHTalk.</span>
+                <span className="membership-plan-benefits">✓ MVDownloader: unlimited 2K, 4K and higher source-quality video</span>
+                <span className="membership-plan-benefits">✓ MHTalk Ultimate badge only; paid MHTalk features are not included</span>
+              </button>
+              <button
+                type="button"
+                className={`membership-plan-card ${membershipPlan === "max_supporter" ? "selected" : ""}`}
+                aria-pressed={membershipPlan === "max_supporter"}
+                onClick={() => setMembershipPlan("max_supporter")}
+              >
+                <span className="membership-plan-top"><strong>Max Supporter</strong><b>$15 <small>/ month</small></b></span>
+                <span className="membership-plan-copy">All Ultimate MVDownloader benefits plus extra support for the project.</span>
+                <span className="membership-plan-benefits">✓ MVDownloader: everything included with Ultimate</span>
+                <span className="membership-plan-benefits">✓ MHTalk Max Supporter badge only; paid MHTalk features are not included</span>
               </button>
             </div>
-            <p className="support-tier-note">Ultimate and Max Supporter are recognition badges only in MHTalk. They do not unlock MHTalk paid features.</p>
+            <p className="support-tier-note">All four plans are shared with MVDownloader. In MHTalk, Plus and Pro unlock paid features; Ultimate and Max Supporter add their matching recognition badge only.</p>
             {membershipMessage && <div className="support-membership-status">{membershipMessage}</div>}
             <div className="support-membership-link">
               <label htmlFor="membership-activation-code">Already have a shared membership?</label>
@@ -1965,7 +1987,7 @@ export function App() {
                 } finally {
                   setLavaBusy(false);
                 }
-               }}>{lavaBusy ? "Opening LAVA…" : `Continue with LAVA · ${membershipPlan === "plus" ? "$5" : "$10"}`}</button>
+               }}>{lavaBusy ? "Opening LAVA…" : `Continue with LAVA · ${{ plus: 5, pro: 7, ultimate: 10, max_supporter: 15 }[membershipPlan]}`}</button>
               <button className="control" disabled={lavaBusy} onClick={async () => {
                 setLavaBusy(true);
                 try {

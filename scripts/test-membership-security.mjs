@@ -21,7 +21,7 @@ assert.match(worker, /path === "\/social\/badges"/);
 assert.match(worker, /body\.ids\.length > 50/);
 assert.match(worker, /rateLimited\(request, env, "profile-badges"/);
 assert.match(worker, /subscriptionFor\(profile\)\.tier/);
-assert.match(worker, /!\["plus", "pro"\]\.includes\(planId\)/);
+assert.match(worker, /!\["plus", "pro", "ultimate", "max_supporter"\]\.includes\(planId\)/);
 assert.match(worker, /membership\.entitlementTier === "patreon_plus" \|\| membership\.entitlementTier === "patreon_pro"/);
 
 for (const tier of ["plus", "pro", "ultimate", "max_supporter"]) {

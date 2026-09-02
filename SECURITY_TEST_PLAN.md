@@ -32,8 +32,8 @@ Run the pinned Python unit suite and `pip-audit==2.10.1` against `requirements_b
 
 1. Apply D1 and Supabase migrations to a non-production environment.
 2. Configure separate sandbox secrets and exact Patreon tier IDs.
-3. Link Plus and Pro independently through Patreon; verify correct badge and equal cross-platform entitlements.
-4. Purchase Plus and Pro independently through LAVA test mode; verify webhook-driven activation and renewal/expiry.
+3. Link all four tiers independently through Patreon; verify the correct badge and cross-platform entitlement mapping.
+4. Purchase all four tiers independently through LAVA test mode; verify canonical prices, webhook-driven activation, renewal, and expiry.
 5. Replay each webhook and confirm idempotency; alter one signature byte and confirm rejection.
 6. Cancel/refund/revoke and confirm the entitlement becomes Free after authoritative status changes.
 7. Verify Ultimate and Max Supporter show distinct badges but receive the Free MHTalk entitlement object.
