@@ -48,7 +48,7 @@ function testEnvironment() {
       idFromName() { return {} as DurableObjectId; },
       get() { return providerHealthStub; },
     } as unknown as DurableObjectNamespace,
-    RTC_PROVIDER_ORDER: "stream,agora,tencent,cloudflare-realtime,livekit,100ms,cometchat,whereby,jaas,mirotalk,videosdk,daily",
+    RTC_PROVIDER_ORDER: "stream,agora,tencent,cloudflare-realtime,livekit,whereby,jaas,mirotalk,daily",
     LIVEKIT_URL: "https://example.livekit.cloud",
     LIVEKIT_API_KEY: "key",
     LIVEKIT_API_SECRET: "secret",
@@ -60,13 +60,6 @@ function testEnvironment() {
     TENCENT_SECRET_KEY: "configured",
     CLOUDFLARE_REALTIME_APP_ID: "configured",
     CLOUDFLARE_REALTIME_API_TOKEN: "configured",
-    HMS_ACCESS_KEY: "configured",
-    HMS_APP_SECRET: "configured",
-    HMS_TEMPLATE_ID: "configured",
-    HMS_TEMPLATE_SUBDOMAIN: "configured",
-    COMETCHAT_APP_ID: "configured",
-    COMETCHAT_REGION: "us",
-    COMETCHAT_REST_API_KEY: "configured",
     WHEREBY_API_KEY: "configured",
     JAAS_APP_ID: "configured",
     JAAS_KEY_ID: "configured",
@@ -75,8 +68,6 @@ function testEnvironment() {
     MIROTALK_API_KEY_SECRET: "configured",
     MIROTALK_HOST_USERNAME: "configured",
     MIROTALK_HOST_PASSWORD: "configured",
-    VIDEOSDK_API_KEY: "configured",
-    VIDEOSDK_API_SECRET: "configured",
     DAILY_API_KEY: "configured",
   } satisfies RoutingEnvironment;
 }
@@ -84,7 +75,7 @@ function testEnvironment() {
 assert.deepEqual(parseRtcProviders(["livekit", "unknown", "livekit"]), ["livekit"]);
 assert.deepEqual(parseRtcProviders(undefined), ["livekit"]);
 assert.deepEqual(workerTargetRtcProviders, clientTargetRtcProviders);
-assert.equal(workerTargetRtcProviders.length, 11);
+assert.equal(workerTargetRtcProviders.length, 8);
 assert.equal(knownRtcProviders.includes("daily"), true);
 assert.deepEqual(routingForRtcProvider("stream"), {
   messaging: "stream-events",
@@ -93,7 +84,6 @@ assert.deepEqual(routingForRtcProvider("stream"), {
 assert.equal(routingIsSupported("stream", ["stream-events"], ["livekit-stream"]), false);
 assert.equal(routingIsSupported("stream", ["stream-events"], ["supabase-storage"]), true);
 assert.equal(routingIsSupported("livekit", ["livekit-data"], ["livekit-stream"]), true);
-assert.equal(routingIsSupported("100ms", ["supabase-realtime"], ["supabase-storage"]), true);
 
 const environment = testEnvironment();
 const missingTelemetry = await rtcCapabilities(environment);
@@ -109,7 +99,7 @@ assert.equal(capabilities.find((item) => item.provider === "tencent")?.ready, tr
 assert.equal(capabilities.find((item) => item.provider === "cloudflare-realtime")?.ready, false);
 assert.match(capabilities.find((item) => item.provider === "cloudflare-realtime")?.reason || "", /stale/i);
 assert.equal(capabilities.find((item) => item.provider === "whereby")?.ready, true);
-for (const provider of ["100ms", "cometchat", "jaas", "mirotalk", "videosdk"] as const) {
+for (const provider of ["jaas", "mirotalk"] as const) {
   const capability = capabilities.find((item) => item.provider === provider);
   assert.equal(capability?.adapterReady, true);
   assert.equal(capability?.ready, true);
@@ -130,8 +120,6 @@ assert.equal(await selectRtcProvider(environment, "Cloudflare-new", ["cloudflare
 await updateProviderHealth(environment, "cloudflare-realtime", { usedPercent: 60 });
 assert.equal(await selectRtcProvider(environment, "Cloudflare", ["cloudflare-realtime"]), null);
 assert.equal((await selectRtcProvider(environment, "Whereby", ["whereby"]))?.provider, "whereby");
-assert.equal((await selectRtcProvider(environment, "100ms", ["100ms"]))?.provider, "100ms");
-assert.equal((await selectRtcProvider(environment, "CometChat", ["cometchat"]))?.provider, "cometchat");
 assert.equal((await selectRtcProvider(environment, "JaaS", ["jaas"]))?.provider, "jaas");
 await updateProviderHealth(environment, "jaas", { usedPercent: 72 });
 assert.equal((await rtcCapabilities(environment)).find((item) => item.provider === "jaas")?.state, "draining");
@@ -139,7 +127,6 @@ assert.equal(await selectRtcProvider(environment, "JaaS-new", ["jaas"]), null);
 await updateProviderHealth(environment, "jaas", { usedPercent: 76 });
 assert.equal(await selectRtcProvider(environment, "JaaS", ["jaas"]), null);
 assert.equal((await selectRtcProvider(environment, "MiroTalk", ["mirotalk"]))?.provider, "mirotalk");
-assert.equal((await selectRtcProvider(environment, "VideoSDK", ["videosdk"]))?.provider, "videosdk");
 assert.equal((await selectRtcProvider(environment, "Main", ["livekit"]))?.provider, "livekit");
 
 await updateProviderHealth(environment, "livekit", { usedPercent: 70 });
@@ -183,4 +170,4 @@ readBoundEnvironment.PRIVATE_ROOMS = {
 await rtcCapabilities(readBoundEnvironment);
 assert.equal(capabilityReads, 0, "capability discovery must not spend KV reads");
 
-console.log("Provider routing tests passed for all 11 target providers plus legacy Daily");
+console.log("Provider routing tests passed for all 8 target providers plus legacy Daily");

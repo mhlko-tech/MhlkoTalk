@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 LIVEKIT_URL = "https://mhtalkremake-utuei6i7.livekit.cloud"
-RTC_PROVIDER_ORDER = "agora,tencent,livekit,stream,cloudflare-realtime,100ms,cometchat,whereby,jaas,mirotalk,videosdk"
+RTC_PROVIDER_ORDER = "agora,tencent,livekit,stream,cloudflare-realtime,whereby,jaas,mirotalk"
 MIROTALK_BASE_URL = "https://129-159-223-64.sslip.io"
 MIROTALK_HOST_USERNAME = "mhtalk-worker"
 LAVA_MEMBERSHIP_BACKEND_URL = "https://mvdownloader-lava-staging.mhlkotalk.workers.dev"

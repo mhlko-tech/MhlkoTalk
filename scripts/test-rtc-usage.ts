@@ -10,13 +10,10 @@ assert.equal(usageAmount("stream", 61), 24_000);
 assert.equal(usageAmount("agora", 60), 1);
 assert.equal(usageAmount("tencent", 61), 2);
 assert.equal(usageAmount("whereby", 30), 1);
-assert.equal(usageAmount("100ms", 61), 2);
-assert.equal(usageAmount("cometchat", 60), 1);
 assert.equal(usageAmount("mirotalk", 60), null);
 assert.equal(usageAmount("livekit", 90), 2);
 assert.equal(usageAmount("cloudflare-realtime", 60), null);
 assert.equal(usageAmount("jaas", 60), null);
-assert.equal(usageAmount("videosdk", 60), null);
 assert.equal(usageAmount("daily", 60), null);
 
-console.log("RTC usage metering tests passed: 14");
+console.log("RTC usage metering tests passed: 11");

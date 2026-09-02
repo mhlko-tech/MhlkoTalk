@@ -8,12 +8,9 @@ const targetProviders = [
   "tencent",
   "cloudflare-realtime",
   "livekit",
-  "100ms",
-  "cometchat",
   "whereby",
   "jaas",
   "mirotalk",
-  "videosdk",
 ];
 
 const windowsSession = await readFile(new URL("../src/services/roomSession.ts", import.meta.url), "utf8");
@@ -41,13 +38,13 @@ for (const provider of targetProviders) {
 }
 
 if (androidCapabilities) {
-  for (const provider of ["100ms", "cometchat", "jaas", "mirotalk", "videosdk"]) {
+  for (const provider of ["jaas", "mirotalk"]) {
     assert.match(androidCapabilities, new RegExp(`"${provider}"`));
   }
 }
 
 console.log(
   androidSession && androidCapabilities
-    ? "Client adapter parity verified for all 11 target RTC providers"
+    ? "Client adapter parity verified for all 8 target RTC providers"
     : "Windows and Worker adapter parity verified; Android parity is enforced by the Android repository CI",
 );

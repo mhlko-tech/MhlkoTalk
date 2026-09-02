@@ -23,15 +23,6 @@ export interface RoutingEnvironment {
   TENCENT_SECRET_KEY?: string;
   CLOUDFLARE_REALTIME_APP_ID?: string;
   CLOUDFLARE_REALTIME_API_TOKEN?: string;
-  HMS_ACCESS_KEY?: string;
-  HMS_APP_SECRET?: string;
-  HMS_TEMPLATE_ID?: string;
-  HMS_TEMPLATE_SUBDOMAIN?: string;
-  HMS_ROLE?: string;
-  COMETCHAT_APP_ID?: string;
-  COMETCHAT_REGION?: string;
-  COMETCHAT_REST_API_KEY?: string;
-  COMETCHAT_AUTH_KEY?: string;
   WHEREBY_API_KEY?: string;
   JAAS_APP_ID?: string;
   JAAS_KEY_ID?: string;
@@ -40,8 +31,6 @@ export interface RoutingEnvironment {
   MIROTALK_API_KEY_SECRET?: string;
   MIROTALK_HOST_USERNAME?: string;
   MIROTALK_HOST_PASSWORD?: string;
-  VIDEOSDK_API_KEY?: string;
-  VIDEOSDK_API_SECRET?: string;
   DAILY_API_KEY?: string;
   ROUTING_ADMIN_KEY?: string;
 }
@@ -106,12 +95,9 @@ function providerConfigured(provider: RtcProviderId, env: RoutingEnvironment) {
     case "agora": return Boolean(env.AGORA_APP_ID && env.AGORA_APP_CERTIFICATE);
     case "tencent": return Boolean(env.TENCENT_SDK_APP_ID && env.TENCENT_SECRET_KEY);
     case "cloudflare-realtime": return Boolean(env.CLOUDFLARE_REALTIME_APP_ID && env.CLOUDFLARE_REALTIME_API_TOKEN);
-    case "100ms": return Boolean(env.HMS_ACCESS_KEY && env.HMS_APP_SECRET && env.HMS_TEMPLATE_ID && env.HMS_TEMPLATE_SUBDOMAIN);
-    case "cometchat": return Boolean(env.COMETCHAT_APP_ID && env.COMETCHAT_REGION && (env.COMETCHAT_REST_API_KEY || env.COMETCHAT_AUTH_KEY));
     case "whereby": return Boolean(env.WHEREBY_API_KEY);
     case "jaas": return Boolean(env.JAAS_APP_ID && env.JAAS_KEY_ID && env.JAAS_PRIVATE_KEY);
     case "mirotalk": return Boolean(env.MIROTALK_BASE_URL && env.MIROTALK_API_KEY_SECRET && env.MIROTALK_HOST_USERNAME && env.MIROTALK_HOST_PASSWORD);
-    case "videosdk": return Boolean(env.VIDEOSDK_API_KEY && env.VIDEOSDK_API_SECRET);
     case "daily": return Boolean(env.DAILY_API_KEY);
     case "livekit": return Boolean(env.LIVEKIT_URL && env.LIVEKIT_API_KEY && env.LIVEKIT_API_SECRET);
   }

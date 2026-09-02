@@ -4,12 +4,9 @@ export const targetRtcProviders = [
   "tencent",
   "cloudflare-realtime",
   "livekit",
-  "100ms",
-  "cometchat",
   "whereby",
   "jaas",
   "mirotalk",
-  "videosdk",
 ] as const;
 
 export type TargetRtcProviderId = (typeof targetRtcProviders)[number];
@@ -26,12 +23,9 @@ export function isRtcProvider(value: unknown): value is RtcProviderId {
 }
 
 const embeddedRtcProviders = new Set<RtcProviderId>([
-  "100ms",
-  "cometchat",
   "whereby",
   "jaas",
   "mirotalk",
-  "videosdk",
   "daily",
 ]);
 

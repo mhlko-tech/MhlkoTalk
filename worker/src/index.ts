@@ -76,15 +76,6 @@ export interface Env {
   TENCENT_SECRET_KEY?: string;
   CLOUDFLARE_REALTIME_APP_ID?: string;
   CLOUDFLARE_REALTIME_API_TOKEN?: string;
-  HMS_ACCESS_KEY?: string;
-  HMS_APP_SECRET?: string;
-  HMS_TEMPLATE_ID?: string;
-  HMS_TEMPLATE_SUBDOMAIN?: string;
-  HMS_ROLE?: string;
-  COMETCHAT_APP_ID?: string;
-  COMETCHAT_REGION?: string;
-  COMETCHAT_REST_API_KEY?: string;
-  COMETCHAT_AUTH_KEY?: string;
   WHEREBY_API_KEY?: string;
   JAAS_APP_ID?: string;
   JAAS_KEY_ID?: string;
@@ -93,8 +84,6 @@ export interface Env {
   MIROTALK_API_KEY_SECRET?: string;
   MIROTALK_HOST_USERNAME?: string;
   MIROTALK_HOST_PASSWORD?: string;
-  VIDEOSDK_API_KEY?: string;
-  VIDEOSDK_API_SECRET?: string;
   DAILY_API_KEY?: string;
   ROUTING_ADMIN_KEY?: string;
   LAVA_MEMBERSHIP_BACKEND_URL?: string;

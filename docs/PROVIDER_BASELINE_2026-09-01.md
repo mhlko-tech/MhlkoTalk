@@ -3,6 +3,9 @@
 Captured at `2026-09-01T20:29:40+03:00` before the sub-80% provider safety
 hardening. This file contains no credentials.
 
+This is a historical rollback record. The 100ms, CometChat and VideoSDK routes
+shown below were retired from the production portfolio on 2026-09-02.
+
 ## Worker rollback point
 
 - Production Worker version: `71be7517-73b9-4feb-8473-686cfce6eb78`

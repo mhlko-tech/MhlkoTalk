@@ -4,12 +4,9 @@ export const targetRtcProviders = [
   "tencent",
   "cloudflare-realtime",
   "livekit",
-  "100ms",
-  "cometchat",
   "whereby",
   "jaas",
   "mirotalk",
-  "videosdk",
 ] as const;
 
 export type TargetRtcProviderId = (typeof targetRtcProviders)[number];

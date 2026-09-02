@@ -27,6 +27,4 @@ for (const provider of targetRtcProviders) {
 
 assert.equal(databaseProviderSafetyPolicies["cloudflare-realtime"]?.stop_percent, 60);
 assert.equal(databaseProviderSafetyPolicies.whereby?.stop_percent, 75);
-assert.equal(databaseProviderSafetyPolicies.videosdk?.fail_closed_on_stale, true);
-
 console.log("Provider safety tests passed: every vendor route stops below 80%");

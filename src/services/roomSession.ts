@@ -252,16 +252,6 @@ export class RoomSession {
       connect: (credentials) => this.joinCloudflare(credentials),
     },
     {
-      provider: "100ms",
-      mediaCapabilities: this.embeddedMedia,
-      connect: (credentials) => this.joinEmbedded(credentials),
-    },
-    {
-      provider: "cometchat",
-      mediaCapabilities: this.embeddedMedia,
-      connect: (credentials) => this.joinEmbedded(credentials),
-    },
-    {
       provider: "whereby",
       mediaCapabilities: this.embeddedMedia,
       connect: (credentials) => this.joinWhereby(credentials),
@@ -273,11 +263,6 @@ export class RoomSession {
     },
     {
       provider: "mirotalk",
-      mediaCapabilities: this.embeddedMedia,
-      connect: (credentials) => this.joinEmbedded(credentials),
-    },
-    {
-      provider: "videosdk",
       mediaCapabilities: this.embeddedMedia,
       connect: (credentials) => this.joinEmbedded(credentials),
     },

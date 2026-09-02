@@ -13,19 +13,17 @@ both Windows and Android client adapters pass the same integration contract.
 4. `cloudflare-realtime` - metered SFU/TURN fallback protected by MHTalk's
    conservative usage circuit breaker.
 5. `livekit` - existing native RTC adapter and recurring fallback.
-6. `100ms` - conditional fallback; production activation requires verified
-   zero-cost suspension behavior.
-7. `cometchat` - small-community fallback subject to its free-plan user limit.
-8. `whereby` - hard-limited embedded fallback.
-9. `jaas` - limited-MAU fallback; never route an uncounted user to it.
-10. `mirotalk` - self-hosted SFU reserve on Oracle Always Free in Frankfurt.
-11. `videosdk` - prepaid trial-credit reserve, disabled before its balance ends.
+6. `whereby` - hard-limited embedded fallback.
+7. `jaas` - limited-MAU fallback; never route an uncounted user to it.
+8. `mirotalk` - self-hosted SFU reserve on Oracle Always Free in Frankfurt.
 
 `daily` is not part of the target portfolio because its usage-based billing
-does not provide the zero-dollar protection required for the Beta. `zegocloud`
-is not part of the core eleven because its no-card allocation is a short trial.
-MiroTalk is the self-hosted route and is protected by signed, short-lived join
-links issued only by the MHTalk Worker.
+does not provide the zero-dollar protection required for the Beta. `100ms`,
+`cometchat`, and `videosdk` were retired because their separate embedded UX,
+account setup, quota verification, and monitoring burden did not add meaningful
+resilience beyond the native providers. `zegocloud` is excluded because its
+no-card allocation is a short trial. MiroTalk is the self-hosted route and is
+protected by signed, short-lived join links issued only by the MHTalk Worker.
 
 ## Cloudflare zero-budget policy
 
@@ -85,13 +83,10 @@ access and does not rely on the provider invoice as a usage limiter.
 | Cloudflare Realtime | Windows + Android + Worker | Enabled with dedicated usage telemetry and a 60% hard internal cutoff. |
 | LiveKit | Windows + Android + Worker | Compatible fallback; disabled while its current allowance is exhausted. |
 | Whereby | Embedded Windows + Android + Worker | Eligible after staging; conservative participant-minute guard. |
-| 100ms | Embedded Windows + Android + Worker | Adapter complete; activate after credentials and dashboard limit verification. |
-| CometChat | Embedded Windows + Android + Worker | Adapter complete; activate after credentials and free-plan reset verification. |
 | JaaS | Embedded Windows + Android + Worker | Enabled for authenticated accounts with an exact 19-credential monthly ceiling below 80% of the 25-MAU plan. |
 | MiroTalk | Embedded Windows + Android + Worker + Oracle A1 | Enabled self-hosted fallback; HTTPS, signed join issuance, and media reachability verified. |
-| VideoSDK | Embedded Windows + Android + Worker | Adapter complete; activate only with provider-side prepaid balance telemetry. |
 
-All eleven target providers now have a Worker credential issuer and matching
+All eight target providers have a Worker credential issuer and matching
 Windows/Android adapters. A source adapter is still unavailable until its real
 account credentials are configured and its quota policy is verified.
 

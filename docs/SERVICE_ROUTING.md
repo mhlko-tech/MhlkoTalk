@@ -20,10 +20,11 @@ messaging and file implementations. The broker rejects an incomplete route with
 companion services exactly match the selected RTC provider.
 
 The current working tree contains matching Windows, Android and Worker routes
-for Stream, Agora, Tencent, Cloudflare Realtime, LiveKit, 100ms, CometChat,
-Whereby, JaaS, MiroTalk and VideoSDK. Daily Prebuilt remains a legacy Beta path
-and is not part of the target zero-budget portfolio.
-`PROVIDER_PORTFOLIO.md` is the authoritative list of the eleven target RTC
+for Stream, Agora, Tencent, Cloudflare Realtime, LiveKit, Whereby, JaaS and
+MiroTalk. Daily Prebuilt remains a legacy Beta path and is not part of the
+target zero-budget portfolio. `100ms`, CometChat and VideoSDK were retired to
+avoid maintaining three redundant embedded call experiences.
+`PROVIDER_PORTFOLIO.md` is the authoritative list of the eight target RTC
 providers and their activation order. A provider must not be returned as active
 until its server credential issuer and both native client adapters are installed
 and integration-tested. This prevents a quota failover from silently dropping
@@ -59,7 +60,7 @@ are ready. Secrets are never included in this response or stored in a client.
   on both clients. A failed provider therefore produces a clear error instead
   of an infinite spinner.
 
-All eleven targets have complete source adapters. Runtime readiness remains
+All eight targets have complete source adapters. Runtime readiness remains
 independent: a route is visibly unavailable until its real credentials, account
 plan and healthy quota policy are present. This is an intentional release-safety
 rule, not a placeholder route.

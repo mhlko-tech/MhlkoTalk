@@ -71,8 +71,6 @@ export const databaseProviderSafetyPolicies: Partial<Record<RtcProviderId, Datab
     notes: "Serverless SFU with dedicated egress telemetry. Warn at 450 GB, stop new rooms at 550 GB, and disable at 600 GB of the 1,000 GB free allocation.",
   },
   livekit: genericPolicy("5,000 monthly participant minutes. Keep disabled while exhausted; after a verified reset the route disables by 3,750."),
-  "100ms": genericPolicy("10,000 monthly participant minutes. Enable only after zero-cost suspension is verified; route disables by 7,500."),
-  cometchat: genericPolicy("Enable only after the account limit and reset unit are verified; the policy must disable by 75% of that verified limit."),
   whereby: genericPolicy("2,000 monthly participant minutes with no overage allocation. Route disables by 1,500 minutes."),
   jaas: {
     warning_percent: 60,
@@ -82,10 +80,6 @@ export const databaseProviderSafetyPolicies: Partial<Record<RtcProviderId, Datab
     fail_closed_on_stale: false,
     stale_after_seconds: 1500,
     notes: "JaaS Developer allows 25 MAU. Authenticated issuance stops at 19 credentials (76%), keeping the account below 80%.",
-  },
-  videosdk: {
-    ...genericPolicy("One-time prepaid USD 20 credit. Route disables by USD 15 and remains off when the balance cannot be reconciled."),
-    fail_closed_on_stale: true,
   },
 };
 
