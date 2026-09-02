@@ -41,6 +41,26 @@ export async function startLavaMembership(planId = "plus") {
   await openUrl(payload.subscriptionUrl);
 }
 
+export async function linkExistingLavaMembership(membershipToken: string): Promise<MembershipSync> {
+  const token = membershipToken.trim();
+  if (token.length < 24 || token.length > 512 || !/^[A-Za-z0-9_-]+$/.test(token)) {
+    throw new Error("Enter a valid MVDownloader LAVA activation code");
+  }
+  if (!accountSession.getAccessToken() || !serviceBaseUrl) {
+    throw new Error("Sign in to MHTalk before linking a membership");
+  }
+  await saveToken(token);
+  localStorage.removeItem(lastSyncKey);
+  try {
+    const result = await syncLavaMembership(true);
+    if (!result) throw new Error("The membership could not be verified");
+    return result;
+  } catch (error) {
+    await saveToken("");
+    throw error;
+  }
+}
+
 export async function syncLavaMembership(force = false): Promise<MembershipSync | null> {
   const token = await loadToken();
   const accountToken = accountSession.getAccessToken();

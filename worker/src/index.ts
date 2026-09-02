@@ -786,24 +786,12 @@ async function verifyRtcUsageAccess(token: string, secret: string): Promise<RtcU
   }
 }
 
-async function roomPresencePrefix(roomName: string) {
-  return `rtc:presence:${await digest(roomName)}:`;
-}
-
-async function roomPresenceKey(roomName: string, subject: string) {
-  return `${await roomPresencePrefix(roomName)}${await digest(subject)}`;
-}
-
 async function roomPresenceCount(env: Env, roomName: string) {
-  const prefix = await roomPresencePrefix(roomName);
-  let cursor: string | undefined;
-  let count = 0;
-  do {
-    const page = await env.PRIVATE_ROOMS.list({ prefix, cursor, limit: 1_000 });
-    count += page.keys.length;
-    cursor = page.list_complete ? undefined : page.cursor;
-  } while (cursor && count < 10_000);
-  return count;
+  const hub = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
+  const response = await hub.fetch(`https://internal/room-count?room=${await digest(roomName)}`);
+  if (!response.ok) throw new Error("Room presence service is unavailable");
+  const payload = await response.json() as { count?: unknown };
+  return Math.max(0, Number(payload.count) || 0);
 }
 
 async function handleRtcUsage(request: Request, env: Env) {
@@ -832,38 +820,28 @@ async function handleRtcUsage(request: Request, env: Env) {
     measuredTo.getTime() > now + 60_000 ||
     measuredTo.getTime() < now - 10 * 60_000
   ) return json({ error: "Invalid RTC usage window" }, 400);
-  const presenceKey = await roomPresenceKey(access.roomName, access.subject);
-  if (body?.leaving === true) await env.PRIVATE_ROOMS.delete(presenceKey);
-  else await env.PRIVATE_ROOMS.put(presenceKey, access.provider, { expirationTtl: 2 * 60 });
   const usageWindow = Math.floor(measuredTo.getTime() / 60_000);
-  const windowKey = `rtc:usage-window:${access.provider}:${await digest(`${access.subject}:${usageWindow}`)}`;
-  if (await env.PRIVATE_ROOMS.get(windowKey)) {
-    return json({ accepted: true, recorded: false, duplicateWindow: true });
-  }
-  await env.PRIVATE_ROOMS.put(windowKey, reportId, { expirationTtl: 10 * 60 });
   const amount = usageAmount(access.provider, seconds);
-  if (amount === null) return json({ accepted: true, metering: "provider" });
   const cycle = monthlyUsageCycle(measuredTo);
-  const response = await serviceApi(env, "/rest/v1/rpc/record_rtc_provider_usage", {
+  const ledger = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
+  return ledger.fetch("https://internal/rtc-usage", {
     method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      p_report_id: reportId,
-      p_provider: access.provider,
-      p_cycle_start: cycle.start,
-      p_cycle_end: cycle.end,
-      p_room_hash: await digest(`${access.roomName}:${access.subject}`),
-      p_source: "worker",
-      p_measured_from: measuredFrom.toISOString(),
-      p_measured_to: measuredTo.toISOString(),
-      p_amount: amount,
+      reportId,
+      provider: access.provider,
+      room: await digest(access.roomName),
+      subject: await digest(access.subject),
+      billingRoom: await digest(`${access.roomName}:${access.subject}`),
+      usageWindow,
+      leaving: body?.leaving === true,
+      cycleStart: cycle.start,
+      cycleEnd: cycle.end,
+      measuredFrom: measuredFrom.toISOString(),
+      measuredTo: measuredTo.toISOString(),
+      amount,
     }),
   });
-  if (!response?.ok) {
-    await env.PRIVATE_ROOMS.delete(windowKey);
-    return json({ error: "RTC usage service is unavailable" }, 503);
-  }
-  const recorded = await response.json().catch(() => false);
-  return json({ accepted: true, recorded: recorded === true });
 }
 
 type ProviderHealthSnapshot = {
@@ -1618,10 +1596,81 @@ async function handleSocial(request: Request, env: Env, path: string, user: Auth
   return json({ error: "Not found" }, 404);
 }
 
+type RtcLedgerState = {
+  windows: Record<string, number>;
+  presence: Record<string, { room: string; expiresAt: number }>;
+};
+
 export class PresenceHub implements DurableObject {
-  constructor(private readonly state: DurableObjectState) {}
+  constructor(private readonly state: DurableObjectState, private readonly env: Env) {}
   async fetch(request: Request): Promise<Response> {
-    const path = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    const path = url.pathname;
+    if (path === "/room-presence" && request.method === "POST") {
+      const body = await request.json() as { room: string; subject: string };
+      const ledger = await this.rtcLedger();
+      ledger.presence[body.subject] = { room: body.room, expiresAt: Date.now() + 2 * 60_000 };
+      await this.state.storage.put("rtc-ledger", ledger);
+      return json({ accepted: true });
+    }
+    if (path === "/room-count" && request.method === "GET") {
+      const ledger = await this.rtcLedger();
+      const room = url.searchParams.get("room") || "";
+      const count = Object.values(ledger.presence).filter((entry) => entry.room === room).length;
+      await this.state.storage.put("rtc-ledger", ledger);
+      return json({ count });
+    }
+    if (path === "/rtc-usage" && request.method === "POST") {
+      const body = await request.json() as {
+        reportId: string;
+        provider: RtcProviderId;
+        room: string;
+        subject: string;
+        billingRoom: string;
+        usageWindow: number;
+        leaving: boolean;
+        cycleStart: string;
+        cycleEnd: string;
+        measuredFrom: string;
+        measuredTo: string;
+        amount: number | null;
+      };
+      const ledger = await this.rtcLedger();
+      if (body.leaving) delete ledger.presence[body.subject];
+      else ledger.presence[body.subject] = { room: body.room, expiresAt: Date.now() + 2 * 60_000 };
+      if (body.amount === null) {
+        await this.state.storage.put("rtc-ledger", ledger);
+        return json({ accepted: true, metering: "provider" });
+      }
+      const windowKey = `${body.provider}:${body.subject}:${body.usageWindow}`;
+      if (ledger.windows[windowKey]) {
+        await this.state.storage.put("rtc-ledger", ledger);
+        return json({ accepted: true, recorded: false, duplicateWindow: true });
+      }
+      ledger.windows[windowKey] = Date.now() + 10 * 60_000;
+      await this.state.storage.put("rtc-ledger", ledger);
+      const response = await serviceApi(this.env, "/rest/v1/rpc/record_rtc_provider_usage", {
+        method: "POST",
+        body: JSON.stringify({
+          p_report_id: body.reportId,
+          p_provider: body.provider,
+          p_cycle_start: body.cycleStart,
+          p_cycle_end: body.cycleEnd,
+          p_room_hash: body.billingRoom,
+          p_source: "worker",
+          p_measured_from: body.measuredFrom,
+          p_measured_to: body.measuredTo,
+          p_amount: body.amount,
+        }),
+      });
+      if (!response?.ok) {
+        delete ledger.windows[windowKey];
+        await this.state.storage.put("rtc-ledger", ledger);
+        return json({ error: "RTC usage service is unavailable" }, 503);
+      }
+      const recorded = await response.json().catch(() => false);
+      return json({ accepted: true, recorded: recorded === true });
+    }
     if (path === "/deliver" && request.method === "POST") {
       const body = (await request.json()) as { targetId: string; event: unknown };
       let delivered = false;
@@ -1641,6 +1690,18 @@ export class PresenceHub implements DurableObject {
     server.serializeAttachment({ userId, friendIds: [] });
     this.broadcastPresence(userId, true);
     return new Response(null, { status: 101, webSocket: client });
+  }
+  private async rtcLedger(): Promise<RtcLedgerState> {
+    const now = Date.now();
+    const stored = await this.state.storage.get<RtcLedgerState>("rtc-ledger");
+    const ledger: RtcLedgerState = stored || { windows: {}, presence: {} };
+    for (const [key, expiresAt] of Object.entries(ledger.windows)) {
+      if (expiresAt <= now) delete ledger.windows[key];
+    }
+    for (const [key, entry] of Object.entries(ledger.presence)) {
+      if (entry.expiresAt <= now) delete ledger.presence[key];
+    }
+    return ledger;
   }
   webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
     try {
@@ -1960,11 +2021,12 @@ export default {
       usageSubject,
       env.INVITE_SIGNING_KEY,
     );
-    await env.PRIVATE_ROOMS.put(
-      await roomPresenceKey(roomName, usageSubject),
-      selected.provider,
-      { expirationTtl: 2 * 60 },
-    );
+    const presence = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
+    await presence.fetch("https://internal/room-presence", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ room: await digest(roomName), subject: await digest(usageSubject) }),
+    });
     return json({
       capabilitiesVersion: 2,
       token: providerToken,

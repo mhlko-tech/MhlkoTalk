@@ -146,4 +146,17 @@ await updateProviderHealthBatch(batchedEnvironment, {
 assert.equal(batchWrites, 1, "shared provider telemetry must use one KV write per refresh");
 assert.equal((await rtcCapabilities(batchedEnvironment)).find((item) => item.provider === "stream")?.usedPercent, 1);
 
+const readBoundEnvironment = testEnvironment();
+let capabilityReads = 0;
+const readBoundKv = readBoundEnvironment.PRIVATE_ROOMS;
+readBoundEnvironment.PRIVATE_ROOMS = {
+  async get(key: string, type?: string) {
+    capabilityReads += 1;
+    return readBoundKv.get(key, type as "text");
+  },
+  async put() {},
+} as unknown as KVNamespace;
+await rtcCapabilities(readBoundEnvironment);
+assert.equal(capabilityReads, 3, "capability discovery must use a fixed three KV reads");
+
 console.log("Provider routing tests passed for all 11 target providers plus legacy Daily");

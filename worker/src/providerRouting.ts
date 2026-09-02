@@ -123,10 +123,30 @@ async function providerHealth(env: RoutingEnvironment, provider: RtcProviderId):
 }
 
 export async function rtcCapabilities(env: RoutingEnvironment): Promise<ProviderCapability[]> {
-  return Promise.all(providerOrder(env.RTC_PROVIDER_ORDER).map(async (provider) => {
+  // Read the shared snapshot once per request. The previous implementation
+  // fetched the same KV key once for every provider, which multiplied account
+  // KV usage whenever a client requested capabilities or joined a room.
+  const [shared, cloudflare, jaas] = await Promise.all([
+    env.PRIVATE_ROOMS.get(sharedHealthKey, "json") as Promise<SharedProviderHealth | null>,
+    env.PRIVATE_ROOMS.get("routing:health:rtc:cloudflare-realtime", "json") as Promise<Partial<ProviderHealth> | null>,
+    env.PRIVATE_ROOMS.get("routing:health:rtc:jaas", "json") as Promise<Partial<ProviderHealth> | null>,
+  ]);
+  const healthFor = (provider: RtcProviderId): ProviderHealth => {
+    const stored = provider === "cloudflare-realtime"
+      ? cloudflare
+      : provider === "jaas"
+        ? jaas
+        : shared?.[provider];
+    return {
+      usedPercent: Math.min(100, Math.max(0, Number(stored?.usedPercent) || 0)),
+      disabled: stored?.disabled === true,
+      updatedAt: typeof stored?.updatedAt === "string" ? stored.updatedAt : new Date(0).toISOString(),
+    };
+  };
+  return providerOrder(env.RTC_PROVIDER_ORDER).map((provider) => {
     const configured = providerConfigured(provider, env);
     const hasAdapter = adapterReady(provider);
-    const health = await providerHealth(env, provider);
+    const health = healthFor(provider);
     const policy = routingThresholds(provider);
     const stale = !health.disabled && healthIsStale(provider, health);
     const ready = configured && hasAdapter && !stale && !health.disabled && health.usedPercent < policy.disableAt;
@@ -155,7 +175,7 @@ export async function rtcCapabilities(env: RoutingEnvironment): Promise<Provider
               ? "Usage crossed the guarded allocation threshold"
             : undefined;
     return { provider, ready, configured, adapterReady: hasAdapter, state, usedPercent: health.usedPercent, reason };
-  }));
+  });
 }
 
 export async function selectRtcProvider(

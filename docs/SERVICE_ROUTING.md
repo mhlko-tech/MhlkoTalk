@@ -83,11 +83,13 @@ The database owns `subscription_tier` and `subscription_expires_at`. Only the
 service role can update them. Clients clamp quality and file sizes locally for a
 fast response, while the signed token response remains authoritative.
 
-The Beta support surface starts a session on the existing LAVA backend and links
+The Beta support surface starts a session on the shared LAVA backend and links
 to the Patreon membership page. LAVA's opaque capability is stored in Windows
-Credential Manager or the Android Keystore. MHTalk's Worker verifies it directly
-with the membership backend, binds it to one MHTalk account, and only then
-updates the server-owned Plus fields. There is no client-side switch that can
-grant Plus. Cross-app Patreon identity linking is still gated on the provider's
-OAuth credentials. Google Play builds must use Play Billing unless the app is
-enrolled in an applicable alternative-billing program.
+Credential Manager or the Android Keystore. A user who subscribed through
+MVDownloader can explicitly copy that protected activation code and link it from
+MHTalk's Support screen. MHTalk's Worker verifies it directly with the membership
+backend, binds it to one MHTalk account, and only then updates the server-owned
+Plus fields. There is no client-side switch that can grant Plus. Cross-app
+Patreon identity linking is still gated on the provider's OAuth credentials.
+Google Play builds must use Play Billing unless the app is enrolled in an
+applicable alternative-billing program.

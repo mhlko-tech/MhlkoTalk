@@ -47,7 +47,7 @@ import {
   type UpdateActivity,
 } from "./services/appUpdater";
 import { isKeyboardLanguageShortcut, switchKeyboardLanguage } from "./services/inputLanguage";
-import { startLavaMembership, syncLavaMembership } from "./services/membershipService";
+import { linkExistingLavaMembership, startLavaMembership, syncLavaMembership } from "./services/membershipService";
 
 const initial: SessionSnapshot = {
   state: "idle",
@@ -253,6 +253,7 @@ export function App() {
   const [supportOpen, setSupportOpen] = useState(false);
   const [lavaBusy, setLavaBusy] = useState(false);
   const [membershipMessage, setMembershipMessage] = useState("");
+  const [membershipCode, setMembershipCode] = useState("");
   const [friendSearch, setFriendSearch] = useState("");
   const [friendResults, setFriendResults] = useState<SearchProfile[]>([]);
   const [socialBusy, setSocialBusy] = useState("");
@@ -1894,8 +1895,33 @@ export function App() {
             <p>MHTalk Beta selects among compatible free realtime providers. Stream, Agora, Tencent, Whereby, Daily and LiveKit are used only when their server route and this app version are ready.</p>
             <p>The server selects a provider before the room opens and retries the next compatible provider if room creation fails. Active rooms are never moved between incompatible providers.</p>
             <div className="support-note"><strong>You can help without paying.</strong><span>Sharing MHTalk with friends is one of the most useful ways to help this small project reach sustainable hosting.</span></div>
-            <p className="support-membership">One active membership is planned to unlock premium features in both MHTalk and MVDownloader.</p>
+            <p className="support-membership">One active LAVA membership unlocks premium features in both MHTalk and MVDownloader after it is linked securely in each app.</p>
             {membershipMessage && <div className="support-membership-status">{membershipMessage}</div>}
+            <div className="support-membership-link">
+              <label htmlFor="membership-activation-code">Already subscribed through MVDownloader?</label>
+              <p>In MVDownloader open Settings → Membership details → LAVA.top, then copy the MHTalk activation code and paste it here.</p>
+              <div>
+                <input
+                  id="membership-activation-code"
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={membershipCode}
+                  placeholder="Paste activation code"
+                  onChange={(event) => setMembershipCode(event.target.value)}
+                />
+                <button className="control" disabled={lavaBusy || !membershipCode.trim()} onClick={async () => {
+                  setLavaBusy(true);
+                  try {
+                    const result = await linkExistingLavaMembership(membershipCode);
+                    setMembershipCode("");
+                    setMembershipMessage(result.tier === "plus" ? "MHTalk Plus is active on this account." : result.pending ? "Payment confirmation is still pending." : "No active LAVA membership was found.");
+                  } catch (error) {
+                    setMembershipMessage(error instanceof Error ? error.message : "Could not link this membership");
+                  } finally { setLavaBusy(false); }
+                }}>Link membership</button>
+              </div>
+            </div>
             <div className="support-actions">
               <button className="primary" disabled={lavaBusy} onClick={async () => {
                 setLavaBusy(true);

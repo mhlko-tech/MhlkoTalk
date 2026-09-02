@@ -786,6 +786,45 @@ button {
   margin: -7px 0 14px;
   padding: 11px 12px;
 }
+.support-membership-link {
+  background: #171b2b;
+  border: 1px solid #333b5c;
+  border-radius: 12px;
+  display: grid;
+  gap: 7px;
+  margin: 0 0 14px;
+  padding: 13px;
+}
+.support-membership-link > label {
+  color: #f4f5ff;
+  font-size: 13px;
+  font-weight: 750;
+}
+.support-membership-link > p {
+  color: #aeb5ce;
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+}
+.support-membership-link > div {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.support-membership-link input {
+  background: #0d101b;
+  border: 1px solid #424c72;
+  border-radius: 9px;
+  color: #f4f5ff;
+  min-height: 40px;
+  min-width: 0;
+  outline: none;
+  padding: 0 11px;
+}
+.support-membership-link input:focus {
+  border-color: #7766ea;
+  box-shadow: 0 0 0 3px rgba(119, 102, 234, 0.18);
+}
 .support-actions {
   display: grid;
   gap: 9px;
@@ -793,6 +832,12 @@ button {
 }
 .support-actions button {
   min-height: 42px;
+}
+@media (max-width: 620px) {
+  .support-membership-link > div,
+  .support-actions {
+    grid-template-columns: 1fr;
+  }
 }
 .profile-edit-modal {
   max-height: calc(100vh - 46px);
