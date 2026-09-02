@@ -20,7 +20,7 @@
 - [x] JavaScript audit reports zero known vulnerabilities in the scanned dependency sets.
 - [x] Python dependency audit reports zero known vulnerabilities in `requirements_build.txt`.
 - [x] Clean MVDownloader EXE excludes the retired Patreon runtime-config module and exact local OAuth values.
-- [ ] GitHub CI passes on the pushed commits.
+- [x] GitHub CI passes on the pushed implementation commits.
 - [ ] Production artifacts are rebuilt from the reviewed commits only.
 
 ## Functional policy
