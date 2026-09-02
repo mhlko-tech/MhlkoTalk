@@ -87,6 +87,7 @@ export interface Env {
   DAILY_API_KEY?: string;
   ROUTING_ADMIN_KEY?: string;
   LAVA_MEMBERSHIP_BACKEND_URL?: string;
+  LAVA_MEMBERSHIP_BACKEND?: Fetcher;
 }
 
 type AuthUser = { id: string; accessToken: string; email?: string; userMetadata?: Record<string, unknown>; appMetadata?: Record<string, unknown> };
@@ -586,13 +587,18 @@ async function serviceApi(env: Env, path: string, init: RequestInit = {}) {
   });
 }
 
-async function membershipBackendRequest(url: string, init: RequestInit = {}) {
+async function membershipBackendRequest(url: string, init: RequestInit = {}, service?: Fetcher) {
   let lastStatus = 503;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8_000);
     try {
-      const response = await fetch(url, { ...init, signal: controller.signal });
+      // Prefer a Service Binding for same-account Worker-to-Worker traffic.
+      // The public URL remains as a safe fallback for local development and
+      // for deployments created before the binding was configured.
+      const response = service
+        ? await service.fetch(url, { ...init, signal: controller.signal })
+        : await fetch(url, { ...init, signal: controller.signal });
       lastStatus = response.status;
       const raw = await response.text();
       let payload: Record<string, unknown> | null = null;
@@ -670,7 +676,7 @@ async function syncLavaSubscription(request: Request, env: Env, user: AuthUser) 
   const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
   const { response: verification, payload: membershipPayload } = await membershipBackendRequest(`${backend}/v1/subscription-sessions/status`, {
     headers: { authorization: `Bearer ${membershipToken}`, accept: "application/json" },
-  });
+  }, env.LAVA_MEMBERSHIP_BACKEND);
   const membership = (membershipPayload || {}) as {
     provider?: unknown;
     plan?: unknown;
@@ -2059,7 +2065,7 @@ export default {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ planId }),
-      });
+      }, env.LAVA_MEMBERSHIP_BACKEND);
       if (!payload) return json({ error: "Membership service is temporarily unavailable. Please try again." }, 503);
       if (response.ok && typeof payload.subscriptionUrl === "string") {
         try {
@@ -2088,7 +2094,7 @@ export default {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: "{}",
-      });
+      }, env.LAVA_MEMBERSHIP_BACKEND);
       if (!payload) return json({ error: "Patreon linking is temporarily unavailable. Please try again." }, 503);
       if (response.ok && typeof payload.linkUrl === "string") {
         try {

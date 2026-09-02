@@ -10,6 +10,10 @@ MIROTALK_BASE_URL = "https://129-159-223-64.sslip.io"
 MIROTALK_HOST_USERNAME = "mhtalk-worker"
 LAVA_MEMBERSHIP_BACKEND_URL = "https://mvdownloader-lava-staging.mhlkotalk.workers.dev"
 
+[[services]]
+binding = "LAVA_MEMBERSHIP_BACKEND"
+service = "mvdownloader-lava-staging"
+
 [[kv_namespaces]]
 binding = "PRIVATE_ROOMS"
 id = "3ced063544014961bd3aa2b5af26db09"
