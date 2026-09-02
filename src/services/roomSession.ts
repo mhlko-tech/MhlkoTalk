@@ -212,53 +212,83 @@ export class RoomSession {
     audiooutput: localStorage.getItem("mhtalk.device.audiooutput") || "",
     videoinput: localStorage.getItem("mhtalk.device.videoinput") || "",
   };
+  private readonly liveKitParityMedia = {
+    nativeMhtalkControls: true,
+    independentScreenAudio: true,
+    stableAudioOutputRoute: true,
+    crossPlatformParity: true,
+  } as const;
+  private readonly desktopOnlyParityMedia = {
+    nativeMhtalkControls: true,
+    independentScreenAudio: true,
+    stableAudioOutputRoute: true,
+    crossPlatformParity: false,
+  } as const;
+  private readonly embeddedMedia = {
+    nativeMhtalkControls: false,
+    independentScreenAudio: false,
+    stableAudioOutputRoute: false,
+    crossPlatformParity: false,
+  } as const;
   private readonly rtcAdapters = new RtcAdapterRegistry([
     {
       provider: "stream",
+      mediaCapabilities: this.desktopOnlyParityMedia,
       connect: (credentials) => this.joinStream(credentials),
     },
     {
       provider: "agora",
+      mediaCapabilities: this.liveKitParityMedia,
       connect: (credentials) => this.joinAgora(credentials),
     },
     {
       provider: "tencent",
+      mediaCapabilities: this.liveKitParityMedia,
       connect: (credentials) => this.joinTencent(credentials),
     },
     {
       provider: "cloudflare-realtime",
+      mediaCapabilities: this.desktopOnlyParityMedia,
       connect: (credentials) => this.joinCloudflare(credentials),
     },
     {
       provider: "100ms",
+      mediaCapabilities: this.embeddedMedia,
       connect: (credentials) => this.joinEmbedded(credentials),
     },
     {
       provider: "cometchat",
+      mediaCapabilities: this.embeddedMedia,
       connect: (credentials) => this.joinEmbedded(credentials),
     },
     {
       provider: "whereby",
+      mediaCapabilities: this.embeddedMedia,
       connect: (credentials) => this.joinWhereby(credentials),
     },
     {
       provider: "jaas",
+      mediaCapabilities: this.embeddedMedia,
       connect: (credentials) => this.joinEmbedded(credentials),
     },
     {
       provider: "mirotalk",
+      mediaCapabilities: this.embeddedMedia,
       connect: (credentials) => this.joinEmbedded(credentials),
     },
     {
       provider: "videosdk",
+      mediaCapabilities: this.embeddedMedia,
       connect: (credentials) => this.joinEmbedded(credentials),
     },
     {
       provider: "daily",
+      mediaCapabilities: this.embeddedMedia,
       connect: (credentials) => this.joinDaily(credentials),
     },
     {
       provider: "livekit",
+      mediaCapabilities: this.liveKitParityMedia,
       connect: (credentials) =>
         this.joinLiveKit(credentials.roomName, credentials),
     },
@@ -579,12 +609,12 @@ export class RoomSession {
           quality,
           this.routing.subscription.entitlements.maxScreenShareQuality,
         );
-        await this.streamRtc.setScreenShareEnabled(enabled, quality);
+        const screenAudioEnabled = await this.streamRtc.setScreenShareEnabled(enabled, quality);
         if (!enabled) this.detachMedia("local-screen");
         if (enabled) localStorage.setItem("mhtalk.share-quality", quality);
         this.update({
           screenShareEnabled: enabled,
-          screenShareAudioEnabled: false,
+          screenShareAudioEnabled: screenAudioEnabled,
         });
       } catch {
         this.detachMedia("local-screen");
@@ -1034,18 +1064,22 @@ export class RoomSession {
     else localStorage.removeItem(`mhtalk.device.${kind}`);
     if (this.cloudflareRtc.connected) {
       await this.cloudflareRtc.selectDevice(kind, deviceId);
+      if (kind === "audiooutput") await this.applyAudioOutputDevice(deviceId);
       return;
     }
     if (this.tencentRtc.connected) {
       await this.tencentRtc.selectDevice(kind, deviceId);
+      if (kind === "audiooutput") await this.applyAudioOutputDevice(deviceId);
       return;
     }
     if (this.agoraRtc.connected) {
       await this.agoraRtc.selectDevice(kind, deviceId);
+      if (kind === "audiooutput") await this.applyAudioOutputDevice(deviceId);
       return;
     }
     if (this.streamRtc.call) {
       await this.streamRtc.selectDevice(kind, deviceId);
+      if (kind === "audiooutput") await this.applyAudioOutputDevice(deviceId);
       return;
     }
     if (this.room)
@@ -1671,6 +1705,7 @@ export class RoomSession {
       element.autoplay = true;
       document.body.appendChild(element);
       this.attachedMediaElements.add(element);
+      void this.applyAudioElementOutput(element);
       const collection =
         publication.source === Track.Source.ScreenShareAudio
           ? this.remoteStreamAudio
@@ -1858,10 +1893,10 @@ export class RoomSession {
     } else {
       const credentials = suppliedCredentials || await this.fetchToken(roomName);
       if (credentials.routing.rtc.provider !== "livekit") {
-        throw new Error("The selected call provider is not supported by this app version");
+        throw new Error("This app version cannot open the selected room connection");
       }
       this.routing = credentials.routing;
-      this.update({ connectionMessage: `Connecting through ${credentials.routing.rtc.provider}…` });
+      this.update({ connectionMessage: "Connecting to the room…" });
       await withTimeout(room.connect(credentials.routing.rtc.serverUrl, credentials.token, {
         autoSubscribe: false,
       }), 18_000, "The selected realtime server took too long to respond");
@@ -2548,7 +2583,7 @@ export class RoomSession {
 
   private async fetchToken(
     roomName: string,
-    supportedRtcProviders = this.rtcAdapters.supportedProviders(),
+    supportedRtcProviders = this.rtcAdapters.routableProviders(),
   ) {
     const accountToken = accountSession.getAccessToken();
     const requestBody = {
@@ -2908,6 +2943,7 @@ export class RoomSession {
     existing.add(audio);
     collection.set(identity, existing);
     this.attachedMediaElements.add(audio);
+    void this.applyAudioElementOutput(audio);
     this.applyParticipantVolumes(identity);
     void audio.play().catch(() => undefined);
   }
@@ -2919,6 +2955,29 @@ export class RoomSession {
       element.remove();
     });
     collection.delete(identity);
+  }
+
+  private async applyAudioElementOutput(
+    element: HTMLAudioElement,
+    deviceId = this.preferredDevices.audiooutput || "default",
+  ) {
+    const routed = element as HTMLAudioElement & {
+      setSinkId?: (sinkId: string) => Promise<void>;
+    };
+    if (typeof routed.setSinkId !== "function") return;
+    try {
+      await routed.setSinkId(deviceId);
+    } catch {
+      if (deviceId !== "default") await routed.setSinkId("default").catch(() => undefined);
+    }
+  }
+
+  private async applyAudioOutputDevice(deviceId: string) {
+    await Promise.all(
+      [...this.attachedMediaElements]
+        .filter((element): element is HTMLAudioElement => element instanceof HTMLAudioElement)
+        .map((element) => this.applyAudioElementOutput(element, deviceId || "default")),
+    );
   }
 
   private detachMedia(id?: string) {

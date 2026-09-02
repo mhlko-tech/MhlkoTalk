@@ -1,6 +1,7 @@
 use tauri::Manager;
 
 const AUTH_VAULT_SERVICE: &str = "MHTalk";
+const SERVICE_BASE_URL: &str = "https://mhtalk-token-service.mhlkotalk.workers.dev";
 const CONNECTION_TOKEN_ENDPOINT: &str =
     "https://mhtalk-token-service.mhlkotalk.workers.dev/livekit/token";
 const AUTH_CHUNK_MANIFEST_PREFIX: &str = "mhtalk-chunks:v1:";
@@ -237,6 +238,82 @@ async fn fetch_connection_token(
     })
 }
 
+// Account and presence requests use the same fixed native transport as room
+// token acquisition. Only MHTalk social paths are accepted, so renderer
+// content cannot turn this into an arbitrary HTTP proxy.
+fn service_api_path_allowed(path: &str) -> bool {
+    let lowercase = path.to_ascii_lowercase();
+    (path.starts_with("/social/") || path == "/presence/ticket")
+        && !path.starts_with("//")
+        && !path.contains("..")
+        && !lowercase.contains("%2e")
+        && !path.contains('#')
+        && !path
+            .chars()
+            .any(|value| matches!(value, '\r' | '\n' | '\\'))
+        && path.len() <= 4096
+}
+
+#[tauri::command]
+async fn fetch_service_api(
+    path: String,
+    method: String,
+    body: Option<String>,
+    access_token: String,
+) -> Result<ConnectionServiceResponse, String> {
+    if !service_api_path_allowed(&path) {
+        return Err("The requested MHTalk service path is not allowed".to_string());
+    }
+    let method = method.to_ascii_uppercase();
+    if !matches!(method.as_str(), "GET" | "POST" | "PATCH" | "DELETE") {
+        return Err("The requested MHTalk service method is not allowed".to_string());
+    }
+    if access_token.is_empty() || access_token.len() > 16_384 {
+        return Err("The stored account session is invalid".to_string());
+    }
+    if body.as_ref().is_some_and(|value| value.len() > 262_144) {
+        return Err("The MHTalk service request is too large".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(12))
+        .build()
+        .map_err(|_| "Could not initialize the native MHTalk service".to_string())?;
+    let request_method = reqwest::Method::from_bytes(method.as_bytes())
+        .map_err(|_| "The requested MHTalk service method is invalid".to_string())?;
+    let mut request = client
+        .request(request_method, format!("{SERVICE_BASE_URL}{path}"))
+        .bearer_auth(access_token)
+        .header(reqwest::header::CONTENT_TYPE, "application/json");
+    if let Some(body) = body {
+        request = request.body(body);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|_| "The MHTalk service could not be reached".to_string())?;
+    let status = response.status().as_u16();
+    if response
+        .content_length()
+        .is_some_and(|length| length > 2_097_152)
+    {
+        return Err("The MHTalk service returned an invalid response".to_string());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "The MHTalk service response was interrupted".to_string())?;
+    if bytes.len() > 2_097_152 {
+        return Err("The MHTalk service returned an invalid response".to_string());
+    }
+    Ok(ConnectionServiceResponse {
+        status,
+        body: String::from_utf8(bytes.to_vec())
+            .map_err(|_| "The MHTalk service returned invalid text".to_string())?,
+    })
+}
+
 #[tauri::command]
 fn auth_secret_get(key: String) -> Result<Option<String>, String> {
     let Some(value) = auth_raw_get(&key)? else {
@@ -341,6 +418,24 @@ mod auth_storage_tests {
         assert!(parse_auth_chunk_manifest("mhtalk-chunks:v1:abc:0").is_none());
     }
 
+    #[test]
+    fn native_service_proxy_accepts_only_mhtalk_social_paths() {
+        assert!(service_api_path_allowed("/social/friends"));
+        assert!(service_api_path_allowed("/social/search?q=test"));
+        assert!(service_api_path_allowed("/presence/ticket"));
+        assert!(!service_api_path_allowed("https://example.com"));
+        assert!(!service_api_path_allowed("//example.com/social/friends"));
+        assert!(!service_api_path_allowed("/social/../service/capabilities"));
+        assert!(!service_api_path_allowed(
+            "/social/%2e%2e/service/capabilities"
+        ));
+        assert!(!service_api_path_allowed("/social/friends#ignored"));
+        assert!(!service_api_path_allowed("/livekit/token"));
+        assert!(!service_api_path_allowed(
+            "/social/friends\r\nmalicious: true"
+        ));
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     #[ignore = "requires the Windows Credential Manager"]
@@ -394,6 +489,7 @@ pub fn run() {
             read_dropped_file,
             open_report_bug,
             fetch_connection_token,
+            fetch_service_api,
             apply_window_icon,
             switch_input_language,
             auth_secret_get,

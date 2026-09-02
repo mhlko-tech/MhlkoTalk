@@ -16,8 +16,16 @@ export type RoomConnectionCredentials = {
   routing: RoomServiceRouting;
 };
 
+export type RtcMediaCapabilities = {
+  nativeMhtalkControls: boolean;
+  independentScreenAudio: boolean;
+  stableAudioOutputRoute: boolean;
+  crossPlatformParity: boolean;
+};
+
 export interface RtcProviderAdapter {
   readonly provider: RtcProviderId;
+  readonly mediaCapabilities: RtcMediaCapabilities;
   connect(credentials: RoomConnectionCredentials): Promise<void>;
 }
 
@@ -42,12 +50,30 @@ export class RtcAdapterRegistry {
     return [...this.adapters.keys()];
   }
 
+  routableProviders(): RtcProviderId[] {
+    return [...this.adapters.values()]
+      .filter((adapter) => {
+        const media = adapter.mediaCapabilities;
+        return media.nativeMhtalkControls &&
+          media.independentScreenAudio &&
+          media.stableAudioOutputRoute &&
+          media.crossPlatformParity;
+      })
+      .map((adapter) => adapter.provider);
+  }
+
   async connect(credentials: RoomConnectionCredentials) {
     const provider = credentials.routing.rtc.provider;
     const adapter = this.adapters.get(provider);
     if (!adapter) {
       throw new Error(
-        `The selected call provider (${provider}) is not supported by this app version`,
+        "This app version cannot open the selected room connection",
+      );
+    }
+    const media = adapter.mediaCapabilities;
+    if (!media.nativeMhtalkControls || !media.independentScreenAudio || !media.stableAudioOutputRoute || !media.crossPlatformParity) {
+      throw new Error(
+        "This room connection cannot provide the full MHTalk media experience on every device",
       );
     }
     await adapter.connect(credentials);

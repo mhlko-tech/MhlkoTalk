@@ -143,10 +143,11 @@ export class StreamRtcSession {
 
   async setScreenShareEnabled(enabled: boolean, quality: MediaQuality) {
     const call = this.callInstance;
-    if (!call) return;
+    if (!call) return false;
     if (!enabled) {
       await call.screenShare.disable(true);
-      return;
+      await call.screenShare.disableScreenShareAudio();
+      return false;
     }
     const bitrate = quality === "high" ? 4_000_000 : quality === "medium" ? 2_500_000 : 1_000_000;
     call.screenShare.setSettings({
@@ -154,7 +155,11 @@ export class StreamRtcSession {
       maxBitrate: bitrate,
       contentHint: "detail",
     });
+    // Stream keeps screen audio disabled unless it is requested before the
+    // display picker opens. This is independent from call.microphone.
+    call.screenShare.enableScreenShareAudio();
     await call.screenShare.enable();
+    return call.screenShare.state.audioEnabled;
   }
 
   async selectDevice(kind: MediaDeviceKind, deviceId: string) {

@@ -8,8 +8,24 @@ const participant = {
 } as StreamVideoParticipant;
 const calls: Array<{ sessionId: string; trackType: string }> = [];
 const cleanup = () => undefined;
+const screenActions: string[] = [];
+const screenShare = {
+  state: { audioEnabled: false },
+  setSettings: () => screenActions.push("settings"),
+  enableScreenShareAudio: () => {
+    screenShare.state.audioEnabled = true;
+    screenActions.push("audio-on");
+  },
+  disableScreenShareAudio: async () => {
+    screenShare.state.audioEnabled = false;
+    screenActions.push("audio-off");
+  },
+  enable: async () => screenActions.push("share-on"),
+  disable: async () => screenActions.push("share-off"),
+};
 const fakeCall = {
   state: { remoteParticipants: [participant] },
+  screenShare,
   bindVideoElement: (
     _element: HTMLVideoElement,
     sessionId: string,
@@ -34,5 +50,8 @@ assert.deepEqual(calls, [
   { sessionId: "friend-session", trackType: "videoTrack" },
   { sessionId: "friend-session", trackType: "screenShareTrack" },
 ]);
+assert.equal(await session.setScreenShareEnabled(true, "medium"), true);
+assert.equal(await session.setScreenShareEnabled(false, "medium"), false);
+assert.deepEqual(screenActions, ["settings", "audio-on", "share-on", "share-off", "audio-off"]);
 
-console.log("Stream remote camera/screen binding behavior verified");
+console.log("Stream remote binding and independent desktop screen-audio behavior verified");

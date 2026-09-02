@@ -39,6 +39,12 @@ import {
   jaasProviderThresholds,
   validateProviderSafetyPolicies,
 } from "./providerSafety";
+import {
+  signPresenceTicket,
+  signSocialInvite,
+  verifyPresenceTicket,
+  verifySocialInvite,
+} from "./socialTokens";
 
 export { CloudflareRtcRoom, CloudflareRtcUsage, JaasQuotaGuard };
 
@@ -1162,10 +1168,28 @@ function shortCode() {
 async function createPrivateRoom(env: Env) {
   const roomName = `Private-${crypto.randomUUID().replaceAll("-", "")}`;
   const invite = await signedInvite(roomName, env.INVITE_SIGNING_KEY);
-  let code = shortCode();
-  while (await env.PRIVATE_ROOMS.get(code)) code = shortCode();
-  await env.PRIVATE_ROOMS.put(code, JSON.stringify({ roomName, invite }), { expirationTtl: 604800 });
+  const registry = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
+  const response = await registry.fetch("https://presence.internal/private-room/create", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ roomName, invite }),
+  });
+  if (!response.ok) throw new Error("Private room registry is unavailable");
+  const { code } = await response.json() as { code?: string };
+  if (!code) throw new Error("Private room registry returned an invalid code");
   return { roomName, code };
+}
+
+async function resolvePrivateRoom(env: Env, code: string) {
+  const registry = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
+  const response = await registry.fetch(
+    `https://presence.internal/private-room/resolve?code=${encodeURIComponent(code)}`,
+  );
+  if (response.ok) return response.json() as Promise<{ roomName: string; invite: string }>;
+  // Preserve codes created by the previous KV implementation until their
+  // seven-day TTL expires. New codes never write to KV.
+  const legacy = await env.PRIVATE_ROOMS.get(code);
+  return legacy ? JSON.parse(legacy) as { roomName: string; invite: string } : null;
 }
 async function issueToken(roomName: string, env: Env, user: AuthUser | null, profile: Profile | null) {
   const token = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
@@ -1569,8 +1593,7 @@ async function handleSocial(request: Request, env: Env, path: string, user: Auth
     }));
   }
   if (path === "/presence/ticket" && request.method === "POST") {
-    const ticket = crypto.randomUUID();
-    await env.PRIVATE_ROOMS.put(`presence-ticket:${ticket}`, user.id, { expirationTtl: 60 });
+    const ticket = await signPresenceTicket(user.id, env.INVITE_SIGNING_KEY);
     return json({ ticket });
   }
   if (path === "/social/invite" && request.method === "POST") {
@@ -1579,11 +1602,15 @@ async function handleSocial(request: Request, env: Env, path: string, user: Auth
     const friendship = await rpc(env, user, "are_friends", { other_profile: body.targetId });
     if (!friendship.ok || (await friendship.json()) !== true) return json({ error: "Only friends can receive invitations" }, 403);
     const privateRoom = body.private ? await createPrivateRoom(env) : null;
-    const inviteId = crypto.randomUUID();
-    const payload = { id: inviteId, senderId: user.id, targetId: body.targetId,
-      roomName: privateRoom?.roomName || body.roomName || "Main", inviteCode: privateRoom?.code || body.inviteCode || null,
-      createdAt: new Date().toISOString() };
-    await env.PRIVATE_ROOMS.put(`social-invite:${inviteId}`, JSON.stringify(payload), { expirationTtl: 600 });
+    const inviteClaims = {
+      senderId: user.id,
+      targetId: body.targetId,
+      roomName: privateRoom?.roomName || body.roomName || "Main",
+      inviteCode: privateRoom?.code || body.inviteCode || null,
+      createdAt: new Date().toISOString(),
+    };
+    const inviteId = await signSocialInvite(inviteClaims, env.INVITE_SIGNING_KEY);
+    const payload = { id: inviteId, ...inviteClaims };
     const hub = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
     const delivered = await hub.fetch("https://presence.internal/deliver", { method: "POST", body: JSON.stringify({
       targetId: body.targetId, event: { type: "invite", invite: payload },
@@ -1593,10 +1620,20 @@ async function handleSocial(request: Request, env: Env, path: string, user: Auth
     return json(payload);
   }
   if (path.startsWith("/social/invite/") && request.method === "GET") {
-    const stored = await env.PRIVATE_ROOMS.get(`social-invite:${path.slice("/social/invite/".length)}`);
-    if (!stored) return json({ error: "Invitation expired" }, 404);
-    const invite = JSON.parse(stored) as { targetId: string };
-    return invite.targetId === user.id ? json(invite) : json({ error: "Forbidden" }, 403);
+    const inviteId = path.slice("/social/invite/".length);
+    const invite = await verifySocialInvite(inviteId, env.INVITE_SIGNING_KEY);
+    if (!invite) {
+      // Invitations issued by the immediately previous Worker build remain
+      // usable for their original ten-minute lifetime.
+      const legacy = await env.PRIVATE_ROOMS.get(`social-invite:${inviteId}`);
+      if (!legacy) return json({ error: "Invitation expired" }, 404);
+      const payload = JSON.parse(legacy) as { targetId?: string };
+      return payload.targetId === user.id ? json(payload) : json({ error: "Forbidden" }, 403);
+    }
+    return invite.targetId === user.id
+      ? json({ id: inviteId, senderId: invite.senderId, targetId: invite.targetId,
+          roomName: invite.roomName, inviteCode: invite.inviteCode, createdAt: invite.createdAt })
+      : json({ error: "Forbidden" }, 403);
   }
   return json({ error: "Not found" }, 404);
 }
@@ -1604,6 +1641,12 @@ async function handleSocial(request: Request, env: Env, path: string, user: Auth
 type RtcLedgerState = {
   windows: Record<string, number>;
   presence: Record<string, { room: string; expiresAt: number }>;
+};
+
+type PrivateRoomRecord = {
+  roomName: string;
+  invite: string;
+  expiresAt: number;
 };
 
 export class PresenceHub implements DurableObject {
@@ -1617,6 +1660,32 @@ export class PresenceHub implements DurableObject {
       ledger.presence[body.subject] = { room: body.room, expiresAt: Date.now() + 2 * 60_000 };
       await this.state.storage.put("rtc-ledger", ledger);
       return json({ accepted: true });
+    }
+    if (path === "/private-room/create" && request.method === "POST") {
+      const body = await request.json() as { roomName?: string; invite?: string };
+      if (!body.roomName || !body.invite) return json({ error: "Invalid private room" }, 400);
+      let code = shortCode();
+      while (await this.state.storage.get(`private-room:${code}`)) code = shortCode();
+      const record: PrivateRoomRecord = {
+        roomName: body.roomName,
+        invite: body.invite,
+        expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1_000,
+      };
+      await this.state.storage.put(`private-room:${code}`, record);
+      await this.schedulePrivateRoomCleanup(record.expiresAt);
+      return json({ code });
+    }
+    if (path === "/private-room/resolve" && request.method === "GET") {
+      const code = url.searchParams.get("code")?.toUpperCase() || "";
+      if (!/^MHTALK-[A-Z0-9]{5}$/.test(code)) return json({ error: "Invalid private code" }, 400);
+      const key = `private-room:${code}`;
+      const record = await this.state.storage.get<PrivateRoomRecord>(key);
+      if (!record) return json({ error: "Private code not found" }, 404);
+      if (record.expiresAt <= Date.now()) {
+        await this.state.storage.delete(key);
+        return json({ error: "Private code expired" }, 404);
+      }
+      return json({ roomName: record.roomName, invite: record.invite });
     }
     if (path === "/rate-limit" && request.method === "POST") {
       const body = await request.json() as { key: string; maximum: number; seconds: number };
@@ -1714,6 +1783,22 @@ export class PresenceHub implements DurableObject {
     this.broadcastPresence(userId, true);
     return new Response(null, { status: 101, webSocket: client });
   }
+  async alarm() {
+    const now = Date.now();
+    const rooms = await this.state.storage.list<PrivateRoomRecord>({ prefix: "private-room:" });
+    const expired: string[] = [];
+    let nextExpiry = Number.POSITIVE_INFINITY;
+    for (const [key, room] of rooms) {
+      if (room.expiresAt <= now) expired.push(key);
+      else nextExpiry = Math.min(nextExpiry, room.expiresAt);
+    }
+    if (expired.length) await this.state.storage.delete(expired);
+    if (Number.isFinite(nextExpiry)) await this.state.storage.setAlarm(nextExpiry);
+  }
+  private async schedulePrivateRoomCleanup(expiresAt: number) {
+    const scheduled = await this.state.storage.getAlarm();
+    if (scheduled === null || expiresAt < scheduled) await this.state.storage.setAlarm(expiresAt);
+  }
   private async rtcLedger(): Promise<RtcLedgerState> {
     const now = Date.now();
     const stored = await this.state.storage.get<RtcLedgerState>("rtc-ledger");
@@ -1756,6 +1841,7 @@ export class PresenceHub implements DurableObject {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    try {
     const url = new URL(request.url);
     const path = url.pathname;
     if (request.method === "GET" && path === "/") return homePage();
@@ -1834,12 +1920,11 @@ export default {
     if (path.startsWith("/auth/")) return handleAuth(request, env, path);
     if (path === "/presence" && request.method === "GET") {
       const ticket = url.searchParams.get("ticket") || "";
-      const userId = await env.PRIVATE_ROOMS.get(`presence-ticket:${ticket}`);
-      if (!userId) return json({ error: "Presence ticket is invalid or expired" }, 401);
-      await env.PRIVATE_ROOMS.delete(`presence-ticket:${ticket}`);
+      const presenceTicket = await verifyPresenceTicket(ticket, env.INVITE_SIGNING_KEY);
+      if (!presenceTicket) return json({ error: "Presence ticket is invalid or expired" }, 401);
       const hub = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
       const forwarded = new Request(request, { headers: new Headers(request.headers) });
-      forwarded.headers.set("x-mhtalk-user-id", userId);
+      forwarded.headers.set("x-mhtalk-user-id", presenceTicket.userId);
       return hub.fetch(forwarded);
     }
     if (path.startsWith("/social/") || path === "/presence/ticket") {
@@ -1944,9 +2029,8 @@ export default {
     let roomName = typeof body?.roomName === "string" ? body.roomName.trim() : "";
     roomName = roomName === "Main room" || roomName === "Main channel" ? "Main" : roomName;
     if (typeof body?.inviteCode === "string") {
-      const stored = await env.PRIVATE_ROOMS.get(body.inviteCode.toUpperCase());
-      if (!stored) return json({ error: "Private code is invalid or expired" }, 403);
-      const privateRoom = JSON.parse(stored) as { roomName: string; invite: string };
+      const privateRoom = await resolvePrivateRoom(env, body.inviteCode.toUpperCase());
+      if (!privateRoom) return json({ error: "Private code is invalid or expired" }, 403);
       if (!(await validInvite(privateRoom.roomName, privateRoom.invite, env.INVITE_SIGNING_KEY))) return json({ error: "Private code is invalid" }, 403);
       roomName = privateRoom.roomName;
     }
@@ -2064,6 +2148,18 @@ export default {
       routing,
       subscription: routing.subscription,
     });
+    } catch (error) {
+      const path = new URL(request.url).pathname;
+      console.error("Unhandled MHTalk service error", {
+        path,
+        method: request.method,
+        message: error instanceof Error ? error.message : "unknown",
+      });
+      return json({
+        error: "MHTalk service is temporarily unavailable. Please try again.",
+        code: "SERVICE_TEMPORARILY_UNAVAILABLE",
+      }, 503);
+    }
   },
   async scheduled(_controller: ScheduledController, env: Env) {
     const usage = env.CLOUDFLARE_RTC_USAGE.get(

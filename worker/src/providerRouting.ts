@@ -188,7 +188,9 @@ export async function selectRtcProvider(
   const excluded = new Set(excludedProviders);
   const capabilities = await rtcCapabilities(env);
   const candidates = capabilities.filter((item) => item.ready && supported.has(item.provider) && !excluded.has(item.provider));
-  const stickyKey = `routing:room:rtc:${roomName}`;
+  // Versioned so the LiveKit-parity rollout cannot leave updated Android and
+  // Windows clients split across a previous Stream-sticky room.
+  const stickyKey = `routing:v2:room:rtc:${roomName}`;
   const sticky = await env.PRIVATE_ROOMS.get(stickyKey);
   const current = candidates.find((item) => item.provider === sticky);
   if (current) return current;

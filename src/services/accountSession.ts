@@ -1,7 +1,7 @@
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
   serviceBaseUrl,
   supabasePublishableKey,
@@ -426,7 +426,7 @@ class AccountSession {
         requests: requests.map((item) => ({ ...this.mapProfile(item), requestId: item.request_id!, createdAt: item.created_at! })),
         error: "",
       });
-      await this.connectPresence();
+      void this.connectPresence().catch(() => this.schedulePresenceReconnect());
     } catch (error) {
       this.setSocial({ ...this.social, loading: false, error: error instanceof Error ? error.message : "Could not load friends" });
     }
@@ -633,9 +633,15 @@ class AccountSession {
   }
 
   private async connectPresence() {
-    if (!this.session || !apiEndpoint || this.presence?.readyState === WebSocket.OPEN) {
+    if (
+      !this.session ||
+      !apiEndpoint ||
+      this.presence?.readyState === WebSocket.OPEN ||
+      this.presence?.readyState === WebSocket.CONNECTING
+    ) {
       this.watchFriends(); return;
     }
+    window.clearTimeout(this.reconnectTimer);
     this.presence?.close();
     const { ticket } = await this.api<{ ticket: string }>("/presence/ticket", { method: "POST" });
     const endpoint = new URL("/presence", apiEndpoint);
@@ -647,8 +653,15 @@ class AccountSession {
     socket.addEventListener("message", (event) => this.handlePresenceMessage(String(event.data)));
     socket.addEventListener("close", () => {
       if (this.presence === socket) this.presence = null;
-      if (this.session) this.reconnectTimer = window.setTimeout(() => void this.connectPresence(), 3000);
+      this.schedulePresenceReconnect();
     });
+  }
+  private schedulePresenceReconnect() {
+    window.clearTimeout(this.reconnectTimer);
+    if (!this.session) return;
+    this.reconnectTimer = window.setTimeout(() => {
+      void this.connectPresence().catch(() => this.schedulePresenceReconnect());
+    }, 3000);
   }
   private watchFriends() {
     if (this.presence?.readyState === WebSocket.OPEN)
@@ -702,16 +715,55 @@ class AccountSession {
 
   private async apiWithSession<T = unknown>(session: Session, path: string, init: RequestInit = {}) {
     if (!apiEndpoint) throw new Error("Account service is unavailable");
-    const send = (activeSession: Session) => {
+    const send = async (activeSession: Session) => {
       const requestHeaders = new Headers(init.headers);
       requestHeaders.set("authorization", `Bearer ${activeSession.access_token}`);
       if (!requestHeaders.has("content-type")) requestHeaders.set("content-type", "application/json");
+      const useNativeSocialTransport = isTauri() &&
+        (path.startsWith("/social/") || path === "/presence/ticket");
+      if (useNativeSocialTransport) {
+        if (init.body !== undefined && typeof init.body !== "string") {
+          throw new Error("The desktop account request format is unsupported");
+        }
+        const native = await invoke<{ status: number; body: string }>("fetch_service_api", {
+          path,
+          method: init.method || "GET",
+          body: typeof init.body === "string" ? init.body : null,
+          accessToken: activeSession.access_token,
+        });
+        return new Response(native.body, {
+          status: native.status,
+          headers: { "content-type": "application/json" },
+        });
+      }
       return fetch(new URL(path, apiEndpoint), {
         ...init,
         headers: requestHeaders,
       });
     };
-    let response = await send(session);
+    const method = (init.method || "GET").toUpperCase();
+    const retryable = method === "GET" || path === "/presence/ticket";
+    const sendWithRetry = async (activeSession: Session) => {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < (retryable ? 3 : 1); attempt += 1) {
+        if (attempt > 0) await new Promise<void>((resolve) => window.setTimeout(resolve, attempt * 350));
+        try {
+          const response = await send(activeSession);
+          if (!retryable || ![408, 425, 429, 500, 502, 503, 504].includes(response.status) || attempt === 2) {
+            return response;
+          }
+        } catch (error) {
+          lastError = error;
+          if (!retryable || attempt === 2) break;
+        }
+      }
+      throw new Error(
+        lastError instanceof Error && !/^Failed to fetch$/i.test(lastError.message)
+          ? lastError.message
+          : "MHTalk service could not be reached. Please try again.",
+      );
+    };
+    let response = await sendWithRetry(session);
     if (response.status === 401 && this.client) {
       // Let Supabase refresh its current persisted session under its own lock.
       // Passing the request's older refresh token here can race token rotation.
@@ -719,7 +771,7 @@ class AccountSession {
       if (refreshed.data.session) {
         session = refreshed.data.session;
         this.session = session;
-        response = await send(session);
+        response = await sendWithRetry(session);
       }
     }
     if (!response.ok) {
