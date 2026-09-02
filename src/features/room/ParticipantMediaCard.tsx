@@ -1,5 +1,7 @@
 import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Avatar } from "../../components/Avatar";
+import { MembershipBadge } from "../../components/MembershipBadge";
+import type { SubscriptionTier } from "../../core/subscription";
 import {
   availableQualities,
   mediaQualityLabels,
@@ -14,6 +16,7 @@ export function ParticipantMediaCard({
   bio,
   username,
   usernameVisible,
+  subscriptionTier,
   speaking,
   microphoneEnabled,
   cameraEnabled,
@@ -29,6 +32,7 @@ export function ParticipantMediaCard({
   bio: string;
   username?: string;
   usernameVisible?: boolean;
+  subscriptionTier?: SubscriptionTier;
   speaking: boolean;
   microphoneEnabled: boolean;
   cameraEnabled: boolean;
@@ -112,13 +116,13 @@ export function ParticipantMediaCard({
         className={`participant-card-header ${speaking ? "speaking" : ""}`}
         onClick={(event) => onMemberMenu(
           event,
-          { name, avatar, bio, username, usernameVisible },
+          { name, avatar, bio, username, usernameVisible, subscriptionTier },
           local ? undefined : identity,
         )}
       >
         <Avatar value={avatar} remote={!local} />
         <span>
-          <strong>{name}</strong>
+          <strong>{name} <MembershipBadge tier={subscriptionTier} /></strong>
           <small>
             {microphoneEnabled ? (speaking ? "Speaking" : "Mic on") : "Mic off"}
           </small>

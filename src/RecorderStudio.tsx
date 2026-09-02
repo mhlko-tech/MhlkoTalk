@@ -10,6 +10,7 @@ import {
   type NativeRecordingProcessingStatus,
   type RecordingSettings,
 } from "./services/nativeRecording";
+import { isPaidSubscriptionValue } from "./core/subscription";
 import "./studio.css";
 
 const defaults: RecordingSettings = {
@@ -41,7 +42,7 @@ type StudioScene = {
 };
 
 export function RecorderStudio() {
-  const plusRecording = localStorage.getItem("mhtalk.subscription-tier") === "plus";
+  const plusRecording = isPaidSubscriptionValue(localStorage.getItem("mhtalk.subscription-tier"));
   const recorder = useRef<NativeScreenRecording | null>(null);
   const preview = useRef<HTMLVideoElement | null>(null);
   const [display, setDisplay] = useState<MediaStream | null>(null);

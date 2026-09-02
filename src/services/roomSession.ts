@@ -35,6 +35,7 @@ import {
 } from "../core/serviceRouting";
 import {
   formatAttachmentLimit,
+  isPaidSubscription,
   limitMediaQuality,
 } from "../core/subscription";
 import {
@@ -116,6 +117,8 @@ const supportedFileProviders: FileProviderId[] = [
 /** Owns the whole media lifecycle; React components only observe this class. */
 export class RoomSession {
   private snapshot = initialSnapshot;
+  private readonly verifiedSubscriptionTiers = new Map<string, UserProfile["subscriptionTier"]>();
+  private readonly pendingBadgeIds = new Set<string>();
   private listeners = new Set<SessionListener>();
   private chatListeners = new Set<ChatListener>();
   private chat: ChatSnapshot = { messages: [], typing: [] };
@@ -1131,7 +1134,7 @@ export class RoomSession {
     const maximum = this.routing.subscription.entitlements.maxAttachmentBytes;
     if (file.size > maximum) {
       throw new Error(
-        `${this.routing.subscription.tier === "plus" ? "MHTalk Plus" : "Free accounts"} can send files up to ${formatAttachmentLimit(maximum)}.`,
+        `${isPaidSubscription(this.routing.subscription.tier) ? "Plus and Pro members" : "Free and supporter-badge accounts"} can send files up to ${formatAttachmentLimit(maximum)}.`,
       );
     }
     const id = crypto.randomUUID();
@@ -1238,7 +1241,7 @@ export class RoomSession {
     const maximum = this.routing.subscription.entitlements.maxAttachmentBytes;
     if (file.size > maximum) {
       throw new Error(
-        `${this.routing.subscription.tier === "plus" ? "MHTalk Plus" : "Free accounts"} can send files up to ${formatAttachmentLimit(maximum)}.`,
+        `${isPaidSubscription(this.routing.subscription.tier) ? "Plus and Pro members" : "Free and supporter-badge accounts"} can send files up to ${formatAttachmentLimit(maximum)}.`,
       );
     }
     const ticket = await this.attachmentApi<{
@@ -1598,6 +1601,8 @@ export class RoomSession {
             username: dataProfile?.username || metadataProfile.username,
             usernameVisible:
               dataProfile?.usernameVisible ?? metadataProfile.usernameVisible,
+            subscriptionTier:
+              dataProfile?.subscriptionTier ?? metadataProfile.subscriptionTier,
           };
         },
       );
@@ -2141,6 +2146,7 @@ export class RoomSession {
         avatar: typeof value.avatar === "string" ? value.avatar : "",
         username: typeof value.username === "string" ? value.username : undefined,
         usernameVisible: value.usernameVisible !== false,
+        subscriptionTier: value.subscriptionTier,
       }, identity));
       this.syncActiveProviderParticipants();
     }
@@ -2711,8 +2717,35 @@ export class RoomSession {
   }
 
   private update(change: Partial<SessionSnapshot>) {
-    this.snapshot = { ...this.snapshot, ...change };
+    const participants = change.participants?.map((participant) => ({
+      ...participant,
+      subscriptionTier: this.verifiedSubscriptionTiers.get(participant.identity) || "free" as const,
+    }));
+    this.snapshot = { ...this.snapshot, ...change, ...(participants ? { participants } : {}) };
     this.listeners.forEach((listener) => listener(this.snapshot));
+    if (participants) void this.verifyParticipantBadges(participants.map((participant) => participant.identity));
+  }
+
+  private async verifyParticipantBadges(identities: string[]) {
+    const pending = [...new Set(identities)].filter((identity) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identity) &&
+      !this.verifiedSubscriptionTiers.has(identity) && !this.pendingBadgeIds.has(identity),
+    );
+    if (!pending.length) return;
+    pending.forEach((identity) => this.pendingBadgeIds.add(identity));
+    try {
+      const badges = await accountSession.membershipBadges(pending);
+      for (const identity of pending) this.verifiedSubscriptionTiers.set(identity, badges[identity] || "free");
+      this.snapshot = {
+        ...this.snapshot,
+        participants: this.snapshot.participants.map((participant) => ({
+          ...participant,
+          subscriptionTier: this.verifiedSubscriptionTiers.get(participant.identity) || "free",
+        })),
+      };
+      this.listeners.forEach((listener) => listener(this.snapshot));
+    } catch { /* Badge lookup failure must never interrupt a call. */ }
+    finally { pending.forEach((identity) => this.pendingBadgeIds.delete(identity)); }
   }
 
   private attachLocalVideo(source: Track.Source, label: string) {
@@ -3193,12 +3226,16 @@ function sanitizeProfile(
   const username = typeof profile?.username === "string"
     ? profile.username.trim().slice(0, 32)
     : undefined;
+  const subscriptionTier = ["plus", "pro", "ultimate", "max_supporter"].includes(String(profile?.subscriptionTier))
+    ? profile.subscriptionTier
+    : "free";
   return {
     name: name || fallbackIdentity.slice(0, 16) || "Member",
     bio,
     avatar: avatar || (name || fallbackIdentity || "M")[0].toUpperCase(),
     username,
     usernameVisible: profile?.usernameVisible !== false,
+    subscriptionTier,
   };
 }
 

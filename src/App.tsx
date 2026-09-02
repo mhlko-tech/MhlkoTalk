@@ -5,6 +5,7 @@ import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import appPackage from "../package.json";
 import { Avatar } from "./components/Avatar";
+import { MembershipBadge } from "./components/MembershipBadge";
 import { DisplayNameField } from "./components/DisplayNameField";
 import { AuthenticationGate } from "./features/auth/AuthenticationGate";
 import { ParticipantMediaCard } from "./features/room/ParticipantMediaCard";
@@ -28,7 +29,10 @@ import { mediaQualityLabels, mediaQualityOrder } from "./core/mediaQuality";
 import {
   formatAttachmentLimit,
   freeSubscriptionPlan,
+  isPaidSubscription,
+  hasMembershipBadge,
   limitMediaQuality,
+  subscriptionLabels,
 } from "./core/subscription";
 import { profileAvatarImageSource } from "./core/profileAvatar";
 import { usernameError } from "./core/authRules";
@@ -47,7 +51,7 @@ import {
   type UpdateActivity,
 } from "./services/appUpdater";
 import { isKeyboardLanguageShortcut, switchKeyboardLanguage } from "./services/inputLanguage";
-import { linkExistingLavaMembership, startLavaMembership, syncLavaMembership } from "./services/membershipService";
+import { linkExistingLavaMembership, startLavaMembership, startPatreonMembership, syncLavaMembership, type MembershipPlanId } from "./services/membershipService";
 
 const initial: SessionSnapshot = {
   state: "idle",
@@ -252,6 +256,7 @@ export function App() {
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
   const [lavaBusy, setLavaBusy] = useState(false);
+  const [membershipPlan, setMembershipPlan] = useState<MembershipPlanId>("plus");
   const [membershipMessage, setMembershipMessage] = useState("");
   const [membershipCode, setMembershipCode] = useState("");
   const [friendSearch, setFriendSearch] = useState("");
@@ -374,6 +379,7 @@ export function App() {
       avatar: accountState.account.avatarUrl || accountState.account.displayName.slice(0, 1).toUpperCase(),
       username: accountState.account.username,
       usernameVisible: accountState.account.usernameVisible,
+      subscriptionTier: accountState.account.subscription.tier,
     };
     lastPersistedProfile.current = JSON.stringify(accountProfile);
     setUsernameDraft(accountState.account.username);
@@ -704,6 +710,7 @@ export function App() {
             avatar: refreshed.account.avatarUrl || normalized.avatar,
             username: refreshed.account.username,
             usernameVisible: refreshed.account.usernameVisible,
+            subscriptionTier: refreshed.account.subscription.tier,
           };
           await roomSession.setProfile(storedProfile);
           setProfile((current) =>
@@ -1158,7 +1165,7 @@ export function App() {
               onClick={(event) => openMemberMenu(event, profile)}
             >
               <Avatar value={profile.avatar} />
-              <span>{profile.name}</span>
+              <span>{profile.name} <MembershipBadge tier={subscription.tier} /></span>
               <small>{session.microphoneEnabled ? "Mic on" : "Mic off"}</small>
             </button>
           )}
@@ -1174,6 +1181,7 @@ export function App() {
                     participant.identity.slice(0, 1).toUpperCase(),
                   username: participant.username,
                   usernameVisible: participant.usernameVisible,
+                  subscriptionTier: participant.subscriptionTier,
                 }, participant.identity)
               }
               key={participant.identity}
@@ -1186,7 +1194,7 @@ export function App() {
                 remote
               />
               <span>
-                {participant.name || participant.identity.slice(0, 12)}
+                {participant.name || participant.identity.slice(0, 12)} <MembershipBadge tier={participant.subscriptionTier} />
               </span>
               <small>{participant.speaking ? "Speaking" : "Listening"}</small>
             </button>
@@ -1204,7 +1212,7 @@ export function App() {
               }}
             >
               <Avatar value={profile.avatar} />
-              <strong>{profile.name}</strong>
+              <strong>{profile.name} <MembershipBadge tier={subscription.tier} /></strong>
             </button>
             <button
               className="profile-username"
@@ -1367,6 +1375,7 @@ export function App() {
                 bio={profile.bio}
                 username={profile.username}
                 usernameVisible={profile.usernameVisible}
+                subscriptionTier={subscription.tier}
                 speaking={session.localSpeaking}
                 microphoneEnabled={session.microphoneEnabled}
                 cameraEnabled={session.cameraEnabled}
@@ -1388,6 +1397,7 @@ export function App() {
                   bio={participant.bio || ""}
                   username={participant.username}
                   usernameVisible={participant.usernameVisible}
+                  subscriptionTier={participant.subscriptionTier}
                   speaking={participant.speaking}
                   microphoneEnabled={participant.microphoneEnabled}
                   cameraEnabled={participant.cameraEnabled}
@@ -1829,7 +1839,7 @@ export function App() {
             <div className="social-content">
                 <div className="social-account-card">
                   <Avatar value={accountState.account.avatarUrl || accountState.account.displayName.slice(0, 1)} />
-                  <span><strong>{accountState.account.displayName}</strong><small>@{accountState.account.username}</small></span>
+                  <span><strong>{accountState.account.displayName} <MembershipBadge tier={accountState.account.subscription.tier} /></strong><small>@{accountState.account.username}</small></span>
                   <button className="control social-action" onClick={() => void accountSession.refreshSocial()}>Refresh</button>
                 </div>
                 {socialState.requests.length > 0 && (
@@ -1838,7 +1848,7 @@ export function App() {
                     {socialState.requests.map((request) => (
                       <div className="social-person" key={request.requestId}>
                         <Avatar value={request.avatarUrl || request.displayName.slice(0, 1)} remote />
-                        <span><strong>{request.displayName}</strong><small>@{request.username}</small></span>
+                        <span><strong>{request.displayName} <MembershipBadge tier={request.subscription.tier} /></strong><small>@{request.username}</small></span>
                         <div className="social-row-actions">
                           <button className="social-accept social-action" onClick={() => void accountSession.respondFriendRequest(request.requestId, true)}>Accept</button>
                           <button className="social-icon-button social-action" title="Decline" aria-label={`Decline ${request.displayName}'s friend request`} onClick={() => void accountSession.respondFriendRequest(request.requestId, false)}>×</button>
@@ -1856,7 +1866,7 @@ export function App() {
                     {friendResults.map((result) => (
                       <div className="social-person" key={result.id}>
                         <Avatar value={result.avatarUrl || result.displayName.slice(0, 1)} remote />
-                        <span><strong>{result.displayName}</strong><small>@{result.username}</small></span>
+                        <span><strong>{result.displayName} <MembershipBadge tier={result.subscription.tier} /></strong><small>@{result.username}</small></span>
                         <button className="control social-action" disabled={result.isFriend || socialBusy === result.id} onClick={async () => {
                           setSocialBusy(result.id);
                           try {
@@ -1877,7 +1887,7 @@ export function App() {
                   {socialState.friends.map((friend) => (
                     <div className="social-person" key={friend.id}>
                       <div className="social-avatar"><Avatar value={friend.avatarUrl || friend.displayName.slice(0, 1)} remote /><i className={friend.online ? "online" : "offline"} /></div>
-                      <span><strong>{friend.displayName}</strong><small>{friend.online ? "Online" : "Offline"} · @{friend.username}</small></span>
+                      <span><strong>{friend.displayName} <MembershipBadge tier={friend.subscription.tier} /></strong><small>{friend.online ? "Online" : "Offline"} · @{friend.username}</small></span>
                       <button className="primary social-action" disabled={socialBusy === friend.id} onClick={() => void inviteFriend(friend.id)}>Invite</button>
                     </div>
                   ))}
@@ -1891,15 +1901,37 @@ export function App() {
         <div className="modal-backdrop">
           <section className="private-modal support-modal" role="dialog" aria-modal="true" aria-label="MHTalk Beta and support">
             <button className="modal-close" onClick={() => setSupportOpen(false)}>×</button>
-            <div className="support-heading"><span>?</span><div><h2>MHTalk Beta</h2><small>Zero-budget public testing</small></div></div>
-            <p>MHTalk Beta selects among compatible free realtime providers. Stream, Agora, Tencent, Whereby, Daily and LiveKit are used only when their server route and this app version are ready.</p>
-            <p>The server selects a provider before the room opens and retries the next compatible provider if room creation fails. Active rooms are never moved between incompatible providers.</p>
-            <div className="support-note"><strong>You can help without paying.</strong><span>Sharing MHTalk with friends is one of the most useful ways to help this small project reach sustainable hosting.</span></div>
-            <p className="support-membership">One active LAVA membership unlocks premium features in both MHTalk and MVDownloader after it is linked securely in each app.</p>
+            <div className="support-heading"><span>M</span><div><h2>One membership. Two apps.</h2><small>Choose a plan, then pay with LAVA or Patreon</small></div></div>
+            <p className="support-membership">Your verified membership works with MHTalk on Windows and Android and with MVDownloader. Calling, messaging and safety features remain free.</p>
+            <div className="membership-plans" role="radiogroup" aria-label="Monthly membership plan">
+              <button
+                type="button"
+                className={`membership-plan-card ${membershipPlan === "plus" ? "selected" : ""}`}
+                aria-pressed={membershipPlan === "plus"}
+                onClick={() => setMembershipPlan("plus")}
+              >
+                <span className="membership-plan-top"><strong>Plus</strong><b>$5 <small>/ month</small></b></span>
+                <span className="membership-plan-copy">The balanced plan for both apps.</span>
+                <span className="membership-plan-benefits">✓ MHTalk Plus badge: 1080p sharing, studio recording and personalization</span>
+                <span className="membership-plan-benefits">✓ MVDownloader: unlimited audio and 720p, plus 10 Full HD downloads every 24 hours</span>
+              </button>
+              <button
+                type="button"
+                className={`membership-plan-card ${membershipPlan === "pro" ? "selected" : ""}`}
+                aria-pressed={membershipPlan === "pro"}
+                onClick={() => setMembershipPlan("pro")}
+              >
+                <span className="membership-plan-top"><strong>Pro</strong><b>$10 <small>/ month</small></b></span>
+                <span className="membership-plan-copy">The full paid MHTalk experience with the best MVDownloader limits.</span>
+                <span className="membership-plan-benefits">✓ MHTalk Pro badge and all paid features on Windows and Android</span>
+                <span className="membership-plan-benefits">✓ Unlimited source-quality video and premium audio up to 320 kbps</span>
+              </button>
+            </div>
+            <p className="support-tier-note">Ultimate and Max Supporter are recognition badges only in MHTalk. They do not unlock MHTalk paid features.</p>
             {membershipMessage && <div className="support-membership-status">{membershipMessage}</div>}
             <div className="support-membership-link">
-              <label htmlFor="membership-activation-code">Already subscribed through MVDownloader?</label>
-              <p>In MVDownloader open Settings → Membership details → LAVA.top, then copy the MHTalk activation code and paste it here.</p>
+              <label htmlFor="membership-activation-code">Already have a shared membership?</label>
+              <p>In MVDownloader open Settings → Membership details, copy the MHTalk activation code and paste it here.</p>
               <div>
                 <input
                   id="membership-activation-code"
@@ -1915,7 +1947,7 @@ export function App() {
                   try {
                     const result = await linkExistingLavaMembership(membershipCode);
                     setMembershipCode("");
-                    setMembershipMessage(result.tier === "plus" ? "MHTalk Plus is active on this account." : result.pending ? "Payment confirmation is still pending." : "No active LAVA membership was found.");
+                    setMembershipMessage(hasMembershipBadge(result.tier) ? `MHTalk ${subscriptionLabels[result.tier]} is active on this account.` : result.pending ? "Payment confirmation is still pending." : "No active membership was found.");
                   } catch (error) {
                     setMembershipMessage(error instanceof Error ? error.message : "Could not link this membership");
                   } finally { setLavaBusy(false); }
@@ -1926,24 +1958,33 @@ export function App() {
               <button className="primary" disabled={lavaBusy} onClick={async () => {
                 setLavaBusy(true);
                 try {
-                  await startLavaMembership("plus");
+                   await startLavaMembership(membershipPlan);
                   setMembershipMessage("Complete payment in your browser, then return here and choose Verify membership.");
                 } catch (error) {
                   setAppError(error instanceof Error ? error.message : "Could not open LAVA membership");
                 } finally {
                   setLavaBusy(false);
                 }
-              }}>{lavaBusy ? "Opening LAVA…" : "Support with LAVA"}</button>
+               }}>{lavaBusy ? "Opening LAVA…" : `Continue with LAVA · ${membershipPlan === "plus" ? "$5" : "$10"}`}</button>
               <button className="control" disabled={lavaBusy} onClick={async () => {
                 setLavaBusy(true);
                 try {
                   const result = await syncLavaMembership(true);
-                  setMembershipMessage(!result ? "Start a LAVA membership first." : result.tier === "plus" ? "MHTalk Plus is active on this account." : result.pending ? "Payment confirmation is still pending." : "No active LAVA membership was found.");
+                  setMembershipMessage(!result ? "Start or link a membership first." : hasMembershipBadge(result.tier) ? `MHTalk ${subscriptionLabels[result.tier]} is active on this account.` : result.pending ? "Membership confirmation is still pending." : "No active membership was found.");
                 } catch (error) {
                   setMembershipMessage(error instanceof Error ? error.message : "Could not verify membership");
                 } finally { setLavaBusy(false); }
               }}>Verify membership</button>
               <button className="control" onClick={() => void openUrl(patreonMembershipUrl)}>View Patreon plans</button>
+              <button className="control" disabled={lavaBusy} onClick={async () => {
+                setLavaBusy(true);
+                try {
+                  await startPatreonMembership();
+                  setMembershipMessage("Finish linking in Patreon, then return here and choose Verify membership.");
+                } catch (error) {
+                  setMembershipMessage(error instanceof Error ? error.message : "Could not link Patreon membership");
+                } finally { setLavaBusy(false); }
+              }}>Link Patreon membership</button>
               <button className="control" onClick={() => void openUrl(mvDownloaderUrl)}>Download MVDownloader</button>
               <button className="control" onClick={() => {
                 void navigator.clipboard.writeText("Try MHTalk Beta for voice, video, rooms and chat: https://github.com/mhlko-tech/MhlkoTalk/releases/latest").then(() => setAppError("MHTalk link copied — thank you for sharing."));
@@ -2117,17 +2158,17 @@ export function App() {
             <div className="settings-section subscription-card">
               <div className="subscription-heading">
                 <div>
-                  <h3>MHTalk {subscription.tier === "plus" ? "Plus" : "Free"}</h3>
+                  <h3>MHTalk {subscriptionLabels[subscription.tier]}</h3>
                   <small>Your current account plan</small>
                 </div>
                 <span className={`plan-badge ${subscription.tier}`}>{subscription.tier}</span>
               </div>
               <ul>
                 <li>Clear voice calls with optional microphone noise cancellation</li>
-                <li>Camera and screen sharing up to {subscription.tier === "plus" ? "1080p" : "720p"}</li>
-                <li>Screen recording {subscription.tier === "plus" ? "at source resolution and up to 120 FPS" : "up to 720p at 60 FPS"}</li>
+                <li>Camera and screen sharing up to {isPaidSubscription(subscription.tier) ? "1080p" : "720p"}</li>
+                <li>Screen recording {isPaidSubscription(subscription.tier) ? "at source resolution and up to 120 FPS" : "up to 720p at 60 FPS"}</li>
                 <li>Files up to {formatAttachmentLimit(subscription.entitlements.maxAttachmentBytes)}</li>
-                {subscription.tier === "plus" && (
+                {isPaidSubscription(subscription.tier) && (
                   <>
                     <li>Animated profiles, banners, themes and profile frames</li>
                     <li>Custom emojis, stickers, soundboard and invite links</li>
@@ -2366,7 +2407,7 @@ export function App() {
                 <Avatar value={viewProfile.avatar} />
               </div>
             )}
-            <h2>{viewProfile.name}</h2>
+            <h2>{viewProfile.name} <MembershipBadge tier={viewProfile.subscriptionTier} /></h2>
             {viewProfile.usernameVisible !== false && viewProfile.username && (
               <button
                 className="view-profile-username"
@@ -2466,7 +2507,7 @@ export function App() {
           >
             <Avatar value={memberMenu.profile.avatar} remote={Boolean(memberMenu.identity)} />
             <span>
-              <strong>{memberMenu.profile.name}</strong>
+              <strong>{memberMenu.profile.name} <MembershipBadge tier={memberMenu.profile.subscriptionTier} /></strong>
               <small>Open profile</small>
             </span>
           </button>

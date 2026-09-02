@@ -34,3 +34,5 @@ jobs:
         run: npm --prefix worker ci
       - name: Run tests, builds, type checks and Rust checks
         run: npm run check
+      - name: Audit JavaScript dependencies
+        run: npm audit --audit-level=high && npm --prefix worker audit --audit-level=high

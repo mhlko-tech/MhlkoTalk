@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { limitRecordingDimensions } from "../core/subscription";
+import { isPaidSubscriptionValue, limitRecordingDimensions } from "../core/subscription";
 
 export type RecordingSettings = {
   quality: "high" | "balanced" | "performance" | "lossless";
@@ -154,10 +154,10 @@ function nativeSourceSettings(
   const [limitedWidth, limitedHeight] = limitRecordingDimensions(
     outputWidth,
     outputHeight,
-    localStorage.getItem("mhtalk.subscription-tier") === "plus",
+    isPaidSubscriptionValue(localStorage.getItem("mhtalk.subscription-tier")),
   );
   return {
-    fps: localStorage.getItem("mhtalk.subscription-tier") === "plus"
+    fps: isPaidSubscriptionValue(localStorage.getItem("mhtalk.subscription-tier"))
       ? settings.fps
       : Math.min(settings.fps, 60),
     quality: settings.quality,

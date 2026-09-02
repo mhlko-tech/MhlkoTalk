@@ -1,6 +1,11 @@
 import type { MediaQuality } from "./types";
 
-export type SubscriptionTier = "free" | "plus";
+export type SubscriptionTier =
+  | "free"
+  | "plus"
+  | "pro"
+  | "ultimate"
+  | "max_supporter";
 
 export type SubscriptionEntitlements = {
   maxCameraQuality: MediaQuality;
@@ -26,11 +31,7 @@ export type SubscriptionPlan = {
 
 const megabytes = (value: number) => value * 1024 * 1024;
 
-export const subscriptionEntitlements: Record<
-  SubscriptionTier,
-  SubscriptionEntitlements
-> = {
-  free: {
+const freeEntitlements: SubscriptionEntitlements = {
     maxCameraQuality: "medium",
     maxScreenShareQuality: "medium",
     maxAttachmentBytes: megabytes(20),
@@ -44,8 +45,9 @@ export const subscriptionEntitlements: Record<
     soundboard: false,
     customInvites: false,
     savedRoomLimit: 3,
-  },
-  plus: {
+};
+
+const premiumEntitlements: SubscriptionEntitlements = {
     maxCameraQuality: "high",
     maxScreenShareQuality: "high",
     maxAttachmentBytes: megabytes(100),
@@ -59,8 +61,33 @@ export const subscriptionEntitlements: Record<
     soundboard: true,
     customInvites: true,
     savedRoomLimit: 20,
-  },
 };
+
+export const subscriptionEntitlements: Record<SubscriptionTier, SubscriptionEntitlements> = {
+  free: freeEntitlements,
+  plus: premiumEntitlements,
+  pro: premiumEntitlements,
+  // Supporter tiers are recognition badges only inside MHTalk. They do not
+  // grant any MHTalk product entitlement.
+  ultimate: freeEntitlements,
+  max_supporter: freeEntitlements,
+};
+
+export const subscriptionLabels: Record<SubscriptionTier, string> = {
+  free: "Free",
+  plus: "Plus",
+  pro: "Pro",
+  ultimate: "Ultimate",
+  max_supporter: "Max Supporter",
+};
+
+export const hasMembershipBadge = (tier: SubscriptionTier) => tier !== "free";
+export const isPaidSubscription = (tier: SubscriptionTier) => tier === "plus" || tier === "pro";
+export const isPaidSubscriptionValue = (tier: unknown): tier is "plus" | "pro" =>
+  tier === "plus" || tier === "pro";
+
+const isKnownSubscriptionTierValue = (tier: unknown): tier is SubscriptionTier =>
+  tier === "free" || tier === "plus" || tier === "pro" || tier === "ultimate" || tier === "max_supporter";
 
 export const freeSubscriptionPlan: SubscriptionPlan = {
   tier: "free",
@@ -80,10 +107,12 @@ export function resolveSubscriptionPlan(value: unknown): SubscriptionPlan {
       : typeof candidate.expires_at === "string"
         ? candidate.expires_at
         : undefined;
-  const plusIsCurrent =
-    candidate.tier === "plus" &&
+  const knownTier = isKnownSubscriptionTierValue(candidate.tier)
+    ? candidate.tier as SubscriptionTier
+    : "free";
+  const membershipIsCurrent = knownTier !== "free" &&
     (!expiresAt || new Date(expiresAt).getTime() > Date.now());
-  const tier: SubscriptionTier = plusIsCurrent ? "plus" : "free";
+  const tier: SubscriptionTier = membershipIsCurrent ? knownTier : "free";
   return { tier, expiresAt, entitlements: subscriptionEntitlements[tier] };
 }
 

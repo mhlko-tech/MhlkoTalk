@@ -1,4 +1,5 @@
 import type { RtcProviderId } from "./rtcProviders";
+import type { SubscriptionTier } from "./subscription";
 
 export type SessionState =
   | "idle"
@@ -37,6 +38,7 @@ export interface SessionSnapshot {
     avatar?: string;
     username?: string;
     usernameVisible?: boolean;
+    subscriptionTier?: SubscriptionTier;
   }>;
 }
 
@@ -65,6 +67,7 @@ export type UserProfile = {
   avatar: string;
   username?: string;
   usernameVisible?: boolean;
+  subscriptionTier?: SubscriptionTier;
 };
 export type ChatSnapshot = { messages: ChatMessage[]; typing: string[] };
 

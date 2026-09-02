@@ -76,9 +76,11 @@ reach either client.
 - Free: voice, optional microphone noise cancellation, camera/screen sharing up
   to 720p, local screen recording up to 720p/60 FPS, 20 MB attachments, and
   every core safety feature.
-- Plus: camera/screen sharing up to 1080p, local recording at source resolution
+- Plus and Pro: camera/screen sharing up to 1080p, local recording at source resolution
   and up to 120 FPS when the device can sustain it, 100 MB attachments, and
-  cosmetic profile, theme, emoji, soundboard and invite entitlements.
+  cosmetic profile, theme, emoji, soundboard and invite entitlements. Each plan
+  keeps its verified name badge. Ultimate and Max Supporter retain distinct
+  recognition badges but grant no paid MHTalk feature.
 
 The database owns `subscription_tier` and `subscription_expires_at`. Only the
 service role can update them. Clients clamp quality and file sizes locally for a
@@ -90,7 +92,8 @@ Credential Manager or the Android Keystore. A user who subscribed through
 MVDownloader can explicitly copy that protected activation code and link it from
 MHTalk's Support screen. MHTalk's Worker verifies it directly with the membership
 backend, binds it to one MHTalk account, and only then updates the server-owned
-Plus fields. There is no client-side switch that can grant Plus. Cross-app
-Patreon identity linking is still gated on the provider's OAuth credentials.
+paid membership fields. There is no client-side switch that can grant a plan.
+Patreon uses a server-owned OAuth flow and the same opaque app capability; no
+Patreon client secret or access token is stored by either app.
 Google Play builds must use Play Billing unless the app is enrolled in an
 applicable alternative-billing program.

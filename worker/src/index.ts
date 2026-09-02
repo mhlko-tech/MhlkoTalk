@@ -98,7 +98,7 @@ type Profile = {
   bio?: string | null;
   username_visible: boolean;
   username_changed_at?: string | null;
-  subscription_tier?: "free" | "plus";
+  subscription_tier?: "free" | "plus" | "pro" | "ultimate" | "max_supporter";
   subscription_expires_at?: string | null;
 };
 type AccountLogin = {
@@ -120,8 +120,7 @@ const routingAdminAuthorized = (request: Request, env: Env) => Boolean(
   env.ROUTING_ADMIN_KEY &&
   request.headers.get("authorization") === `Bearer ${env.ROUTING_ADMIN_KEY}`
 );
-const subscriptionEntitlements = {
-  free: {
+const freeSubscriptionEntitlements = {
     maxCameraQuality: "medium",
     maxScreenShareQuality: "medium",
     maxAttachmentBytes: 20 * 1024 * 1024,
@@ -135,8 +134,8 @@ const subscriptionEntitlements = {
     soundboard: false,
     customInvites: false,
     savedRoomLimit: 3,
-  },
-  plus: {
+} as const;
+const premiumSubscriptionEntitlements = {
     maxCameraQuality: "high",
     maxScreenShareQuality: "high",
     maxAttachmentBytes: 100 * 1024 * 1024,
@@ -150,13 +149,23 @@ const subscriptionEntitlements = {
     soundboard: true,
     customInvites: true,
     savedRoomLimit: 20,
-  },
+} as const;
+const subscriptionEntitlements = {
+  free: freeSubscriptionEntitlements,
+  plus: premiumSubscriptionEntitlements,
+  pro: premiumSubscriptionEntitlements,
+  ultimate: freeSubscriptionEntitlements,
+  max_supporter: freeSubscriptionEntitlements,
 } as const;
 function subscriptionFor(profile: Profile | null) {
   const expiresAt = profile?.subscription_expires_at || undefined;
-  const plusIsCurrent = profile?.subscription_tier === "plus" &&
+  const candidate = profile?.subscription_tier;
+  const paidTier = candidate === "plus" || candidate === "pro" || candidate === "ultimate" || candidate === "max_supporter"
+    ? candidate
+    : "free";
+  const paidIsCurrent = paidTier !== "free" &&
     (!expiresAt || new Date(expiresAt).getTime() > Date.now());
-  const tier = plusIsCurrent ? "plus" : "free";
+  const tier = paidIsCurrent ? paidTier : "free";
   return { tier, expiresAt, entitlements: subscriptionEntitlements[tier] };
 }
 function serviceRouting(env: Env, profile: Profile | null, provider: RtcProviderId, providerUrl?: string) {
@@ -262,11 +271,18 @@ const oauthCompletePage = (request: Request) => {
     if (value) callback.searchParams.set(key, value);
   }
   const deepLink = JSON.stringify(callback.toString()).replace(/</g, "\\u003c");
+  const nonce = crypto.randomUUID().replaceAll("-", "");
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign-in complete · MHTalk</title>
   <style>body{margin:0;background:#0c111b;color:#e8edf7;font:16px/1.6 system-ui,sans-serif;display:grid;min-height:100vh;place-items:center}.card{max-width:520px;margin:24px;padding:36px;text-align:center;background:#151d2b;border:1px solid #34435d;border-radius:22px}.logo{width:64px;height:64px;margin:auto;display:grid;place-items:center;border-radius:18px;background:#715ce8;color:#fff;font-size:38px;font-weight:900}h1{color:#fff}p{color:#aab6c8}a{display:inline-block;border-radius:12px;padding:12px 18px;background:#715ce8;color:#fff;text-decoration:none;font-weight:700}.done{color:#65d99a}</style></head>
   <body><main class="card"><div class="logo">M</div><h1>Sign-in complete</h1><p id="status">Securely returning you to MHTalk…</p><a id="open" href=${deepLink}>Open MHTalk</a><p><small>You can safely close this browser tab after MHTalk opens.</small></p></main>
-  <script>(()=>{const base=${deepLink};const allowed=['access_token','refresh_token','expires_in','token_type','type','error','error_code','error_description'];const incoming=new URLSearchParams(location.hash.replace(/^#/,''));const outgoing=new URLSearchParams();for(const key of allowed){const value=incoming.get(key);if(value)outgoing.set(key,value)}const target=outgoing.size?base+'#'+outgoing.toString():base;const open=document.getElementById('open');const status=document.getElementById('status');open.href=target;let launched=false;const launch=()=>{if(launched)return;launched=true;location.assign(target);setTimeout(()=>{status.textContent='MHTalk is open. You can close this tab.';status.className='done'},900)};open.addEventListener('click',()=>{launched=true});setTimeout(launch,120);})();</script></body></html>`, {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" },
+  <script nonce="${nonce}">(()=>{const target=${deepLink};const open=document.getElementById('open');const status=document.getElementById('status');open.href=target;let launched=false;const launch=()=>{if(launched)return;launched=true;location.assign(target);setTimeout(()=>{status.textContent='MHTalk is open. You can close this tab.';status.className='done'},900)};open.addEventListener('click',()=>{launched=true});setTimeout(launch,120)})();</script></body></html>`, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
+      "referrer-policy": "no-referrer",
+      "x-content-type-options": "nosniff",
+    },
   });
 };
 const configured = (env: Env) => Boolean(env.SUPABASE_URL && env.SUPABASE_PUBLISHABLE_KEY);
@@ -641,8 +657,9 @@ async function syncLavaSubscription(request: Request, env: Env, user: AuthUser) 
   const membershipToken = typeof body?.membershipToken === "string" ? body.membershipToken.trim() : "";
   if (membershipToken.length < 24 || membershipToken.length > 512) return json({ error: "Invalid membership token" }, 400);
   const tokenFingerprint = await digest(`lava:${membershipToken}`);
-  const bindingKey = `membership:lava:owner:${tokenFingerprint}`;
-  const owner = await env.PRIVATE_ROOMS.get(bindingKey);
+  const bindingKey = `membership:owner:${tokenFingerprint}`;
+  const legacyBindingKey = `membership:lava:owner:${tokenFingerprint}`;
+  const owner = await env.PRIVATE_ROOMS.get(bindingKey) || await env.PRIVATE_ROOMS.get(legacyBindingKey);
   if (owner && owner !== user.id) return json({ error: "This membership is already linked to another MHTalk account" }, 409);
 
   const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
@@ -650,6 +667,8 @@ async function syncLavaSubscription(request: Request, env: Env, user: AuthUser) 
     headers: { authorization: `Bearer ${membershipToken}`, accept: "application/json" },
   });
   const membership = (membershipPayload || {}) as {
+    provider?: unknown;
+    plan?: unknown;
     entitlementTier?: unknown;
     status?: unknown;
     expiry?: unknown;
@@ -662,10 +681,17 @@ async function syncLavaSubscription(request: Request, env: Env, user: AuthUser) 
 
   await env.PRIVATE_ROOMS.put(bindingKey, user.id);
   const status = typeof membership.status === "string" ? membership.status.toLowerCase() : "pending";
-  const active = status === "active" && typeof membership.entitlementTier === "string" && membership.entitlementTier !== "guest";
+  const paidEntitlement = membership.entitlementTier === "patreon_plus" || membership.entitlementTier === "patreon_pro";
+  const active = status === "active" && paidEntitlement;
   const terminal = ["expired", "failed", "inactive", "disconnected", "revoked"].includes(status) || verification.status === 410;
   if (!active && !terminal) return json({ status, tier: "free", pending: true });
 
+  const requestedPlan = typeof membership.plan === "string" ? membership.plan : "";
+  const activeTier = membership.entitlementTier === "patreon_plus"
+    ? "plus"
+    : requestedPlan === "ultimate" || requestedPlan === "max_supporter"
+      ? requestedPlan
+      : "pro";
   const expiry = active && typeof membership.expiry === "string" && membership.expiry
     ? membership.expiry
     : null;
@@ -673,13 +699,20 @@ async function syncLavaSubscription(request: Request, env: Env, user: AuthUser) 
     method: "PATCH",
     headers: { prefer: "return=representation" },
     body: JSON.stringify({
-      subscription_tier: active ? "plus" : "free",
+      subscription_tier: active ? activeTier : "free",
       subscription_expires_at: expiry,
     }),
   });
   if (!update?.ok) return json({ error: "Could not update the MHTalk membership" }, 503);
   const profile = ((await update.json()) as Profile[])[0] || await profileFor(env, user);
-  return json({ status, tier: active ? "plus" : "free", expiresAt: expiry, subscription: subscriptionFor(profile) });
+  return json({
+    status,
+    tier: active ? activeTier : "free",
+    plan: typeof membership.plan === "string" ? membership.plan : null,
+    provider: typeof membership.provider === "string" ? membership.provider : "lava",
+    expiresAt: expiry,
+    subscription: subscriptionFor(profile),
+  });
 }
 
 async function hmacKey(secret: string) {
@@ -1210,6 +1243,7 @@ async function issueToken(roomName: string, env: Env, user: AuthUser | null, pro
       avatar: profile.avatar_url,
       ...(profile.username_visible ? { username: profile.username } : {}),
       usernameVisible: profile.username_visible,
+      subscriptionTier: subscriptionFor(profile).tier,
     }) : undefined, ttl: "10m",
   });
   token.addGrant({
@@ -1558,6 +1592,20 @@ async function handleSocial(request: Request, env: Env, path: string, user: Auth
     return proxyUserResponse(await userApi(env, user, `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}`, {
       method: "PATCH", headers: { prefer: "return=representation" }, body: JSON.stringify(update),
     }));
+  }
+  if (path === "/social/badges" && request.method === "POST") {
+    const body = (await request.json().catch(() => null)) as { ids?: unknown } | null;
+    if (!Array.isArray(body?.ids) || body.ids.length > 50) return json({ error: "Invalid profile list" }, 400);
+    const ids = [...new Set(body.ids.map(String).filter((id) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id),
+    ))];
+    if (ids.length !== body.ids.length) return json({ error: "Invalid profile list" }, 400);
+    if (await rateLimited(request, env, "profile-badges", user.id, 120, 600)) return json({ error: "Too many badge requests" }, 429);
+    if (!ids.length) return json({ badges: {} });
+    const response = await serviceApi(env, `/rest/v1/profiles?id=in.(${ids.join(",")})&select=id,subscription_tier,subscription_expires_at`);
+    if (!response?.ok) return json({ error: "Badge service is unavailable" }, 503);
+    const profiles = await response.json() as Profile[];
+    return json({ badges: Object.fromEntries(profiles.map((profile) => [profile.id, subscriptionFor(profile).tier])) });
   }
   if (path === "/social/friends" && request.method === "GET") return proxyUserResponse(await rpc(env, user, "social_friends", {}));
   if (path === "/social/requests" && request.method === "GET") return proxyUserResponse(await rpc(env, user, "social_friend_requests", {}));
@@ -1987,7 +2035,7 @@ export default {
       const onboarding = await requireCompletedOnboarding(env, auth);
       return onboarding || handleAttachments(request, env, path, auth);
     }
-    if (path === "/subscription/lava/sync" && request.method === "POST") {
+    if ((path === "/subscription/membership/sync" || path === "/subscription/lava/sync") && request.method === "POST") {
       const auth = await authenticate(request, env);
       if (auth instanceof Response) return auth;
       const onboarding = await requireCompletedOnboarding(env, auth);
@@ -2000,7 +2048,7 @@ export default {
       if (onboarding) return onboarding;
       const body = (await request.json().catch(() => null)) as { planId?: unknown } | null;
       const planId = typeof body?.planId === "string" ? body.planId : "";
-      if (!["plus", "pro", "ultimate", "max_supporter"].includes(planId)) return json({ error: "Invalid membership plan" }, 400);
+      if (!["plus", "pro"].includes(planId)) return json({ error: "Invalid membership plan" }, 400);
       const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
       const { response, payload } = await membershipBackendRequest(`${backend}/v1/subscription-sessions`, {
         method: "POST",
@@ -2019,7 +2067,36 @@ export default {
       }
       if (response.ok && typeof payload.desktopToken === "string") {
         const fingerprint = await digest(`lava:${payload.desktopToken}`);
-        await env.PRIVATE_ROOMS.put(`membership:lava:owner:${fingerprint}`, auth.id);
+        await env.PRIVATE_ROOMS.put(`membership:owner:${fingerprint}`, auth.id);
+      }
+      return json(payload, response.status);
+    }
+    if (path === "/subscription/patreon/start" && request.method === "POST") {
+      const auth = await authenticate(request, env);
+      if (auth instanceof Response) return auth;
+      const onboarding = await requireCompletedOnboarding(env, auth);
+      if (onboarding) return onboarding;
+      const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!body || Array.isArray(body) || Object.keys(body).length !== 0) return json({ error: "Invalid Patreon link request" }, 400);
+      const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
+      const { response, payload } = await membershipBackendRequest(`${backend}/v1/patreon/link-sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      if (!payload) return json({ error: "Patreon linking is temporarily unavailable. Please try again." }, 503);
+      if (response.ok && typeof payload.linkUrl === "string") {
+        try {
+          const linkUrl = new URL(payload.linkUrl);
+          linkUrl.searchParams.set("app", "mhtalk");
+          payload.linkUrl = linkUrl.toString();
+        } catch {
+          return json({ error: "Membership service returned an invalid Patreon link." }, 503);
+        }
+      }
+      if (response.ok && typeof payload.desktopToken === "string") {
+        const fingerprint = await digest(`lava:${payload.desktopToken}`);
+        await env.PRIVATE_ROOMS.put(`membership:owner:${fingerprint}`, auth.id);
       }
       return json(payload, response.status);
     }

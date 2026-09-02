@@ -62,7 +62,7 @@ type ApiProfile = {
   bio?: string | null;
   username_visible?: boolean;
   username_changed_at?: string | null;
-  subscription_tier?: "free" | "plus";
+  subscription_tier?: "free" | "plus" | "pro" | "ultimate" | "max_supporter";
   subscription_expires_at?: string | null;
   friend_since?: string;
   request_id?: string;
@@ -435,6 +435,16 @@ class AccountSession {
   async searchProfiles(query: string) {
     const items = await this.api<(ApiProfile & { is_friend?: boolean })[]>(`/social/search?q=${encodeURIComponent(query)}`);
     return items.map((item) => ({ ...this.mapProfile(item), isFriend: item.is_friend === true })) as SearchProfile[];
+  }
+  async membershipBadges(ids: string[]) {
+    if (!ids.length) return {};
+    const payload = await this.api<{ badges?: Record<string, unknown> }>("/social/badges", {
+      method: "POST",
+      body: JSON.stringify({ ids: [...new Set(ids)].slice(0, 50) }),
+    });
+    const badges: Record<string, SubscriptionPlan["tier"]> = {};
+    for (const [id, tier] of Object.entries(payload.badges || {})) badges[id] = resolveSubscriptionPlan({ tier }).tier;
+    return badges;
   }
   async sendFriendRequest(targetId: string) {
     await this.api("/social/friend-request", { method: "POST", body: JSON.stringify({ targetId }) });

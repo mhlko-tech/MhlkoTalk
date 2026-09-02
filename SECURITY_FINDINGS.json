@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "auditDate": "2026-09-02",
+  "releaseVerdict": "FAIL",
+  "disclaimer": "This does not guarantee 100% security.",
+  "findings": [
+    {
+      "id": "SEC-001",
+      "severity": "HIGH",
+      "status": "MITIGATED_PENDING_EXTERNAL_CONFIRMATION",
+      "releaseBlocker": true,
+      "title": "Historical desktop Patreon OAuth-secret exposure path",
+      "evidence": "The prior desktop architecture included local Patreon runtime configuration and build helpers capable of packaging OAuth configuration. The new server-owned flow removes those files from source/build inputs. A clean temporary EXE has zero retired-module and exact-local-value hits, but public historical artifacts were not exhaustively recovered and inspected.",
+      "remediation": "Confirm whether a real client secret was ever shipped. Rotate it before production if yes or uncertain. Keep all future OAuth secrets in Worker secret bindings."
+    },
+    {
+      "id": "SEC-002",
+      "severity": "HIGH",
+      "status": "FIXED",
+      "releaseBlocker": false,
+      "title": "Raw OAuth token forwarding through application deep links",
+      "evidence": "The completion page now forwards only code and normalized error fields, applies CSP/no-referrer/no-store, Android filters are narrowed, and unsafe token fragments are rejected.",
+      "remediation": "Covered by scripts/test-membership-security.mjs and Android lint/unit gates."
+    },
+    {
+      "id": "SEC-003",
+      "severity": "HIGH",
+      "status": "FIXED",
+      "releaseBlocker": false,
+      "title": "Client-influenced membership activation and badge display",
+      "evidence": "Activation now depends on server-verified LAVA/Patreon state. Public badges come from authenticated server profile state, and participant-supplied tiers are overridden.",
+      "remediation": "Keep the Worker/D1/Supabase state authoritative and retain negative tests for forged tiers and redirects."
+    },
+    {
+      "id": "SEC-004",
+      "severity": "HIGH",
+      "status": "FIXED",
+      "releaseBlocker": false,
+      "title": "Known LAVA development dependency advisories",
+      "evidence": "Cloudflare/Vitest/Wrangler development dependencies were upgraded and the resulting npm audit reports zero known vulnerabilities.",
+      "remediation": "Keep lockfile audit in CI."
+    },
+    {
+      "id": "SEC-005",
+      "severity": "MEDIUM",
+      "status": "BLOCKED_EXTERNAL",
+      "releaseBlocker": true,
+      "title": "Production migrations, secrets, and provider callbacks are not verified",
+      "evidence": "No production mutation was authorized. D1/Supabase migrations and LAVA/Patreon sandbox/live configuration remain unapplied during this audit.",
+      "remediation": "Apply to sandbox, execute SECURITY_TEST_PLAN.md, then obtain explicit owner approval for production."
+    },
+    {
+      "id": "SEC-006",
+      "severity": "MEDIUM",
+      "status": "OPEN",
+      "releaseBlocker": false,
+      "title": "Android dependency advisory scan coverage is incomplete",
+      "evidence": "Android unit tests and lint pass, but an independent OSV/OWASP dependency vulnerability report was not available in the local toolchain.",
+      "remediation": "Add a compatible Android dependency scanner to CI and triage reachable high/critical findings before release."
+    },
+    {
+      "id": "SEC-007",
+      "severity": "LOW",
+      "status": "OPEN",
+      "releaseBlocker": false,
+      "title": "Production Supabase/Firebase policy verification remains external",
+      "evidence": "Public client identifiers are intentionally present in the Android client; their safety depends on server authorization, RLS, API restrictions, and production Firebase/Supabase policy that was not mutated or fully inspected here.",
+      "remediation": "Verify RLS, storage policies, API restrictions, App Check/abuse controls, and authorized domains in the production dashboards."
+    },
+    {
+      "id": "SEC-008",
+      "severity": "LOW",
+      "status": "MITIGATED",
+      "releaseBlocker": false,
+      "title": "Stale local MVDownloader build artifacts use the retired membership module architecture",
+      "evidence": "Existing ignored local artifacts may contain the retired module marker. They were not deleted or selected for release. The clean temporary build does not contain it.",
+      "remediation": "Release only clean artifacts built from the reviewed commit; do not upload stale local build directories."
+    }
+  ]
+}
