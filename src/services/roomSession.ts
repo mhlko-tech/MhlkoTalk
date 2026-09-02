@@ -2550,25 +2550,58 @@ export class RoomSession {
     supportedRtcProviders = this.rtcAdapters.supportedProviders(),
   ) {
     const accountToken = accountSession.getAccessToken();
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 12_000);
-    const response = await fetch(liveKitTokenEndpoint, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        "content-type": "application/json",
-        ...(accountToken ? { authorization: `Bearer ${accountToken}` } : {}),
-      },
-      body: JSON.stringify({
-        roomName,
-        inviteCode: this.inviteCode,
-        clientPlatform: "windows",
-        capabilitiesVersion: 2,
-        supportedRtcProviders,
-        supportedMessagingProviders,
-        supportedFileProviders,
-      }),
-    }).finally(() => window.clearTimeout(timer));
+    const body = JSON.stringify({
+      roomName,
+      inviteCode: this.inviteCode,
+      clientPlatform: "windows",
+      capabilitiesVersion: 2,
+      supportedRtcProviders,
+      supportedMessagingProviders,
+      supportedFileProviders,
+    });
+    let response: Response | null = null;
+    let lastNetworkError: unknown = null;
+
+    // WebView2 can briefly reject a request while Windows changes networks or
+    // refreshes DNS. Retry only failures that produced no HTTP response; API
+    // errors such as an expired sign-in must still be reported immediately.
+    for (let attempt = 0; attempt < 3 && !response; attempt += 1) {
+      if (attempt > 0) {
+        this.update({ connectionMessage: "Connection interrupted. Retrying automatically…" });
+        await new Promise<void>((resolve) =>
+          window.setTimeout(resolve, attempt === 1 ? 350 : 900),
+        );
+      }
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 8_000);
+      try {
+        response = await fetch(liveKitTokenEndpoint, {
+          method: "POST",
+          signal: controller.signal,
+          headers: {
+            "content-type": "application/json",
+            ...(accountToken ? { authorization: `Bearer ${accountToken}` } : {}),
+          },
+          body,
+        });
+      } catch (error) {
+        lastNetworkError = error;
+      } finally {
+        window.clearTimeout(timer);
+      }
+    }
+
+    if (!response) {
+      const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+      const timedOut = lastNetworkError instanceof DOMException && lastNetworkError.name === "AbortError";
+      throw new Error(
+        offline
+          ? "No internet connection. Reconnect and try again."
+          : timedOut
+            ? "The connection service took too long to respond. Please try again."
+            : "MHTalk could not reach the connection service. Please try again.",
+      );
+    }
     const payload = (await response.json().catch(() => ({}))) as {
       token?: string;
       attachmentAccessToken?: string;
