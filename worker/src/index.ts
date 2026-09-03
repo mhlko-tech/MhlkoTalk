@@ -263,7 +263,7 @@ function parseProviderCapabilities<T extends string>(
 const publicPage = (title: string, body: string) => new Response(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title} · MHTalk</title><style>body{margin:0;background:#0c111b;color:#e8edf7;font:16px/1.65 system-ui,sans-serif}main{max-width:780px;margin:auto;padding:56px 24px}h1,h2{color:#fff}a{color:#73b7ff}.card{background:#151d2b;border:1px solid #263348;border-radius:18px;padding:28px}small{color:#9aa8bc}</style></head>
-<body><main><div class="card"><h1>${title}</h1>${body}<p><a href="/">MHTalk home</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p><small>Contact: 3084346hlko@gmail.com</small></div></main></body></html>`, {
+<body><main><div class="card"><h1>${title}</h1>${body}<p><a href="https://mhtalk-official.hussamninja.chatgpt.site/">MHTalk home</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></p><small>Contact: <a href="https://www.instagram.com/m.ed1t/">Instagram @m.ed1t</a> · 3084346hlko@gmail.com</small></div></main></body></html>`, {
   headers: { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff" },
 });
 const homePage = () => publicPage("MHTalk", `<p>MHTalk is a voice, video, screen-sharing and social rooms app for Android and Windows.</p><p>Sign in securely with your username or email and password, or continue with Google, to keep your profile and friends available across your devices.</p>`);
