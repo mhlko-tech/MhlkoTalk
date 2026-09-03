@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -11,10 +11,16 @@ import {
   type RecordingSettings,
 } from "./services/nativeRecording";
 import { isPaidSubscriptionValue } from "./core/subscription";
+import {
+  availableRecordingFrameRates,
+  availableRecordingResolutions,
+  recordingPowerSupport,
+  type RecordingFrameRate,
+} from "./core/recordingProfiles";
 import "./studio.css";
 
 const defaults: RecordingSettings = {
-  quality: "high",
+  outputHeight: 720,
   fps: 60,
   includeAudio: true,
   includeMic: true,
@@ -81,14 +87,72 @@ export function RecorderStudio() {
     null,
   );
 
+  const displaySettings = display?.getVideoTracks()[0]?.getSettings();
+  const sourceWidth = Math.round(
+    displaySettings?.width || window.screen.width * window.devicePixelRatio || 1920,
+  );
+  const sourceHeight = Math.round(
+    displaySettings?.height || window.screen.height * window.devicePixelRatio || 1080,
+  );
+  const powerSupport = useMemo(
+    () => recordingPowerSupport(
+      capabilities?.encoder || "libx264",
+      navigator.hardwareConcurrency || 4,
+    ),
+    [capabilities?.encoder],
+  );
+  const resolutionOptions = useMemo(
+    () => availableRecordingResolutions(
+      sourceWidth,
+      sourceHeight,
+      powerSupport.maxHeight,
+    ),
+    [powerSupport.maxHeight, sourceHeight, sourceWidth],
+  );
+  const frameRateOptions = useMemo(
+    () => availableRecordingFrameRates(powerSupport.maxFps),
+    [powerSupport.maxFps],
+  );
+  const planResolutionOptions = useMemo(
+    () => resolutionOptions.filter(
+      (option) => plusRecording || !option.requiresPlus,
+    ),
+    [plusRecording, resolutionOptions],
+  );
+  const planFrameRateOptions = useMemo(
+    () => frameRateOptions.filter((fps) => plusRecording || fps <= 60),
+    [frameRateOptions, plusRecording],
+  );
+  const pcMaximumResolution = resolutionOptions.at(-1);
+  const freeMaximumResolution =
+    resolutionOptions.filter((option) => !option.requiresPlus).at(-1) || resolutionOptions[0];
+  const pcMaximumFps = frameRateOptions.at(-1) || 30;
+  const freeMaximumFps = Math.min(pcMaximumFps, 60);
+
   useEffect(() => {
-    if (plusRecording) return;
     setSettings((current) => ({
       ...current,
-      fps: current.fps > 60 ? 60 : current.fps,
-      quality: current.quality === "lossless" ? "high" : current.quality,
+      fps: (!plusRecording && current.fps > 60 ? 60 : current.fps),
     }));
   }, [plusRecording]);
+
+  useEffect(() => {
+    if (!capabilities || !planResolutionOptions.length || !planFrameRateOptions.length) return;
+    setSettings((current) => {
+      const resolutionAvailable = planResolutionOptions.some(
+        (option) => option.targetHeight === current.outputHeight,
+      );
+      const fpsAvailable = planFrameRateOptions.includes(current.fps);
+      if (resolutionAvailable && fpsAvailable) return current;
+      return {
+        ...current,
+        outputHeight: resolutionAvailable
+          ? current.outputHeight
+          : planResolutionOptions.at(-1)!.targetHeight,
+        fps: fpsAvailable ? current.fps : planFrameRateOptions.at(-1)!,
+      };
+    });
+  }, [capabilities, planFrameRateOptions, planResolutionOptions]);
 
   useEffect(() => {
     void getRecorderCapabilities()
@@ -675,24 +739,32 @@ export function RecorderStudio() {
             </button>
             <h2>Output settings</h2>
             <p className="studio-tier-note">
-              {plusRecording ? "MHTalk Plus · source resolution and up to 120 FPS" : "Free · up to 720p and 60 FPS"}
+              {pcMaximumResolution
+                ? `This PC: ${pcMaximumResolution.width} × ${pcMaximumResolution.height} · ${pcMaximumFps} FPS. Free: ${freeMaximumResolution.width} × ${freeMaximumResolution.height} · ${freeMaximumFps} FPS.`
+                : "Detecting this PC's recording limits…"}
             </p>
             <label>
-              Quality
+              Resolution
               <select
-                value={settings.quality}
+                value={settings.outputHeight}
                 disabled={recording || processing !== null}
                 onChange={(event) =>
                   changeSettings({
                     ...settings,
-                    quality: event.target.value as RecordingSettings["quality"],
+                    outputHeight: Number(event.target.value),
                   })
                 }
               >
-                <option value="high">High quality</option>
-                <option value="balanced">Balanced</option>
-                <option value="performance">Performance</option>
-                <option value="lossless" disabled={!plusRecording}>Near lossless{plusRecording ? "" : " · Plus"}</option>
+                {resolutionOptions.map((option) => (
+                  <option
+                    key={`${option.targetHeight}-${option.width}-${option.height}`}
+                    value={option.targetHeight}
+                    disabled={!plusRecording && option.requiresPlus}
+                  >
+                    {option.width} × {option.height}
+                    {!plusRecording && option.requiresPlus ? " · Plus" : ""}
+                  </option>
+                ))}
               </select>
             </label>
             <label>
@@ -703,13 +775,15 @@ export function RecorderStudio() {
                 onChange={(event) =>
                   changeSettings({
                     ...settings,
-                    fps: Number(event.target.value) as 30 | 60 | 120,
+                    fps: Number(event.target.value) as RecordingFrameRate,
                   })
                 }
               >
-                <option value={60}>60 FPS</option>
-                <option value={30}>30 FPS</option>
-                <option value={120} disabled={!plusRecording}>120 FPS{plusRecording ? "" : " · Plus"}</option>
+                {frameRateOptions.map((fps) => (
+                  <option key={fps} value={fps} disabled={!plusRecording && fps > 60}>
+                    {fps} FPS{!plusRecording && fps > 60 ? " · Plus" : ""}
+                  </option>
+                ))}
               </select>
             </label>
             <button

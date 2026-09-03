@@ -34,7 +34,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: MHTalk __VERSION__
-          releaseBody: Signed MHTalk Windows release with the corrected four-tier membership hierarchy and automatic updater metadata.
+          releaseBody: Signed MHTalk Windows release with numeric, hardware-aware recording resolutions, enforced Free limits, and automatic updater metadata.
           args: --bundles nsis
           updaterJsonPreferNsis: true
           uploadUpdaterJson: true
