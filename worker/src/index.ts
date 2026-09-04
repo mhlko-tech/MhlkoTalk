@@ -719,7 +719,16 @@ async function syncLavaSubscription(request: Request, env: Env, user: AuthUser) 
       subscription_expires_at: expiry,
     }),
   });
-  if (!update?.ok) return json({ error: "Could not update the MHTalk membership" }, 503);
+  if (!update?.ok) {
+    const diagnostic = update
+      ? await update.clone().json().catch(() => null) as { code?: unknown } | null
+      : null;
+    console.warn("MHTalk membership profile update failed", {
+      status: update?.status || 0,
+      code: typeof diagnostic?.code === "string" ? diagnostic.code : "unknown",
+    });
+    return json({ error: "Could not update the MHTalk membership" }, 503);
+  }
   const profile = ((await update.json()) as Profile[])[0] || await profileFor(env, user);
   return json({
     status,
