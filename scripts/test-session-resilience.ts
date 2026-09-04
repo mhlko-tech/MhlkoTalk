@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { isTerminalSessionFailure, sessionRetryDelay } from "../src/services/sessionResilience";
+import { isTerminalSessionFailure, sessionRetryDelay, withSessionTimeout } from "../src/services/sessionResilience";
 
 for (const error of [
   new TypeError("Failed to fetch"),
@@ -16,4 +16,13 @@ for (const error of [
 ]) assert.equal(isTerminalSessionFailure(error), true);
 
 assert.deepEqual([0, 1, 2, 3, 4, 20].map(sessionRetryDelay), [2_000, 5_000, 15_000, 30_000, 60_000, 60_000]);
-console.log("Session resilience tests passed: 14");
+assert.equal(await withSessionTimeout(Promise.resolve("restored"), 50), "restored");
+await assert.rejects(
+  withSessionTimeout(new Promise<never>(() => undefined), 10),
+  /Secure session restoration timed out/,
+);
+await assert.rejects(
+  withSessionTimeout(new Promise<never>(() => undefined), 10, "Custom timeout"),
+  /Custom timeout/,
+);
+console.log("Session resilience tests passed: 17");

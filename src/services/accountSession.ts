@@ -7,7 +7,7 @@ import {
   supabasePublishableKey,
   supabaseUrl,
 } from "../config/serviceConfig";
-import { isTerminalSessionFailure, sessionRetryDelay } from "./sessionResilience";
+import { isTerminalSessionFailure, sessionRetryDelay, withSessionTimeout } from "./sessionResilience";
 import {
   resolveSubscriptionPlan,
   type SubscriptionPlan,
@@ -79,11 +79,18 @@ type ApiOnboarding = {
 
 const initialSocial: SocialState = { friends: [], requests: [], incomingInvite: null, loading: false, error: "" };
 const apiEndpoint = serviceBaseUrl;
+const SECURE_STORAGE_TIMEOUT_MS = 8_000;
+const SESSION_RESTORE_TIMEOUT_MS = 12_000;
+const PROFILE_HYDRATION_TIMEOUT_MS = 15_000;
 const runningInTauri = () => Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 const secureStorage = {
   async getItem(key: string) {
     if (!runningInTauri()) return localStorage.getItem(key);
-    return invoke<string | null>("auth_secret_get", { key });
+    return withSessionTimeout(
+      invoke<string | null>("auth_secret_get", { key }),
+      SECURE_STORAGE_TIMEOUT_MS,
+      "Windows secure session storage did not respond. Please try again.",
+    );
   },
   async setItem(key: string, value: string) {
     if (!runningInTauri()) localStorage.setItem(key, value);
@@ -178,12 +185,22 @@ class AccountSession {
       return;
     }
     this.setState({ status: "checking" });
-    const { data, error } = await this.client.auth.getSession();
-    if (error) {
-      this.setState({ status: "failed", message: error.message });
-      return;
+    try {
+      const { data, error } = await withSessionTimeout(
+        this.client.auth.getSession(),
+        SESSION_RESTORE_TIMEOUT_MS,
+      );
+      if (error) {
+        this.setState({ status: "failed", message: error.message });
+        return;
+      }
+      await this.applySession(data.session);
+    } catch (error) {
+      this.setState({
+        status: "failed",
+        message: error instanceof Error ? error.message : "Secure session restoration failed. Please try again.",
+      });
     }
-    await this.applySession(data.session);
   }
 
   async login(identifier: string, password: string) {
@@ -560,7 +577,11 @@ class AccountSession {
       return;
     }
     try {
-      const onboarding = await this.apiWithSession<ApiOnboarding>(session, "/auth/onboarding");
+      const onboarding = await withSessionTimeout(
+        this.apiWithSession<ApiOnboarding>(session, "/auth/onboarding"),
+        PROFILE_HYDRATION_TIMEOUT_MS,
+        "MHTalk could not restore your profile in time. Please try again.",
+      );
       if (revision !== this.hydrationRevision) return;
       if (onboarding.required) {
         this.setState({
@@ -570,7 +591,11 @@ class AccountSession {
         });
         return;
       }
-      const profile = await this.apiWithSession<ApiProfile>(session, "/social/me");
+      const profile = await withSessionTimeout(
+        this.apiWithSession<ApiProfile>(session, "/social/me"),
+        PROFILE_HYDRATION_TIMEOUT_MS,
+        "MHTalk could not restore your profile in time. Please try again.",
+      );
       if (revision !== this.hydrationRevision) return;
       this.lastAuthenticatedSession = session;
       window.clearTimeout(this.hydrationRetryTimer);
@@ -730,7 +755,7 @@ class AccountSession {
       requestHeaders.set("authorization", `Bearer ${activeSession.access_token}`);
       if (!requestHeaders.has("content-type")) requestHeaders.set("content-type", "application/json");
       const useNativeSocialTransport = isTauri() &&
-        (path.startsWith("/social/") || path === "/presence/ticket");
+        (path.startsWith("/social/") || path === "/presence/ticket" || path === "/auth/onboarding");
       if (useNativeSocialTransport) {
         if (init.body !== undefined && typeof init.body !== "string") {
           throw new Error("The desktop account request format is unsupported");

@@ -32,3 +32,27 @@ export function isTerminalSessionFailure(error: unknown): boolean {
 export function sessionRetryDelay(attempt: number): number {
   return [2_000, 5_000, 15_000, 30_000, 60_000][Math.min(Math.max(attempt, 0), 4)];
 }
+
+/**
+ * Prevent startup/session work from leaving the UI in a permanent loading
+ * state when native secure storage or an upstream request never settles.
+ */
+export function withSessionTimeout<T>(
+  operation: Promise<T>,
+  timeoutMs: number,
+  message = "Secure session restoration timed out. Please try again.",
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    operation.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}

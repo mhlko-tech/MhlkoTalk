@@ -241,11 +241,11 @@ async fn fetch_connection_token(
 }
 
 // Account and presence requests use the same fixed native transport as room
-// token acquisition. Only MHTalk social paths are accepted, so renderer
-// content cannot turn this into an arbitrary HTTP proxy.
+// token acquisition. Only explicitly approved MHTalk paths are accepted, so
+// renderer content cannot turn this into an arbitrary HTTP proxy.
 fn service_api_path_allowed(path: &str) -> bool {
     let lowercase = path.to_ascii_lowercase();
-    (path.starts_with("/social/") || path == "/presence/ticket")
+    (path.starts_with("/social/") || path == "/presence/ticket" || path == "/auth/onboarding")
         && !path.starts_with("//")
         && !path.contains("..")
         && !lowercase.contains("%2e")
@@ -316,8 +316,7 @@ async fn fetch_service_api(
     })
 }
 
-#[tauri::command]
-fn auth_secret_get(key: String) -> Result<Option<String>, String> {
+fn auth_secret_get_sync(key: String) -> Result<Option<String>, String> {
     let Some(value) = auth_raw_get(&key)? else {
         return Ok(None);
     };
@@ -333,6 +332,13 @@ fn auth_secret_get(key: String) -> Result<Option<String>, String> {
         secret.push_str(&chunk);
     }
     Ok(Some(secret))
+}
+
+#[tauri::command]
+async fn auth_secret_get(key: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || auth_secret_get_sync(key))
+        .await
+        .map_err(|error| format!("Secure session storage task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -411,7 +417,7 @@ async fn link_patreon_desktop() -> Result<PatreonLinkResult, String> {
     let listener = TcpListener::bind(PATREON_CALLBACK_ADDRESS)
         .map_err(|_| "MHTalk could not reserve its secure Patreon callback port".to_string())?;
     let device_key = "mhtalk.membership.device-id".to_string();
-    let device_id = match auth_secret_get(device_key.clone())? {
+    let device_id = match auth_secret_get_sync(device_key.clone())? {
         Some(value) if !value.is_empty() => value,
         _ => {
             let value = format!(
@@ -569,6 +575,7 @@ mod auth_storage_tests {
         assert!(service_api_path_allowed("/social/friends"));
         assert!(service_api_path_allowed("/social/search?q=test"));
         assert!(service_api_path_allowed("/presence/ticket"));
+        assert!(service_api_path_allowed("/auth/onboarding"));
         assert!(!service_api_path_allowed("https://example.com"));
         assert!(!service_api_path_allowed("//example.com/social/friends"));
         assert!(!service_api_path_allowed("/social/../service/capabilities"));
@@ -594,7 +601,7 @@ mod auth_storage_tests {
         );
         let result = (|| -> Result<(), String> {
             auth_secret_set(key.clone(), value.clone())?;
-            let stored = auth_secret_get(key.clone())?
+            let stored = auth_secret_get_sync(key.clone())?
                 .ok_or_else(|| "stored test session is missing".to_string())?;
             if stored != value {
                 return Err("stored test session did not round-trip".to_string());
