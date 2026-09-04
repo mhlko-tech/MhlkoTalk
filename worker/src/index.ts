@@ -698,8 +698,8 @@ async function syncLavaSubscription(request: Request, env: Env, user: AuthUser) 
   await env.PRIVATE_ROOMS.put(bindingKey, user.id);
   const status = typeof membership.status === "string" ? membership.status.toLowerCase() : "pending";
   const paidEntitlement = membership.entitlementTier === "patreon_plus" || membership.entitlementTier === "patreon_pro";
-  const active = status === "active" && paidEntitlement;
-  const terminal = ["expired", "failed", "inactive", "disconnected", "revoked"].includes(status) || verification.status === 410;
+  const active = ["active", "gifted", "free_trial", "owner"].includes(status) && paidEntitlement;
+  const terminal = ["expired", "failed", "inactive", "disconnected", "revoked", "verification_required", "no_active_membership", "unrecognized_entitlement", "former_patron", "cancelled", "declined", "refunded"].includes(status) || verification.status === 410;
   if (!active && !terminal) return json({ status, tier: "free", pending: true });
 
   const requestedPlan = typeof membership.plan === "string" ? membership.plan : "";
@@ -856,6 +856,37 @@ async function roomPresenceCount(env: Env, roomName: string) {
   if (!response.ok) throw new Error("Room presence service is unavailable");
   const payload = await response.json() as { count?: unknown };
   return Math.max(0, Number(payload.count) || 0);
+}
+
+async function disconnectMembership(request: Request, env: Env, user: AuthUser) {
+  const body = (await request.json().catch(() => null)) as { membershipToken?: unknown } | null;
+  const membershipToken = typeof body?.membershipToken === "string" ? body.membershipToken.trim() : "";
+  if (membershipToken.length < 24 || membershipToken.length > 512) return json({ error: "Invalid membership token" }, 400);
+  const tokenFingerprint = await digest(`lava:${membershipToken}`);
+  const bindingKey = `membership:owner:${tokenFingerprint}`;
+  const legacyBindingKey = `membership:lava:owner:${tokenFingerprint}`;
+  const owner = await env.PRIVATE_ROOMS.get(bindingKey) || await env.PRIVATE_ROOMS.get(legacyBindingKey);
+  if (owner && owner !== user.id) return json({ error: "This membership belongs to another MHTalk account" }, 409);
+  const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
+  const current = await membershipBackendRequest(`${backend}/v1/subscription-sessions/status`, {
+    headers: { authorization: `Bearer ${membershipToken}`, accept: "application/json" },
+  }, env.LAVA_MEMBERSHIP_BACKEND);
+  if (!current.response.ok || current.payload?.provider !== "patreon") {
+    return json({ error: "Only this app's Patreon session can be disconnected here" }, current.response.status === 401 ? 401 : 409);
+  }
+  const { response, payload } = await membershipBackendRequest(`${backend}/v1/membership/disconnect`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${membershipToken}`, accept: "application/json" },
+  }, env.LAVA_MEMBERSHIP_BACKEND);
+  if (!response.ok) return json({ error: response.status === 401 ? "Membership session has expired" : "Membership service is temporarily unavailable" }, response.status === 401 ? 401 : 503);
+  await Promise.all([env.PRIVATE_ROOMS.delete(bindingKey), env.PRIVATE_ROOMS.delete(legacyBindingKey)]);
+  const update = await serviceApi(env, `/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}`, {
+    method: "PATCH",
+    headers: { prefer: "return=minimal" },
+    body: JSON.stringify({ subscription_tier: "free", subscription_expires_at: null }),
+  });
+  if (!update?.ok) return json({ error: "Membership disconnected, but the MHTalk profile could not be refreshed" }, 503);
+  return json({ disconnected: true, provider: "patreon", appId: typeof payload?.appId === "string" ? payload.appId : "mhtalk" });
 }
 
 async function handleRtcUsage(request: Request, env: Env) {
@@ -2066,6 +2097,12 @@ export default {
       const onboarding = await requireCompletedOnboarding(env, auth);
       return onboarding || syncLavaSubscription(request, env, auth);
     }
+    if (path === "/subscription/membership/disconnect" && request.method === "POST") {
+      const auth = await authenticate(request, env);
+      if (auth instanceof Response) return auth;
+      const onboarding = await requireCompletedOnboarding(env, auth);
+      return onboarding || disconnectMembership(request, env, auth);
+    }
     if (path === "/subscription/lava/start" && request.method === "POST") {
       const auth = await authenticate(request, env);
       if (auth instanceof Response) return auth;
@@ -2102,12 +2139,12 @@ export default {
       const onboarding = await requireCompletedOnboarding(env, auth);
       if (onboarding) return onboarding;
       const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
-      if (!body || Array.isArray(body) || Object.keys(body).length !== 0) return json({ error: "Invalid Patreon link request" }, 400);
+      if (!body || Array.isArray(body) || Object.keys(body).some((key) => key !== "deviceId")) return json({ error: "Invalid Patreon link request" }, 400);
       const backend = (env.LAVA_MEMBERSHIP_BACKEND_URL || "https://mvdownloader-lava-staging.mhlkotalk.workers.dev").replace(/\/$/, "");
       const { response, payload } = await membershipBackendRequest(`${backend}/v1/patreon/link-sessions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: "{}",
+        body: JSON.stringify({ appId: "mhtalk", ...(typeof body.deviceId === "string" ? { deviceId: body.deviceId } : {}) }),
       }, env.LAVA_MEMBERSHIP_BACKEND);
       if (!payload) return json({ error: "Patreon linking is temporarily unavailable. Please try again." }, 503);
       if (response.ok && typeof payload.linkUrl === "string") {

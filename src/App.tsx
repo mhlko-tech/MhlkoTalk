@@ -51,7 +51,7 @@ import {
   type UpdateActivity,
 } from "./services/appUpdater";
 import { isKeyboardLanguageShortcut, switchKeyboardLanguage } from "./services/inputLanguage";
-import { linkExistingLavaMembership, startLavaMembership, startPatreonMembership, syncLavaMembership, type MembershipPlanId } from "./services/membershipService";
+import { disconnectMembership, linkExistingLavaMembership, startLavaMembership, startPatreonMembership, syncLavaMembership, type MembershipPlanId, type MembershipSync } from "./services/membershipService";
 
 const initial: SessionSnapshot = {
   state: "idle",
@@ -258,6 +258,7 @@ export function App() {
   const [lavaBusy, setLavaBusy] = useState(false);
   const [membershipPlan, setMembershipPlan] = useState<MembershipPlanId>("plus");
   const [membershipMessage, setMembershipMessage] = useState("");
+  const [membershipDetails, setMembershipDetails] = useState<MembershipSync | null>(null);
   const [membershipCode, setMembershipCode] = useState("");
   const [friendSearch, setFriendSearch] = useState("");
   const [friendResults, setFriendResults] = useState<SearchProfile[]>([]);
@@ -347,7 +348,7 @@ export function App() {
   }, [subscription.tier]);
   useEffect(() => {
     if (accountState.status !== "signed-in") return;
-    void syncLavaMembership().catch(() => undefined);
+    void syncLavaMembership().then((result) => { if (result) setMembershipDetails(result); }).catch(() => undefined);
   }, [accountState.status]);
   useEffect(() => {
     const allowed = limitMediaQuality(
@@ -1950,6 +1951,11 @@ export function App() {
               </button>
             </div>
             <p className="support-tier-note">Plus focuses on HD sharing and recording. Pro unlocks the rest of MHTalk. Ultimate and Max Supporter include every Pro feature with their own exclusive badge.</p>
+            {membershipDetails && (
+              <div className="support-membership-status">
+                Plan: {subscriptionLabels[membershipDetails.tier]} · Source: {(membershipDetails.provider || "lava").toUpperCase()} · Status: {membershipDetails.status === "gifted" ? "Gifted" : membershipDetails.status === "active" || membershipDetails.status === "owner" ? "Active" : membershipDetails.status}
+              </div>
+            )}
             {membershipMessage && <div className="support-membership-status">{membershipMessage}</div>}
             <div className="support-membership-link">
               <label htmlFor="membership-activation-code">Already have a shared membership?</label>
@@ -1969,6 +1975,7 @@ export function App() {
                   try {
                     const result = await linkExistingLavaMembership(membershipCode);
                     setMembershipCode("");
+                    setMembershipDetails(result);
                     setMembershipMessage(hasMembershipBadge(result.tier) ? `MHTalk ${subscriptionLabels[result.tier]} is active on this account.` : result.pending ? "Payment confirmation is still pending." : "No active membership was found.");
                   } catch (error) {
                     setMembershipMessage(error instanceof Error ? error.message : "Could not link this membership");
@@ -1992,21 +1999,39 @@ export function App() {
                 setLavaBusy(true);
                 try {
                   const result = await syncLavaMembership(true);
+                  setMembershipDetails(result);
                   setMembershipMessage(!result ? "Start or link a membership first." : hasMembershipBadge(result.tier) ? `MHTalk ${subscriptionLabels[result.tier]} is active on this account.` : result.pending ? "Membership confirmation is still pending." : "No active membership was found.");
                 } catch (error) {
                   setMembershipMessage(error instanceof Error ? error.message : "Could not verify membership");
                 } finally { setLavaBusy(false); }
-              }}>Verify membership</button>
+              }}>Check now</button>
               <button className="control" onClick={() => void openUrl(patreonMembershipUrl)}>View Patreon plans</button>
               <button className="control" disabled={lavaBusy} onClick={async () => {
                 setLavaBusy(true);
                 try {
-                  await startPatreonMembership();
-                  setMembershipMessage("Finish linking in Patreon, then return here and choose Verify membership.");
+                  const result = await startPatreonMembership();
+                  if (result) {
+                    setMembershipDetails(result);
+                    setMembershipMessage(`MHTalk ${subscriptionLabels[result.tier]} is active from Patreon.`);
+                  } else {
+                    setMembershipMessage("Finish linking in Patreon, then return here and choose Check now.");
+                  }
                 } catch (error) {
                   setMembershipMessage(error instanceof Error ? error.message : "Could not link Patreon membership");
                 } finally { setLavaBusy(false); }
               }}>Link Patreon membership</button>
+              {membershipDetails?.provider === "patreon" && !membershipDetails.pending && hasMembershipBadge(membershipDetails.tier) && (
+                <button className="control" disabled={lavaBusy} onClick={async () => {
+                  setLavaBusy(true);
+                  try {
+                    await disconnectMembership();
+                    setMembershipDetails(null);
+                    setMembershipMessage("This MHTalk device was disconnected. Your MVDownloader session was not changed.");
+                  } catch (error) {
+                    setMembershipMessage(error instanceof Error ? error.message : "Could not disconnect this MHTalk membership");
+                  } finally { setLavaBusy(false); }
+                }}>Disconnect this MHTalk device</button>
+              )}
               <button className="control" onClick={() => void openUrl(mvDownloaderUrl)}>Download MVDownloader</button>
               <button className="control" onClick={() => {
                 void navigator.clipboard.writeText("Try MHTalk Beta for voice, video, rooms and chat: https://github.com/mhlko-tech/MhlkoTalk/releases/latest").then(() => setAppError("MHTalk link copied — thank you for sharing."));

@@ -2529,6 +2529,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "url",
  "wasapi",
  "windows-sys 0.59.0",
 ]
