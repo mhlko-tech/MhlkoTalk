@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { withTimeout } from "../src/core/async";
+import { errorMessage, withRetries, withTimeout } from "../src/core/async";
 import { isTerminalSessionFailure, sessionRetryDelay } from "../src/services/sessionResilience";
 
 for (const error of [
@@ -26,4 +26,15 @@ await assert.rejects(
   withTimeout(new Promise<never>(() => undefined), 10, "Custom timeout"),
   /Custom timeout/,
 );
-console.log("Session resilience tests passed: 17");
+assert.equal(errorMessage("Native storage failed", "Fallback"), "Native storage failed");
+assert.equal(errorMessage({ message: "Structured failure" }, "Fallback"), "Structured failure");
+assert.equal(errorMessage(null, "Fallback"), "Fallback");
+let attempts = 0;
+assert.equal(await withRetries(async () => {
+  attempts += 1;
+  if (attempts < 2) throw "temporary native failure";
+  return "restored";
+}, 2, 0), "restored");
+assert.equal(attempts, 2);
+await assert.rejects(withRetries(async () => { throw new Error("permanent failure"); }, 2, 0), /permanent failure/);
+console.log("Session resilience tests passed: 23");

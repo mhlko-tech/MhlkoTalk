@@ -7,7 +7,7 @@ import {
   supabasePublishableKey,
   supabaseUrl,
 } from "../config/serviceConfig";
-import { withTimeout } from "../core/async";
+import { errorMessage, withRetries, withTimeout } from "../core/async";
 import { isTerminalSessionFailure, sessionRetryDelay } from "./sessionResilience";
 import {
   resolveSubscriptionPlan,
@@ -81,25 +81,54 @@ type ApiOnboarding = {
 const initialSocial: SocialState = { friends: [], requests: [], incomingInvite: null, loading: false, error: "" };
 const apiEndpoint = serviceBaseUrl;
 const SECURE_STORAGE_TIMEOUT_MS = 8_000;
+const SECURE_STORAGE_ATTEMPTS = 2;
 const SESSION_RESTORE_TIMEOUT_MS = 12_000;
+const SESSION_RESTORE_ATTEMPTS = 2;
 const PROFILE_HYDRATION_TIMEOUT_MS = 15_000;
 const runningInTauri = () => Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+
+async function invokeSecureStorage<T>(
+  command: string,
+  args: Record<string, string>,
+  timeoutMessage: string,
+  attempts = 1,
+) {
+  try {
+    return await withRetries(
+      () => withTimeout(invoke<T>(command, args), SECURE_STORAGE_TIMEOUT_MS, timeoutMessage),
+      attempts,
+      250,
+    );
+  } catch (error) {
+    throw new Error(errorMessage(error, timeoutMessage));
+  }
+}
+
 const secureStorage = {
   async getItem(key: string) {
     if (!runningInTauri()) return localStorage.getItem(key);
-    return withTimeout(
-      invoke<string | null>("auth_secret_get", { key }),
-      SECURE_STORAGE_TIMEOUT_MS,
+    return invokeSecureStorage<string | null>(
+      "auth_secret_get",
+      { key },
       "Windows secure session storage did not respond. Please try again.",
+      SECURE_STORAGE_ATTEMPTS,
     );
   },
   async setItem(key: string, value: string) {
     if (!runningInTauri()) localStorage.setItem(key, value);
-    else await invoke("auth_secret_set", { key, value });
+    else await invokeSecureStorage<void>(
+      "auth_secret_set",
+      { key, value },
+      "Windows could not save the refreshed session. Please try again.",
+    );
   },
   async removeItem(key: string) {
     if (!runningInTauri()) localStorage.removeItem(key);
-    else await invoke("auth_secret_delete", { key });
+    else await invokeSecureStorage<void>(
+      "auth_secret_delete",
+      { key },
+      "Windows could not clear the secure session. Please try again.",
+    );
   },
 };
 
@@ -187,20 +216,30 @@ class AccountSession {
     }
     this.setState({ status: "checking" });
     try {
-      const { data, error } = await withTimeout(
-        this.client.auth.getSession(),
-        SESSION_RESTORE_TIMEOUT_MS,
-        "Secure session restoration timed out. Please try again.",
+      const { data, error } = await withRetries(
+        () => withTimeout(
+          this.client!.auth.getSession(),
+          SESSION_RESTORE_TIMEOUT_MS,
+          "Secure session restoration timed out. Please try again.",
+        ),
+        SESSION_RESTORE_ATTEMPTS,
+        400,
       );
       if (error) {
-        this.setState({ status: "failed", message: error.message });
+        if (isTerminalSessionFailure(error)) {
+          this.session = null;
+          this.lastAuthenticatedSession = null;
+          this.setState({ status: "signed-out" });
+          return;
+        }
+        this.setState({ status: "failed", message: errorMessage(error, "Secure session restoration failed. Please try again.") });
         return;
       }
       await this.applySession(data.session);
     } catch (error) {
       this.setState({
         status: "failed",
-        message: error instanceof Error ? error.message : "Secure session restoration failed. Please try again.",
+        message: errorMessage(error, "Secure session restoration failed. Please try again."),
       });
     }
   }
@@ -620,7 +659,7 @@ class AccountSession {
         );
         return;
       }
-      this.setState({ status: "failed", message: error instanceof Error ? error.message : "Profile could not be loaded" });
+      this.setState({ status: "failed", message: errorMessage(error, "Profile could not be loaded") });
     }
   }
 

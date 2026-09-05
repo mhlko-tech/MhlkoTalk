@@ -326,9 +326,14 @@ fn auth_secret_get_sync(key: String) -> Result<Option<String>, String> {
     let mut secret = String::new();
     for index in 0..manifest.count {
         let chunk_key = auth_chunk_key(&key, &manifest.generation, index);
-        let chunk = auth_raw_get(&chunk_key)?.ok_or_else(|| {
-            "Secure session storage is incomplete. Please sign in again.".to_string()
-        })?;
+        let Some(chunk) = auth_raw_get(&chunk_key)? else {
+            // A previous process may have stopped halfway through deletion.
+            // The incomplete value cannot be restored, so remove its public
+            // manifest first and clean up any remaining private chunks.
+            auth_raw_delete(&key).ok();
+            delete_auth_chunks(&key, &manifest);
+            return Ok(None);
+        };
         secret.push_str(&chunk);
     }
     Ok(Some(secret))
@@ -342,7 +347,13 @@ async fn auth_secret_get(key: String) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn auth_secret_set(key: String, value: String) -> Result<(), String> {
+async fn auth_secret_set(key: String, value: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || auth_secret_set_sync(key, value))
+        .await
+        .map_err(|error| format!("Secure session storage task failed: {error}"))?
+}
+
+fn auth_secret_set_sync(key: String, value: String) -> Result<(), String> {
     let previous_manifest = auth_raw_get(&key)?
         .as_deref()
         .and_then(parse_auth_chunk_manifest);
@@ -391,14 +402,24 @@ fn auth_secret_set(key: String, value: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn auth_secret_delete(key: String) -> Result<(), String> {
+async fn auth_secret_delete(key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || auth_secret_delete_sync(key))
+        .await
+        .map_err(|error| format!("Secure session storage task failed: {error}"))?
+}
+
+fn auth_secret_delete_sync(key: String) -> Result<(), String> {
     let manifest = auth_raw_get(&key)?
         .as_deref()
         .and_then(parse_auth_chunk_manifest);
+    // Remove the public manifest before its chunks. If Windows rejects the
+    // root deletion, the complete session remains readable and can be
+    // retried. Once the root is gone, leftover chunks are unreachable.
+    auth_raw_delete(&key)?;
     if let Some(manifest) = manifest {
         delete_auth_chunks(&key, &manifest);
     }
-    auth_raw_delete(&key)
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -428,7 +449,7 @@ async fn link_patreon_desktop() -> Result<PatreonLinkResult, String> {
                     .map_err(|error| error.to_string())?
                     .as_nanos()
             );
-            auth_secret_set(device_key, value.clone())?;
+            auth_secret_set_sync(device_key, value.clone())?;
             value
         }
     };
@@ -529,7 +550,7 @@ async fn link_patreon_desktop() -> Result<PatreonLinkResult, String> {
     let membership = payload
         .get("membership")
         .ok_or_else(|| "Patreon returned an invalid membership".to_string())?;
-    auth_secret_set("mhtalk.membership.token".to_string(), desktop_token)?;
+    auth_secret_set_sync("mhtalk.membership.token".to_string(), desktop_token)?;
     Ok(PatreonLinkResult {
         status: membership
             .get("status")
@@ -600,7 +621,7 @@ mod auth_storage_tests {
             "محمد".repeat(200)
         );
         let result = (|| -> Result<(), String> {
-            auth_secret_set(key.clone(), value.clone())?;
+            auth_secret_set_sync(key.clone(), value.clone())?;
             let stored = auth_secret_get_sync(key.clone())?
                 .ok_or_else(|| "stored test session is missing".to_string())?;
             if stored != value {
@@ -608,8 +629,34 @@ mod auth_storage_tests {
             }
             Ok(())
         })();
-        auth_secret_delete(key).ok();
+        auth_secret_delete_sync(key).ok();
         result.expect("large secure session round-trip");
+    }
+
+    #[test]
+    #[ignore = "requires the Windows Credential Manager"]
+    fn incomplete_chunked_session_self_heals_to_signed_out() {
+        let key = format!("mhtalk.auth-storage-incomplete-test.{}", std::process::id());
+        let value = format!(
+            "{{\"access_token\":\"{}\",\"refresh_token\":\"{}\"}}",
+            "token".repeat(500),
+            "refresh".repeat(500)
+        );
+        auth_secret_set_sync(key.clone(), value).expect("store chunked test session");
+        let manifest = auth_raw_get(&key)
+            .expect("read test manifest")
+            .as_deref()
+            .and_then(parse_auth_chunk_manifest)
+            .expect("test value should be chunked");
+        auth_raw_delete(&auth_chunk_key(&key, &manifest.generation, 0))
+            .expect("remove one test chunk");
+
+        assert_eq!(
+            auth_secret_get_sync(key.clone()).expect("self-heal incomplete session"),
+            None
+        );
+        assert_eq!(auth_raw_get(&key).expect("read healed root"), None);
+        auth_secret_delete_sync(key).ok();
     }
 }
 

@@ -34,7 +34,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: MHTalk __VERSION__
-          releaseBody: Signed MHTalk Windows release with numeric, hardware-aware recording resolutions, enforced Free limits, and automatic updater metadata.
+          releaseBody: Signed MHTalk Windows release with resilient secure-session restoration, automatic recovery from incomplete Windows credentials, and non-blocking secure storage access.
           args: --bundles nsis
           updaterJsonPreferNsis: true
           uploadUpdaterJson: true
