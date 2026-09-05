@@ -10,6 +10,7 @@ import {
   VideoPresets,
 } from "livekit-client";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { withTimeout } from "../core/async";
 import type {
   ChatListener,
   ChatMessage,
@@ -3236,24 +3237,6 @@ function sanitizeProfile(
     usernameVisible: profile?.usernameVisible !== false,
     subscriptionTier,
   };
-}
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  milliseconds: number,
-  message: string,
-): Promise<T> {
-  let timer: number | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timer = window.setTimeout(() => reject(new Error(message)), milliseconds);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) window.clearTimeout(timer);
-  }
 }
 
 export const roomSession = new RoomSession();

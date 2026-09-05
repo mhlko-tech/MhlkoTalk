@@ -7,7 +7,8 @@ import {
   supabasePublishableKey,
   supabaseUrl,
 } from "../config/serviceConfig";
-import { isTerminalSessionFailure, sessionRetryDelay, withSessionTimeout } from "./sessionResilience";
+import { withTimeout } from "../core/async";
+import { isTerminalSessionFailure, sessionRetryDelay } from "./sessionResilience";
 import {
   resolveSubscriptionPlan,
   type SubscriptionPlan,
@@ -86,7 +87,7 @@ const runningInTauri = () => Boolean((window as unknown as { __TAURI_INTERNALS__
 const secureStorage = {
   async getItem(key: string) {
     if (!runningInTauri()) return localStorage.getItem(key);
-    return withSessionTimeout(
+    return withTimeout(
       invoke<string | null>("auth_secret_get", { key }),
       SECURE_STORAGE_TIMEOUT_MS,
       "Windows secure session storage did not respond. Please try again.",
@@ -186,9 +187,10 @@ class AccountSession {
     }
     this.setState({ status: "checking" });
     try {
-      const { data, error } = await withSessionTimeout(
+      const { data, error } = await withTimeout(
         this.client.auth.getSession(),
         SESSION_RESTORE_TIMEOUT_MS,
+        "Secure session restoration timed out. Please try again.",
       );
       if (error) {
         this.setState({ status: "failed", message: error.message });
@@ -577,7 +579,7 @@ class AccountSession {
       return;
     }
     try {
-      const onboarding = await withSessionTimeout(
+      const onboarding = await withTimeout(
         this.apiWithSession<ApiOnboarding>(session, "/auth/onboarding"),
         PROFILE_HYDRATION_TIMEOUT_MS,
         "MHTalk could not restore your profile in time. Please try again.",
@@ -591,7 +593,7 @@ class AccountSession {
         });
         return;
       }
-      const profile = await withSessionTimeout(
+      const profile = await withTimeout(
         this.apiWithSession<ApiProfile>(session, "/social/me"),
         PROFILE_HYDRATION_TIMEOUT_MS,
         "MHTalk could not restore your profile in time. Please try again.",

@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import appPackage from "../package.json";
 import { Avatar } from "./components/Avatar";
 import { MembershipBadge } from "./components/MembershipBadge";
 import { DisplayNameField } from "./components/DisplayNameField";
 import { AuthenticationGate } from "./features/auth/AuthenticationGate";
 import { ParticipantMediaCard } from "./features/room/ParticipantMediaCard";
+import type { InfoPage } from "./features/info/InfoDialog";
+import { StartupUpdateGate } from "./features/startup/StartupUpdateGate";
 import {
   CropDialog,
   cropAvatar,
@@ -30,7 +31,6 @@ import {
   formatAttachmentLimit,
   freeSubscriptionPlan,
   isPaidSubscription,
-  hasMembershipBadge,
   limitMediaQuality,
   subscriptionLabels,
 } from "./core/subscription";
@@ -42,7 +42,6 @@ import { roomSession } from "./services/roomSession";
 import {
   accountSession,
   type AccountState,
-  type SearchProfile,
   type SocialState,
 } from "./services/accountSession";
 import {
@@ -51,7 +50,11 @@ import {
   type UpdateActivity,
 } from "./services/appUpdater";
 import { isKeyboardLanguageShortcut, switchKeyboardLanguage } from "./services/inputLanguage";
-import { disconnectMembership, linkExistingLavaMembership, startLavaMembership, startPatreonMembership, syncLavaMembership, type MembershipPlanId, type MembershipSync } from "./services/membershipService";
+import { emojiList } from "./config/appContent";
+
+const MembershipDialog = lazy(() => import("./features/membership/MembershipDialog").then((module) => ({ default: module.MembershipDialog })));
+const FriendsDialog = lazy(() => import("./features/social/FriendsDialog").then((module) => ({ default: module.FriendsDialog })));
+const InfoDialog = lazy(() => import("./features/info/InfoDialog").then((module) => ({ default: module.InfoDialog })));
 
 const initial: SessionSnapshot = {
   state: "idle",
@@ -72,36 +75,6 @@ const initial: SessionSnapshot = {
 };
 const emptyChat: ChatSnapshot = { messages: [], typing: [] };
 const appVersion = appPackage.version;
-const patreonMembershipUrl = "https://www.patreon.com/cw/MhlkoVD/membership";
-const mvDownloaderUrl = "https://github.com/mhlko-tech/MVDownloader/releases/latest";
-const emojiList = [
-  "😀",
-  "😂",
-  "🥹",
-  "😍",
-  "😎",
-  "😭",
-  "👍",
-  "👎",
-  "❤️",
-  "🔥",
-  "🎉",
-  "🤝",
-  "✅",
-  "❌",
-  "💯",
-  "🚀",
-  "👀",
-  "🙏",
-  "🎮",
-  "☕",
-  "🇮🇶",
-  "🇹🇷",
-  "🌙",
-  "✨",
-];
-
-type InfoPage = "help" | "terms" | "privacy";
 type MemberMenuState = {
   x: number;
   y: number;
@@ -113,36 +86,6 @@ type MemberMenuState = {
 
 const usernameCooldownMs = 30 * 24 * 60 * 60 * 1000;
 
-const infoPages: Record<InfoPage, { title: string; paragraphs: string[] }> = {
-  help: {
-    title: "Help Center",
-    paragraphs: [
-      "MHTalk is a desktop voice, video, screen-sharing and room-chat application. Use Main for public conversation and private-room invitations only with people you trust.",
-      "Before sharing a screen, camera, microphone, file or recording, confirm that everyone affected has consented. Never expose passwords, payment details, private messages or other sensitive information.",
-      "If audio becomes unstable, keep MHTalk open while it reconnects automatically. Check the selected microphone and speaker under Settings if sound does not return.",
-      "MHTalk must not be used for harassment, threats, impersonation, piracy, sexual exploitation, malware distribution or any activity forbidden by local law. You are responsible for what you publish and record.",
-    ],
-  },
-  terms: {
-    title: "Terms of Service",
-    paragraphs: [
-      "By using MHTalk you agree to use it lawfully, respect other people and obtain any permission required before recording or redistributing their voice, image, screen or files.",
-      "You must not bypass room protections, disrupt the service, distribute harmful files, infringe intellectual-property rights, or use MHTalk to abuse, exploit or endanger another person.",
-      "Public-room moderation reduces obvious harmful text but cannot guarantee that every language, spelling or attachment is safe. Users remain responsible for their conduct and for deciding what they open or download.",
-      "The software is provided as available. Network providers, devices and third-party infrastructure can affect quality. These terms do not remove any non-waivable rights granted by applicable law.",
-    ],
-  },
-  privacy: {
-    title: "Privacy Policy",
-    paragraphs: [
-      "Your account identifier, username, email address, profile, friend relationships, blocks and notification tokens are hosted by Supabase. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk. Google supplies basic account information only when you choose Google sign-in.",
-      "MHTalk does not sell personal data. Live room media and messages are transmitted through the active realtime provider, currently Daily or LiveKit. Files, recordings and recovered recording pieces remain on the device paths selected by you unless you deliberately send them.",
-      "People in a room may capture or redistribute what they receive. Share only what you are comfortable revealing and use private invitations carefully.",
-      "You can sign out, remove your profile photo, leave a room, delete local recordings and stop camera, microphone or screen sharing at any time. Contact MHTalk to request account deletion.",
-    ],
-  },
-};
-
 function statusLabel(state: SessionSnapshot["state"]) {
   if (state === "connected") return "Connected";
   if (state === "connecting") return "Connecting";
@@ -150,67 +93,6 @@ function statusLabel(state: SessionSnapshot["state"]) {
   if (state === "recovering") return "Connected";
   if (state === "failed") return "Connection unavailable";
   return "Not connected";
-}
-
-function StartupUpdateGate({
-  activity,
-  onRetry,
-}: {
-  activity: UpdateActivity | null;
-  onRetry: () => void;
-}) {
-  const phase = activity?.phase || "checking";
-  const label =
-    phase === "downloading"
-      ? "Downloading update"
-      : phase === "installing"
-        ? "Installing update"
-        : phase === "error"
-          ? "Update check failed"
-          : "Checking for updates";
-  const progress = activity?.progress;
-  const phaseIndex = phase === "installing" ? 2 : phase === "downloading" ? 1 : 0;
-  return (
-    <main className="startup-update-gate" aria-live="polite">
-      <section className="startup-update-card">
-        <header>
-          <img src="/mhtalk-icon.png" alt="MHTalk" />
-          <div><h1>MHTalk <span className="beta-badge">Beta</span></h1><small>Secure desktop · v{appVersion}</small></div>
-        </header>
-        <div className="startup-update-copy">
-          <strong>{label}</strong>
-          <span>{phase === "checking" ? "Making sure you have the newest secure version." : phase === "downloading" ? "Downloading the verified update from MHTalk." : phase === "installing" ? "Update verified. MHTalk will restart automatically." : "MHTalk could not reach the update service."}</span>
-        </div>
-        <div className="startup-stages" aria-hidden="true">
-          {["Check", "Download", "Open"].map((step, index) => (
-            <div className={index < phaseIndex ? "done" : index === phaseIndex && phase !== "error" ? "active" : ""} key={step}>
-              <i>{index < phaseIndex ? "✓" : index + 1}</i><span>{step}</span>
-            </div>
-          ))}
-        </div>
-        <div
-          className={`startup-progress ${progress === null || progress === undefined ? "indeterminate" : ""}`}
-          role="progressbar"
-          aria-label={label}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={progress ?? undefined}
-        >
-          <i style={progress === null || progress === undefined ? undefined : { width: `${progress}%` }} />
-        </div>
-        <div className="startup-update-meta">
-          <small>{phase === "downloading" && progress !== null ? `${progress}%` : phase === "installing" ? "Restarting MHTalk…" : phase === "error" ? "Connection required" : "Usually takes a few seconds"}</small>
-          <small>Signed update</small>
-        </div>
-        {activity?.phase === "error" && (
-          <div className="startup-update-error">
-            <p>{activity.message}</p>
-            <button onClick={onRetry}>Try again</button>
-          </div>
-        )}
-      </section>
-    </main>
-  );
 }
 
 export function App() {
@@ -255,14 +137,6 @@ export function App() {
   );
   const [friendsOpen, setFriendsOpen] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
-  const [lavaBusy, setLavaBusy] = useState(false);
-  const [membershipPlan, setMembershipPlan] = useState<MembershipPlanId>("plus");
-  const [membershipMessage, setMembershipMessage] = useState("");
-  const [membershipDetails, setMembershipDetails] = useState<MembershipSync | null>(null);
-  const [membershipCode, setMembershipCode] = useState("");
-  const [friendSearch, setFriendSearch] = useState("");
-  const [friendResults, setFriendResults] = useState<SearchProfile[]>([]);
-  const [socialBusy, setSocialBusy] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [memberMenu, setMemberMenu] = useState<MemberMenuState | null>(null);
@@ -346,10 +220,6 @@ export function App() {
   useEffect(() => {
     localStorage.setItem("mhtalk.subscription-tier", subscription.tier);
   }, [subscription.tier]);
-  useEffect(() => {
-    if (accountState.status !== "signed-in") return;
-    void syncLavaMembership().then((result) => { if (result) setMembershipDetails(result); }).catch(() => undefined);
-  }, [accountState.status]);
   useEffect(() => {
     const allowed = limitMediaQuality(
       shareQuality,
@@ -616,19 +486,7 @@ export function App() {
     await roomSession.join("Private room", code);
     setPrivateDialogOpen(false);
   };
-  const searchFriends = async () => {
-    if (friendSearch.trim().length < 2) return;
-    setSocialBusy("search");
-    try {
-      setFriendResults(await accountSession.searchProfiles(friendSearch.trim()));
-    } catch (error) {
-      setAppError(error instanceof Error ? error.message : "Could not search profiles");
-    } finally {
-      setSocialBusy("");
-    }
-  };
   const inviteFriend = async (friendId: string) => {
-    setSocialBusy(friendId);
     try {
       const invite = await accountSession.inviteFriend(friendId, true);
       setPrivateInvite(invite.inviteCode || null);
@@ -636,8 +494,6 @@ export function App() {
       setFriendsOpen(false);
     } catch (error) {
       setAppError(error instanceof Error ? error.message : "Could not send invitation");
-    } finally {
-      setSocialBusy("");
     }
   };
   const openMemberMenu = (
@@ -1057,6 +913,7 @@ export function App() {
     return (
       <StartupUpdateGate
         activity={updateActivity}
+        appVersion={appVersion}
         onRetry={retryStartupUpdater}
       />
     );
@@ -1832,214 +1689,21 @@ export function App() {
           </section>
         </div>
       )}
-      {friendsOpen && (
-        <div className="modal-backdrop">
-          <section className="private-modal friends-modal" role="dialog" aria-modal="true" aria-label="Friends">
-            <button className="modal-close" onClick={() => setFriendsOpen(false)}>×</button>
-            <h2>Friends</h2>
-            <div className="social-content">
-                <div className="social-account-card">
-                  <Avatar value={accountState.account.avatarUrl || accountState.account.displayName.slice(0, 1)} />
-                  <span><strong>{accountState.account.displayName} <MembershipBadge tier={accountState.account.subscription.tier} /></strong><small>@{accountState.account.username}</small></span>
-                  <button className="control social-action" onClick={() => void accountSession.refreshSocial()}>Refresh</button>
-                </div>
-                {socialState.requests.length > 0 && (
-                  <div className="social-section">
-                    <h3>Friend requests</h3>
-                    {socialState.requests.map((request) => (
-                      <div className="social-person" key={request.requestId}>
-                        <Avatar value={request.avatarUrl || request.displayName.slice(0, 1)} remote />
-                        <span><strong>{request.displayName} <MembershipBadge tier={request.subscription.tier} /></strong><small>@{request.username}</small></span>
-                        <div className="social-row-actions">
-                          <button className="social-accept social-action" onClick={() => void accountSession.respondFriendRequest(request.requestId, true)}>Accept</button>
-                          <button className="social-icon-button social-action" title="Decline" aria-label={`Decline ${request.displayName}'s friend request`} onClick={() => void accountSession.respondFriendRequest(request.requestId, false)}>×</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="social-search">
-                  <input value={friendSearch} onChange={(event) => setFriendSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void searchFriends(); }} placeholder="Search name or @username" />
-                  <button className="control social-action" disabled={socialBusy === "search" || friendSearch.trim().length < 2} onClick={() => void searchFriends()}>Search</button>
-                </div>
-                {friendResults.length > 0 && (
-                  <div className="social-results">
-                    {friendResults.map((result) => (
-                      <div className="social-person" key={result.id}>
-                        <Avatar value={result.avatarUrl || result.displayName.slice(0, 1)} remote />
-                        <span><strong>{result.displayName} <MembershipBadge tier={result.subscription.tier} /></strong><small>@{result.username}</small></span>
-                        <button className="control social-action" disabled={result.isFriend || socialBusy === result.id} onClick={async () => {
-                          setSocialBusy(result.id);
-                          try {
-                            await accountSession.sendFriendRequest(result.id);
-                            setFriendResults((items) => items.filter((item) => item.id !== result.id));
-                          } catch (error) {
-                            setAppError(error instanceof Error ? error.message : "Could not send friend request");
-                          } finally { setSocialBusy(""); }
-                        }}>{result.isFriend ? "Friends" : "Add"}</button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="social-section social-friend-list">
-                  <h3>Your friends</h3>
-                  {socialState.loading && <p>Loading friends…</p>}
-                  {!socialState.loading && socialState.friends.length === 0 && <p>No friends yet. Search by name or username.</p>}
-                  {socialState.friends.map((friend) => (
-                    <div className="social-person" key={friend.id}>
-                      <div className="social-avatar"><Avatar value={friend.avatarUrl || friend.displayName.slice(0, 1)} remote /><i className={friend.online ? "online" : "offline"} /></div>
-                      <span><strong>{friend.displayName} <MembershipBadge tier={friend.subscription.tier} /></strong><small>{friend.online ? "Online" : "Offline"} · @{friend.username}</small></span>
-                      <button className="primary social-action" disabled={socialBusy === friend.id} onClick={() => void inviteFriend(friend.id)}>Invite</button>
-                    </div>
-                  ))}
-                  {socialState.error && <small className="social-error">{socialState.error}</small>}
-                </div>
-            </div>
-          </section>
-        </div>
-      )}
-      {supportOpen && (
-        <div className="modal-backdrop">
-          <section className="private-modal support-modal" role="dialog" aria-modal="true" aria-label="MHTalk Beta and support">
-            <button className="modal-close" onClick={() => setSupportOpen(false)}>×</button>
-            <div className="support-heading"><span>M</span><div><h2>One membership. Two apps.</h2><small>Choose a plan, then pay with LAVA or Patreon</small></div></div>
-            <p className="support-membership">Your verified membership works with MHTalk on Windows and Android and with MVDownloader. Calling, messaging and safety features remain free.</p>
-            <div className="membership-plans" role="radiogroup" aria-label="Monthly membership plan">
-              <button
-                type="button"
-                className={`membership-plan-card ${membershipPlan === "plus" ? "selected" : ""}`}
-                aria-pressed={membershipPlan === "plus"}
-                onClick={() => setMembershipPlan("plus")}
-              >
-                <span className="membership-plan-top"><strong>Plus</strong><b>$5 <small>/ month</small></b></span>
-                <span className="membership-plan-copy">HD media essentials for MHTalk, plus higher MVDownloader limits.</span>
-                <span className="membership-plan-benefits">✓ MHTalk Plus badge, 1080p camera/screen sharing and source-quality recording up to 120 FPS</span>
-                <span className="membership-plan-benefits">✓ MVDownloader: unlimited audio and 720p, plus 10 Full HD downloads every 24 hours</span>
-              </button>
-              <button
-                type="button"
-                className={`membership-plan-card ${membershipPlan === "pro" ? "selected" : ""}`}
-                aria-pressed={membershipPlan === "pro"}
-                onClick={() => setMembershipPlan("pro")}
-              >
-                <span className="membership-plan-top"><strong>Pro</strong><b>$7 <small>/ month</small></b></span>
-                <span className="membership-plan-copy">The complete MHTalk experience with unlimited Full HD downloads.</span>
-                <span className="membership-plan-benefits">✓ Everything in Plus, plus 100 MB files, 7-day retention, profiles, themes, frames, emojis, soundboard and custom invites</span>
-                <span className="membership-plan-benefits">✓ MVDownloader: unlimited 1080p, 720p and high-quality audio</span>
-              </button>
-              <button
-                type="button"
-                className={`membership-plan-card ${membershipPlan === "ultimate" ? "selected" : ""}`}
-                aria-pressed={membershipPlan === "ultimate"}
-                onClick={() => setMembershipPlan("ultimate")}
-              >
-                <span className="membership-plan-top"><strong>Ultimate</strong><b>$10 <small>/ month</small></b></span>
-                <span className="membership-plan-copy">Maximum MVDownloader quality with the complete MHTalk experience.</span>
-                <span className="membership-plan-benefits">✓ MVDownloader: unlimited 2K, 4K and higher source-quality video</span>
-                <span className="membership-plan-benefits">✓ Every MHTalk Pro feature with the exclusive Ultimate badge</span>
-              </button>
-              <button
-                type="button"
-                className={`membership-plan-card ${membershipPlan === "max_supporter" ? "selected" : ""}`}
-                aria-pressed={membershipPlan === "max_supporter"}
-                onClick={() => setMembershipPlan("max_supporter")}
-              >
-                <span className="membership-plan-top"><strong>Max Supporter</strong><b>$15 <small>/ month</small></b></span>
-                <span className="membership-plan-copy">All Ultimate MVDownloader benefits plus extra support for the project.</span>
-                <span className="membership-plan-benefits">✓ MVDownloader: everything included with Ultimate</span>
-                <span className="membership-plan-benefits">✓ Every MHTalk Pro feature with the exclusive Max Supporter badge</span>
-              </button>
-            </div>
-            <p className="support-tier-note">Plus focuses on HD sharing and recording. Pro unlocks the rest of MHTalk. Ultimate and Max Supporter include every Pro feature with their own exclusive badge.</p>
-            {membershipDetails && (
-              <div className="support-membership-status">
-                Plan: {subscriptionLabels[membershipDetails.tier]} · Source: {(membershipDetails.provider || "lava").toUpperCase()} · Status: {membershipDetails.status === "gifted" ? "Gifted" : membershipDetails.status === "active" || membershipDetails.status === "owner" ? "Active" : membershipDetails.status}
-              </div>
-            )}
-            {membershipMessage && <div className="support-membership-status">{membershipMessage}</div>}
-            <div className="support-membership-link">
-              <label htmlFor="membership-activation-code">Already have a shared membership?</label>
-              <p>In MVDownloader open Settings → Membership details, copy the MHTalk activation code and paste it here.</p>
-              <div>
-                <input
-                  id="membership-activation-code"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck={false}
-                  value={membershipCode}
-                  placeholder="Paste activation code"
-                  onChange={(event) => setMembershipCode(event.target.value)}
-                />
-                <button className="control" disabled={lavaBusy || !membershipCode.trim()} onClick={async () => {
-                  setLavaBusy(true);
-                  try {
-                    const result = await linkExistingLavaMembership(membershipCode);
-                    setMembershipCode("");
-                    setMembershipDetails(result);
-                    setMembershipMessage(hasMembershipBadge(result.tier) ? `MHTalk ${subscriptionLabels[result.tier]} is active on this account.` : result.pending ? "Payment confirmation is still pending." : "No active membership was found.");
-                  } catch (error) {
-                    setMembershipMessage(error instanceof Error ? error.message : "Could not link this membership");
-                  } finally { setLavaBusy(false); }
-                }}>Link membership</button>
-              </div>
-            </div>
-            <div className="support-actions">
-              <button className="primary" disabled={lavaBusy} onClick={async () => {
-                setLavaBusy(true);
-                try {
-                   await startLavaMembership(membershipPlan);
-                  setMembershipMessage("Complete payment in your browser, then return here and choose Verify membership.");
-                } catch (error) {
-                  setAppError(error instanceof Error ? error.message : "Could not open LAVA membership");
-                } finally {
-                  setLavaBusy(false);
-                }
-               }}>{lavaBusy ? "Opening LAVA…" : `Continue with LAVA · ${{ plus: 5, pro: 7, ultimate: 10, max_supporter: 15 }[membershipPlan]}`}</button>
-              <button className="control" disabled={lavaBusy} onClick={async () => {
-                setLavaBusy(true);
-                try {
-                  const result = await syncLavaMembership(true);
-                  setMembershipDetails(result);
-                  setMembershipMessage(!result ? "Start or link a membership first." : hasMembershipBadge(result.tier) ? `MHTalk ${subscriptionLabels[result.tier]} is active on this account.` : result.pending ? "Membership confirmation is still pending." : "No active membership was found.");
-                } catch (error) {
-                  setMembershipMessage(error instanceof Error ? error.message : "Could not verify membership");
-                } finally { setLavaBusy(false); }
-              }}>Check now</button>
-              <button className="control" onClick={() => void openUrl(patreonMembershipUrl)}>View Patreon plans</button>
-              <button className="control" disabled={lavaBusy} onClick={async () => {
-                setLavaBusy(true);
-                try {
-                  const result = await startPatreonMembership();
-                  if (result) {
-                    setMembershipDetails(result);
-                    setMembershipMessage(`MHTalk ${subscriptionLabels[result.tier]} is active from Patreon.`);
-                  } else {
-                    setMembershipMessage("Finish linking in Patreon, then return here and choose Check now.");
-                  }
-                } catch (error) {
-                  setMembershipMessage(error instanceof Error ? error.message : "Could not link Patreon membership");
-                } finally { setLavaBusy(false); }
-              }}>Link Patreon membership</button>
-              {membershipDetails?.provider === "patreon" && !membershipDetails.pending && hasMembershipBadge(membershipDetails.tier) && (
-                <button className="control" disabled={lavaBusy} onClick={async () => {
-                  setLavaBusy(true);
-                  try {
-                    await disconnectMembership();
-                    setMembershipDetails(null);
-                    setMembershipMessage("This MHTalk device was disconnected. Your MVDownloader session was not changed.");
-                  } catch (error) {
-                    setMembershipMessage(error instanceof Error ? error.message : "Could not disconnect this MHTalk membership");
-                  } finally { setLavaBusy(false); }
-                }}>Disconnect this MHTalk device</button>
-              )}
-              <button className="control" onClick={() => void openUrl(mvDownloaderUrl)}>Download MVDownloader</button>
-              <button className="control" onClick={() => {
-                void navigator.clipboard.writeText("Try MHTalk Beta for voice, video, rooms and chat: https://github.com/mhlko-tech/MhlkoTalk/releases/latest").then(() => setAppError("MHTalk link copied — thank you for sharing."));
-              }}>Share MHTalk</button>
-            </div>
-          </section>
-        </div>
-      )}
+      <Suspense fallback={null}>
+        <FriendsDialog
+          open={friendsOpen}
+          account={accountState.account}
+          social={socialState}
+          onClose={() => setFriendsOpen(false)}
+          onInvite={inviteFriend}
+          onError={setAppError}
+        />
+        <MembershipDialog
+          open={supportOpen}
+          onClose={() => setSupportOpen(false)}
+          onAppMessage={setAppError}
+        />
+      </Suspense>
       {settingsOpen && (
         <div className="modal-backdrop">
           <section className="private-modal settings-modal compact-settings">
@@ -2387,24 +2051,9 @@ export function App() {
         </div>
       )}
       {infoPage && (
-        <div className="modal-backdrop">
-          <section
-            className="private-modal info-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={infoPages[infoPage].title}
-          >
-            <button className="modal-close" onClick={() => setInfoPage(null)}>
-              ×
-            </button>
-            <h2>{infoPages[infoPage].title}</h2>
-            <div className="info-content">
-              {infoPages[infoPage].paragraphs.map((paragraph) => (
-                <p key={paragraph}>{paragraph}</p>
-              ))}
-            </div>
-          </section>
-        </div>
+        <Suspense fallback={null}>
+          <InfoDialog page={infoPage} onClose={() => setInfoPage(null)} />
+        </Suspense>
       )}
       {cropSource && (
         <CropDialog
