@@ -1,6 +1,47 @@
 MHTalk / MVDownloader — CODEX HANDOFF AND RECOVERY CHECKPOINT
 ============================================================
 
+CONTINUATION UPDATE — 2026-09-05
+--------------------------------
+This section supersedes the older checkpoint below where they differ.
+The owner confirmed that C:\Dev\MHTalk Remake is the active project; the old
+C:\Dev\MHTalk project is irrelevant and must not be used as implementation context.
+
+Verified during continuation:
+- Windows 1.6.11 is installed locally (uninstall registry), and its GitHub release
+  and updater latest.json both report 1.6.11. Installed-app human restart validation
+  still awaits the owner's result; registry/version checks do not prove UI behavior.
+- Full Remake npm run check passed. Both Windows Credential Manager integration
+  tests also passed explicitly, using isolated test credentials.
+- Membership backend npm test passed all 45 tests; npm run check and deployment
+  dry run passed. No production backend change or deployment was needed.
+- Expanded the backend isolation test to cover two MHTalk devices and deletion
+  of shared OAuth credentials only after the last session disconnects.
+  Backend main: 18e7693. Local tests and GitHub CI run 33969489883 passed.
+- Live membership service healthy, public website HTTP 200. RTC: Agora active
+  at 7.25%, Stream at 4.2%, five ready providers. Tencent/LiveKit/Whereby remain disabled.
+- No Android device connected through ADB; two-device media and real-account
+  acceptance tests remain unverified. Do not mark these complete based on CI.
+
+Android release completed:
+- Main commit: 94975892951b735a0b1c81c53d728d34864b84ff.
+- Version: 1.6.7, versionCode 30; includes the pending independent Patreon sessions.
+- Android quality gates run 33969152338 passed (test, lint, debug APK).
+- Signed release workflow 33969372817 succeeded. APK, Play-safe AAB, signing
+  report, and SHA256SUMS.txt were published as Latest v1.6.7 at 13:47:42 UTC.
+- Release tag resolves to the exact main commit above. APK download returns HTTP 200.
+  Published APK/AAB digests match the build checksums; the signing report matches
+  the original Android signing certificate. Previous v1.6.6 remains intact.
+- Download: https://github.com/mhlko-tech/MHTalk-Android/releases/download/v1.6.7/app-release.apk
+- Priority 2 publishing is complete. Installation on the second phone and the
+  Windows/Android human acceptance matrix are the next unfinished actions.
+
+Detailed remaining acceptance checklist:
+  docs\RELEASE_ACCEPTANCE_2026-09-05.md
+
+ORIGINAL CHECKPOINT FOLLOWS
+---------------------------
+
 Checkpoint created: 2026-09-05 (Asia/Baghdad)
 Purpose: Give a future Codex installation enough verified context to continue safely after this conversation is unavailable.
 
