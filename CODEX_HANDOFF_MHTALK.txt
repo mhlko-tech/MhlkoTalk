@@ -1,0 +1,475 @@
+MHTalk / MVDownloader — CODEX HANDOFF AND RECOVERY CHECKPOINT
+============================================================
+
+Checkpoint created: 2026-09-05 (Asia/Baghdad)
+Purpose: Give a future Codex installation enough verified context to continue safely after this conversation is unavailable.
+
+IMPORTANT FIRST INSTRUCTION TO FUTURE CODEX
+-------------------------------------------
+Read this entire file before changing anything. Then verify the current Git state, GitHub Actions, live service health, and provider capabilities because external state can change after this checkpoint.
+
+Do not assume that every planned item is complete just because code exists. Distinguish between:
+1. implemented and tested code,
+2. deployed backend/website,
+3. published Windows/Android builds,
+4. real two-device human validation.
+
+Never print, copy into chat, or commit any secret, access token, refresh token, Patreon OAuth token, provider private key, Cloudflare API token, Supabase service-role key, signing key, or ROUTING_ADMIN_KEY. Use the existing secure stores and interactive secret commands.
+
+Do not touch, upload, modify, or include C:\Dev\HusamProject. The owner explicitly excluded Husam's project.
+
+
+1. CURRENT VERIFIED CHECKPOINT
+------------------------------
+
+Primary Windows/Worker repository:
+- Local path: C:\Dev\MHTalk Remake
+- GitHub: https://github.com/mhlko-tech/MhlkoTalk
+- Branch: main
+- HEAD: 3566a33 (fix: recover secure sessions atomically)
+- Worktree at checkpoint: clean
+- Current Windows version: 1.6.11
+
+Latest signed Windows release:
+- Release: https://github.com/mhlko-tech/MhlkoTalk/releases/tag/v1.6.11
+- Installer: https://github.com/mhlko-tech/MhlkoTalk/releases/download/v1.6.11/MHTalk_1.6.11_x64-setup.exe
+- Updater metadata: https://github.com/mhlko-tech/MhlkoTalk/releases/download/v1.6.11/latest.json
+- Release workflow succeeded: https://github.com/mhlko-tech/MhlkoTalk/actions/runs/33965947633
+- Quality Gates succeeded: https://github.com/mhlko-tech/MhlkoTalk/actions/runs/33965944405
+- Release target commit: 3566a33c571dbf86983d0112a86e4103d702f5c8
+
+Android repository:
+- Local path: C:\Dev\MHTalk Android
+- GitHub: https://github.com/mhlko-tech/MHTalk-Android
+- Branch: main
+- HEAD: 3c2a7c9 (feat: manage independent Patreon membership sessions)
+- Worktree at checkpoint: clean
+- Source versionName is still 1.6.6 / versionCode 29.
+- Latest published Android release is v1.6.6, but release commit 2b95c52 is older than HEAD 3c2a7c9.
+- Consequence: the latest independent Patreon-session Android change is pushed but is not yet represented by a new versioned Android release. A future release should use a new version (normally 1.6.7 / next versionCode), not overwrite v1.6.6.
+
+Membership backend repository:
+- Local path: C:\Dev\MVDownloader\backend\LAVA
+- GitHub: https://github.com/mhlko-tech/MVDownloader-LAVA-Backend
+- Branch: main
+- HEAD: 8cc959d (feat: isolate Patreon sessions per application)
+- Worktree at checkpoint: clean
+- Live service: https://mvdownloader-lava-staging.mhlkotalk.workers.dev
+- Live /health at checkpoint: ok=true, configured=true, LAVA=true, Patreon=true.
+
+Website repository:
+- Local path: C:\Dev\MHTalk Website
+- GitHub: https://github.com/mhlko-tech/MHTalk-Website
+- Branch: main
+- HEAD: 69f172e (perf(site): serve landing page as static assets)
+- Worktree at checkpoint: clean
+- Public website: https://mhtalk.mhlkotalk.workers.dev/
+- Live HTTP status at checkpoint: 200.
+- The website is bilingual Arabic/English. The application UI itself is currently intended to remain English-only unless the owner explicitly changes that requirement.
+
+MVDownloader website repository used during the cross-product work:
+- Local path: C:\Dev\MVDownloader Website
+- GitHub remote: https://github.com/mhlko-tech/MVDownloader.git
+- Branch: main
+- HEAD: 89d7039
+- Worktree at checkpoint: clean
+
+Production MHTalk service:
+- Worker/API: https://mhtalk-token-service.mhlkotalk.workers.dev
+- Capabilities: https://mhtalk-token-service.mhlkotalk.workers.dev/service/capabilities
+- Supabase project URL used by clients: https://fcadjrqrrzcvbyqrgnnm.supabase.co
+- Default LiveKit URL in source: wss://mhtalkremake-utuei6i7.livekit.cloud
+
+
+2. LIVE PROVIDER SNAPSHOT AT THIS CHECKPOINT
+--------------------------------------------
+
+This snapshot was fetched from the production /service/capabilities endpoint on 2026-09-05. Re-fetch it before future provider changes.
+
+Active routing at checkpoint:
+- RTC: agora
+- Messaging: agora-data
+- Files: supabase-storage
+
+Ready and healthy:
+- Agora: 7.25% used
+- Stream: 4.2% used
+- Cloudflare Realtime: 0% used
+- JaaS: 0% used
+- MiroTalk: 0% used
+
+Configured and adapter-ready but administratively disabled:
+- Tencent: 0%
+- LiveKit: 0%
+- Whereby: 0%
+
+Monitoring:
+- Health refresh: every 15 minutes
+- Fail closed after stale telemetry: 25 minutes
+- Target maximum: 79%
+- Ready providers: 5
+- Configured providers: 8
+
+Default provider thresholds:
+- Warning 60%
+- Lower priority 65%
+- Stop new rooms 70%
+- Disable 75%
+
+Cloudflare Realtime conservative thresholds:
+- Warning 45%
+- Lower priority 50%
+- Stop new rooms 55%
+- Disable 60%
+- Telemetry maximum age 20 minutes
+- Accounting safety margin 25%
+
+JaaS guard:
+- Free monthly active-user reference: 25
+- Maximum credential issuances: 19
+- Stop new rooms at 72%, disable at 76%
+- Authenticated accounts only
+
+Provider rules that must remain true:
+- Never allow automatic paid overage or automatic top-up.
+- Fail closed when quota telemetry is stale or missing.
+- A room remains sticky to one provider for its lifetime.
+- Do not expose provider secrets in Windows or Android clients.
+- Whereby must remain disabled unless the owner explicitly confirms enabling it at the time of the action. Do not create or rotate a Whereby key without that confirmation.
+- Tencent is eligible only while the annual/free offer is verified and PAYG is off.
+- LiveKit was the original native provider and its adapter/settings remain in both clients; it is currently disabled administratively, not deleted.
+
+Retired/not-worth-the-complexity providers:
+- 100ms
+- CometChat
+- VideoSDK
+
+Also excluded/retired:
+- Daily is not part of the target zero-budget portfolio.
+- ZEGOCLOUD was excluded because the useful no-card allocation is only a short trial.
+
+Target portfolio retained in code:
+- Stream
+- Agora
+- Tencent
+- Cloudflare Realtime
+- LiveKit
+- Whereby
+- JaaS
+- MiroTalk
+
+
+3. MAJOR WORK COMPLETED IN THIS CONVERSATION
+---------------------------------------------
+
+A. Realtime providers, routing, and cost safety
+- Built/retained a common provider routing contract instead of exposing provider-specific behavior directly to the user.
+- Added or completed Worker/client paths for Stream, Agora, Tencent, Cloudflare Realtime, LiveKit, Whereby, JaaS, and MiroTalk.
+- Retired 100ms, CometChat, and VideoSDK because their setup, monitoring, and incompatible embedded UX were not worth the resilience benefit.
+- Kept Whereby configured but disabled.
+- Added provider capability checks, health snapshots, routing safety policies, and a 15-minute monitoring trigger.
+- Added sub-80% circuit breakers and conservative usage accounting.
+- Added exact JaaS 19-of-25 monthly credential ceiling.
+- Added Cloudflare Realtime fail-closed usage telemetry and a 60% internal cutoff.
+- Fixed routing so provider health is not dependent on Cloudflare KV availability.
+- Fixed room joins when KV write limits are exhausted.
+- Cloudflare previously sent a 90% KV daily-operation warning; the code was hardened so KV exhaustion should degrade optional tracking rather than kill room connectivity.
+
+B. Cross-provider media and UI behavior
+- The owner requires the user-facing experience to look and behave like the original LiveKit implementation even when the backend provider changes.
+- Unified the visible room controls across providers.
+- Added/restored Picture-in-Picture and Full Screen controls.
+- Fixed or worked on Show Camera / Show Stream rendering across Windows and Android.
+- Fixed Stream screen sharing and leave/disconnect actions on Android.
+- Restored cross-platform media behavior contracts.
+- Screen-share audio must be independent from microphone mute. Muting the microphone must not mute internal screen audio.
+- Bluetooth/headphone playback should continue to hear shared-screen audio.
+- Windows and Android should expose the same control behavior even if provider SDK internals differ.
+- Added automated contracts for Windows/Worker adapter parity, Stream remote media binding, and independent desktop screen audio.
+
+C. Recording/output quality
+- Replaced vague quality labels with real numeric resolutions determined by device capability.
+- Free limit: up to 720p and 60 FPS.
+- Plus and above can unlock the documented higher media/recording limits.
+- Recording profiles are hardware-aware and should not advertise unsupported resolutions.
+
+D. Four shared membership tiers
+- Canonical names and monthly prices:
+  1. Plus — USD 5/month
+  2. Pro — USD 7/month
+  3. Ultimate — USD 10/month
+  4. Max Supporter — USD 15/month
+- Names, capitalization, price, and billing interval must remain identical in MHTalk, MVDownloader, LAVA, Patreon, and public copy.
+
+MHTalk entitlements:
+- Plus: Plus badge, camera/screen sharing up to 1080p, source-quality recording up to 120 FPS.
+- Pro: everything in Plus, plus the complete MHTalk feature set (100 MB files, seven-day retention, profiles/themes/frames, emojis, soundboard, custom invites/icons, and expanded saved-room features as defined in source).
+- Ultimate: every MHTalk Pro feature; exclusive Ultimate badge. It also has the higher MVDownloader benefits.
+- Max Supporter: every MHTalk Pro feature; exclusive Max Supporter badge. It also includes Ultimate MVDownloader benefits and extra project support.
+- Ultimate and Max Supporter are NOT badge-only/free-feature tiers in MHTalk. Both receive all paid Pro functionality; only their MHTalk badge differs.
+- Local applications define product-specific PLAN_FEATURES. The central membership backend returns plan/status and must not return one app's UI feature details.
+- Canonical public wording is in C:\Dev\MHTalk Remake\docs\MEMBERSHIP_PLANS.md.
+
+E. Patreon and LAVA unification
+- Both MHTalk and MVDownloader use the same real Patreon campaign and the same subscription.
+- Public Patreon identifiers supplied by the owner:
+  - Campaign ID: 13009974
+  - Plus Tier ID: 28994143
+  - Pro Tier ID: 28994172
+  - Ultimate Tier ID: 28994156
+  - Max Supporter Tier ID: 29255718
+- Allowed app IDs are isolated (at minimum): mvdownloader and mhtalk.
+- One central Patreon account/membership record is shared, but every app/device has an independent session token.
+- Linking MHTalk must not replace or revoke MVDownloader's session.
+- Disconnecting one app/device revokes only that app/device session.
+- The central Patreon OAuth token may be removed only when no active app sessions remain, or when Patreon itself has ended/revoked the membership.
+- Patreon Client Secret and creator/access tokens remain server-side only. They must never be placed in EXE/APK/source bundles.
+- Gifted memberships were fixed so Gift Plus, Gift Pro, Gift Ultimate, and Gift Max Supporter map to their exact plans rather than all collapsing to Plus.
+- Match official Tier ID first, exact included tier title second for gift-tier-ID differences, and amount only as final compatibility fallback.
+- Expired gifts return Guest. Cancelled/rejected/refunded normal memberships do not grant Premium.
+- Patreon owner recognition was added securely; being the campaign admin alone is not the same as holding an eligible paid membership unless the trusted owner entitlement logic authorizes it.
+- Patreon redirect URI must exactly match the backend callback configured in the Patreon client. The flow was fixed after an invalid_redirect_uri error.
+- LAVA public page: https://app.lava.top/mhlko
+- Patreon public membership page: https://www.patreon.com/cw/MhlkoVD/membership
+- The central backend currently reports both LAVA and Patreon configured.
+
+F. Authentication/session stability
+- Version 1.6.10 fixed the infinite startup screen: “Restoring your secure session…” no longer blocks forever.
+- Windows Credential Manager operations were moved away from the UI thread and protected with timeouts.
+- Large Supabase sessions are stored in safe chunks because Windows Credential Manager has a small credential-blob limit.
+- Version 1.6.11 fixed the later error: “Secure session restoration failed” / “Secure session storage is incomplete.”
+- Root cause found by real Windows testing: an expired Supabase session triggered deletion; chunks were deleted before the root manifest. If root deletion failed, a dangling manifest pointed to missing chunks.
+- Fix in commit 3566a33:
+  - delete the public/root manifest before deleting chunks,
+  - self-heal any legacy incomplete chunked session to a clean signed-out state,
+  - run native get/set/delete work outside the UI thread,
+  - retry safe session reads/restoration,
+  - normalize rejected string/error-like failures,
+  - treat truly terminal refresh rejection as signed-out instead of a scary generic error.
+- Real validation performed on Windows:
+  - reproduced the incomplete-session error,
+  - applied the atomic cleanup fix,
+  - signed in successfully as Mohammed,
+  - confirmed Max Supporter appeared,
+  - closed/relaunched the development app,
+  - confirmed the saved session restored automatically without OAuth/login intervention.
+- Added Windows Credential Manager integration tests for large-session round trip and incomplete-session self-healing.
+
+G. Code cleanup/refactor
+- Commit 2351dcb: refactor: simplify app dialogs and async timeouts.
+- Extracted large App.tsx sections into:
+  - src\features\membership\MembershipDialog.tsx
+  - src\features\social\FriendsDialog.tsx
+  - src\features\info\InfoDialog.tsx
+  - src\features\startup\StartupUpdateGate.tsx
+  - src\config\appContent.ts
+  - src\core\async.ts
+- Secondary dialogs are lazy-loaded.
+- App.tsx was reduced from roughly 2665 to 2314 lines.
+- Main App bundle dropped from roughly 693 KB to 678 KB.
+- Duplicate timeout logic was centralized.
+- Removed ignored local diagnostic screenshots/logs from the worktree; no user data or tracked source was deleted.
+- Full npm run check passed after refactor and after the session fix.
+
+H. Public MHTalk website
+- Built and deployed a professional MHTalk landing page using the MHTalk visual style.
+- Arabic and English are supported on the website.
+- Direct Windows/Android downloads resolve from current GitHub releases and can update automatically through release metadata.
+- Official address: https://mhtalk.mhlkotalk.workers.dev/
+- Static assets are used so normal landing-page visits do not consume Worker requests like a fully dynamic route.
+- “Other Products” was redesigned as a hover/dropdown experience.
+- Other Products contains MHTalk, Berson (coming soon), MVDownloader, and MDRemover.
+- MDRemover description is correctly limited to finding/removing duplicate photos with local privacy-preserving scanning.
+- MVDownloader must never disappear from this list.
+- Added Instagram contact: https://www.instagram.com/m.ed1t/
+- Added LAVA and Patreon membership links.
+- MHTalk Home links return to the official landing page.
+- Removed unwanted chatgpt.site / hussamninja naming from the public URL by deploying to the current workers.dev domain.
+
+
+4. IMPORTANT COMMITS / HISTORY LANDMARKS
+----------------------------------------
+
+Windows/Worker repository recent landmarks:
+- 3566a33 fix: recover secure sessions atomically (Windows 1.6.11)
+- 2351dcb refactor: simplify app dialogs and async timeouts
+- 03fbd6c chore: prepare MHTalk 1.6.10
+- b283024 fix: prevent session restoration startup hang
+- cc67e44 feat: add isolated MHTalk Patreon sessions
+- e9224e1 safe membership profile update diagnostics
+- 82f5fa8 use official Cloudflare site URL
+- 58bfda3 link public pages to official site
+- 9e1387a adapt numeric recording output profiles to device
+- f7154bf / 0a24073 repair membership service binding path
+- c9c96a0 / 2a02bec restore and enforce four-tier membership hierarchy
+- e220bf4 secure unified membership badges and plans
+- ef098d3 retire low-value RTC providers
+- 60f7224 keep provider health independent of KV
+- b746ba1 restore cross-platform media parity
+- 15d49e4 keep room joins working when KV writes are capped
+
+Android recent landmarks:
+- 3c2a7c9 independent Patreon membership sessions (not yet a new versioned release at checkpoint)
+- 2b95c52 Android 1.6.6 release
+- 31e7d98 enforce four-tier membership hierarchy
+- 69a3231 show all four membership plans
+- b575701 secure unified membership badges
+- 074a917 retire low-value RTC providers
+- 45d3ba9 restore LiveKit media behavior
+- 2b0c566 unify provider media controls
+- 2482c8f restore Stream screen sharing and leave actions
+- 181a6c0 repair Android Stream video rendering
+
+Membership backend recent landmarks:
+- 8cc959d isolate Patreon sessions per application
+- cc4d9a9 preserve exact Patreon gift plan
+- 141cfdf accept active gifted Patreon entitlements
+- 652e22b isolated Patreon desktop callback flow
+- 8c89626 harden Patreon API membership parsing
+- b9eb350 align production tier IDs
+- 3c11984 recognize gifted memberships
+- 01a6038 recognize campaign owner securely
+- 877f1c1 secure Patreon membership verification
+
+Website recent landmarks:
+- 69f172e serve landing page as static assets
+- 805e19a redesign Other Products menu
+- ba3b25d direct LAVA membership page
+- 600a563 add LAVA membership link
+- 3ca043a correct product/contact links
+- a741bdd bind production Sites project
+- fd82f2b launch official bilingual MHTalk website
+
+
+5. TESTS AND SAFETY VERIFICATION ALREADY DONE
+---------------------------------------------
+
+The full Windows repository command “npm run check” passed at commit 3566a33. This included:
+- moderation tests,
+- authentication rules,
+- session resilience,
+- media-quality and recording profiles,
+- profile/avatar/crop tests,
+- subscription and membership security,
+- Tencent UserSig,
+- provider safety and routing,
+- Cloudflare usage guard,
+- JaaS quota guard,
+- RTC usage metering,
+- managed embeds,
+- social resilience,
+- cross-platform media-provider contract,
+- Windows/Worker adapter parity,
+- Stream media binding and screen-audio independence,
+- provider usage schema,
+- room attachments,
+- TypeScript/Vite production build,
+- Worker type check,
+- Rust formatting and Rust tests.
+
+Windows-only ignored tests were also run manually and passed:
+- large session round-trip through Windows Credential Manager,
+- incomplete chunked session self-healing.
+
+GitHub Quality Gates and signed Windows release workflow both passed for commit 3566a33.
+
+
+6. WHAT IS NOT FULLY FINISHED / NEXT ACTIONS
+---------------------------------------------
+
+Do not claim the whole product is 100% complete. The code and services are in a strong state, but these are the next honest priorities:
+
+Priority 1 — user installs and verifies Windows 1.6.11
+- Install/update from the v1.6.11 release.
+- Confirm it opens directly or gives a clean login screen.
+- Confirm no permanent “Restoring your secure session…” state.
+- Confirm no “Secure session storage is incomplete” banner.
+- Confirm account and correct membership badge/plan appear after restart.
+
+Priority 2 — publish the pending Android session-isolation work
+- C:\Dev\MHTalk Android HEAD 3c2a7c9 is newer than the latest Android v1.6.6 release.
+- Review CI, bump to the next Android version/versionCode, build/sign, publish without overwriting old release artifacts.
+- Then install that APK on the second phone.
+
+Priority 3 — mandatory two-device human matrix
+- Windows + Android join Main.
+- Windows + Android join a private room.
+- Microphone mute/unmute.
+- Camera show/hide.
+- Screen sharing show/hide.
+- Screen audio remains audible while microphone is muted.
+- Bluetooth earbuds/headphones still receive shared-screen audio.
+- PiP and Full Screen appear and work.
+- Leave/hang-up works immediately on Android and Windows.
+- Chat, friend search/invite, attachments, presence, reconnect, and room switching.
+- Repeat once after disabling the active provider to confirm failover and unchanged UI.
+
+Priority 4 — shared membership isolation acceptance test
+- Link the same Patreon account in MVDownloader.
+- Link the same account in MHTalk.
+- Confirm the same plan appears in both.
+- Disconnect MHTalk only; MVDownloader must remain Premium.
+- Relink MHTalk.
+- Disconnect MVDownloader only; MHTalk must remain Premium.
+- Test paid and gifted Plus, Pro, Ultimate, and Max Supporter accounts/fixtures.
+- Confirm every gift receives its exact tier, and expired gifts return Guest.
+
+Priority 5 — monitor live provider safety
+- Re-fetch /service/capabilities before changing routing.
+- Keep usage below the configured limits.
+- Do not enable Tencent, LiveKit, or Whereby merely because credentials exist.
+- If Agora becomes unhealthy or approaches limits, let the broker choose another ready provider; do not hard-code a client-side switch.
+
+
+7. SAFE CONTINUATION COMMANDS
+-----------------------------
+
+Start by inspecting, not editing:
+
+Windows/Worker:
+  cd "C:\Dev\MHTalk Remake"
+  git status --short
+  git log --oneline --decorate -10
+  npm run check
+
+Android:
+  cd "C:\Dev\MHTalk Android"
+  git status --short
+  git log --oneline --decorate -10
+
+Membership backend:
+  cd "C:\Dev\MVDownloader\backend\LAVA"
+  git status --short
+  npm test
+  npm run check
+
+Live read-only checks:
+  GET https://mhtalk-token-service.mhlkotalk.workers.dev/service/capabilities
+  GET https://mvdownloader-lava-staging.mhlkotalk.workers.dev/health
+  GET https://mhtalk.mhlkotalk.workers.dev/
+
+Never pass secrets as command-line arguments. Use Wrangler/GitHub/Supabase interactive or dashboard secret storage.
+
+
+8. OWNER'S NON-NEGOTIABLE PRODUCT INTENT
+-----------------------------------------
+
+- Minimize human intervention. Perform all safe automated code, test, deploy, and verification work first; ask the owner only for unavoidable login/payment/dashboard actions.
+- Keep the visible calling experience consistent across providers. Users should not feel that the RTC backend changed.
+- Preserve working features while fixing defects. Avoid broad rewrites that create another provider regression.
+- Windows and Android must behave consistently.
+- English-only inside the current app; bilingual Arabic/English on the public website.
+- Plus and Pro must have meaningful feature differences that encourage upgrades.
+- Ultimate and Max Supporter receive all MHTalk Pro features, with their distinct badges.
+- One Patreon membership works across MHTalk and MVDownloader, but sessions/disconnect actions remain app/device isolated.
+- Keep all usage below 80% and avoid surprise billing.
+- Keep Whereby disabled unless explicit confirmation is given at the moment of enabling it.
+- Exclude HusamProject from all work and uploads.
+
+
+END OF CHECKPOINT
+-----------------
+
+Recommended prompt for a future Codex installation:
+
+“Open C:\Dev\MHTalk Remake\CODEX_HANDOFF_MHTALK.txt, read it completely, verify every current Git/workflow/live-service state without exposing secrets, then continue from the highest unfinished priority. Preserve existing behavior and do not touch HusamProject.”
