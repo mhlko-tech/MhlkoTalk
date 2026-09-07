@@ -9,7 +9,6 @@ import type {
   UID,
 } from "agora-rtc-sdk-ng";
 import type { MediaQuality } from "../core/types";
-import { screenAudioConstraints } from "../core/screenAudio";
 import type { RoomConnectionCredentials } from "./rtcAdapterRegistry";
 
 export type AgoraParticipant = {
@@ -240,7 +239,8 @@ export class AgoraRtcSession {
           // The screen helper has no audio encoder setting. Publish a clone with
           // the music preset so media is not reduced to the default 32 kbps mono.
           mediaStreamTrack = capturedAudio.getMediaStreamTrack().clone();
-          await mediaStreamTrack.applyConstraints(screenAudioConstraints());
+          // Capture already disabled all voice processing. SDK-generated tracks
+          // may reject applyConstraints; the encoder sets stereo and sample rate.
           mediaStreamTrack.contentHint = "music";
           this.screenAudioTrack = AgoraRTC.createCustomAudioTrack({
             mediaStreamTrack,

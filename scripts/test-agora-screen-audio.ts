@@ -3,11 +3,10 @@ import type { IAgoraRTC } from "agora-rtc-sdk-ng";
 import { AgoraRtcSession } from "../src/services/agoraRtcSession";
 import type { RoomConnectionCredentials } from "../src/services/rtcAdapterRegistry";
 
-function fixture(failure?: "join" | "picker" | "constraints" | "encoder" | "publish", withAudio = true) {
+function fixture(failure?: "join" | "picker" | "encoder" | "publish", withAudio = true) {
   const publications: unknown[] = [];
   let captureConfig: unknown;
   let encodingConfig: { mediaStreamTrack: unknown; encoderConfig: string } | undefined;
-  let appliedConstraints: MediaTrackConstraints | undefined;
   let leaves = 0;
   let videoClosed = 0;
   let capturedAudioClosed = 0;
@@ -16,10 +15,7 @@ function fixture(failure?: "join" | "picker" | "constraints" | "encoder" | "publ
   let ended: (() => void) | undefined;
   const clone = {
     contentHint: "",
-    applyConstraints: async (constraints: MediaTrackConstraints) => {
-      appliedConstraints = constraints;
-      if (failure === "constraints") throw new Error("constraints");
-    },
+    applyConstraints: async () => { throw new Error("SDK-generated tracks do not support capture constraints"); },
     stop: () => { cloneStopped++; },
   };
   const video = {
@@ -74,7 +70,6 @@ function fixture(failure?: "join" | "picker" | "constraints" | "encoder" | "publ
     end: () => ended?.(),
     get captureConfig() { return captureConfig; },
     get encodingConfig() { return encodingConfig; },
-    get constraints() { return appliedConstraints; },
     get cleanup() { return { leaves, videoClosed, capturedAudioClosed, encodedAudioClosed, cloneStopped }; },
   };
 }
@@ -82,11 +77,6 @@ function fixture(failure?: "join" | "picker" | "constraints" | "encoder" | "publ
 const normal = fixture();
 assert.equal(await normal.session.setScreenShareEnabled(true, "high"), true);
 assert.deepEqual(normal.captureConfig, { AEC: false, ANS: false, AGC: false });
-assert.equal(normal.constraints?.echoCancellation, false);
-assert.equal(normal.constraints?.noiseSuppression, false);
-assert.equal(normal.constraints?.autoGainControl, false);
-assert.deepEqual(normal.constraints?.channelCount, { ideal: 2 });
-assert.deepEqual(normal.constraints?.sampleRate, { ideal: 48_000 });
 assert.equal(normal.clone.contentHint, "music");
 assert.equal(normal.encodingConfig?.encoderConfig, "high_quality_stereo");
 assert.equal(normal.encodingConfig?.mediaStreamTrack, normal.clone);
@@ -111,7 +101,7 @@ await silent.session.disconnect();
 assert.equal(silent.cleanup.videoClosed, 1);
 assert.equal(silent.cleanup.leaves, 1);
 
-for (const failure of ["join", "picker", "constraints", "encoder", "publish"] as const) {
+for (const failure of ["join", "picker", "encoder", "publish"] as const) {
   const failed = fixture(failure);
   await assert.rejects(failed.session.setScreenShareEnabled(true, "medium"), new RegExp(failure));
   assert.equal(failed.cleanup.leaves, 1, `${failure}: release the screen client`);
