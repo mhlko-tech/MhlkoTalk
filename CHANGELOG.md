@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.6.12 - 2026-09-07
+
+- Moved paid membership badges below the photo in profile views and the profile editor; names and usernames no longer overlap with badges.
+- Replaced the yellow question-mark support button with a dollar sign and updated its accessible label.
+- Disabled echo cancellation, noise suppression and automatic gain control for Agora, Stream and Cloudflare screen audio; microphone settings remain independent.
+- Publish Agora screen audio with the 48 kHz, 192 kbps stereo music preset, and LiveKit screen audio with its high-quality stereo preset without discontinuous transmission.
+- Clean up Agora screen capture after cancellation or publishing failures, and report video-only sources without claiming they include audio.
+- Added regression coverage for capture/encoding settings, microphone independence, sources without audio, repeated sharing, picker stop and failure cleanup.
+
 ## 1.6.7 - 2026-09-02
 
 - Restored the LiveKit media behavior contract across Windows and Android: microphone mute no longer controls screen audio.

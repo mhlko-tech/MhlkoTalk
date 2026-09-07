@@ -8,6 +8,7 @@ import {
   type User,
 } from "@stream-io/video-client";
 import type { MediaQuality, UserProfile } from "../core/types";
+import { screenAudioConstraints } from "../core/screenAudio";
 import type { RoomConnectionCredentials } from "./rtcAdapterRegistry";
 
 type StreamRtcCallbacks = {
@@ -154,6 +155,10 @@ export class StreamRtcSession {
       maxFramerate: 15,
       maxBitrate: bitrate,
       contentHint: "detail",
+    });
+    call.screenShare.setDefaultConstraints({
+      ...call.screenShare.state.defaultConstraints,
+      audio: screenAudioConstraints(),
     });
     // Stream keeps screen audio disabled unless it is requested before the
     // display picker opens. This is independent from call.microphone.

@@ -1,4 +1,5 @@
 import {
+  AudioPresets,
   ConnectionQuality,
   LocalAudioTrack,
   RemoteTrackPublication,
@@ -11,6 +12,7 @@ import {
 } from "livekit-client";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { withTimeout } from "../core/async";
+import { screenAudioConstraints } from "../core/screenAudio";
 import type {
   ChatListener,
   ChatMessage,
@@ -577,12 +579,12 @@ export class RoomSession {
           quality,
           this.routing.subscription.entitlements.maxScreenShareQuality,
         );
-        await this.agoraRtc.setScreenShareEnabled(enabled, quality);
+        const screenAudioEnabled = await this.agoraRtc.setScreenShareEnabled(enabled, quality);
         if (!enabled) this.detachMedia("local-screen");
         if (enabled) localStorage.setItem("mhtalk.share-quality", quality);
         this.update({
           screenShareEnabled: enabled,
-          screenShareAudioEnabled: enabled,
+          screenShareAudioEnabled: screenAudioEnabled,
         });
         if (enabled) await this.publishMediaQuality("screen", quality);
       } catch {
@@ -649,9 +651,7 @@ export class RoomSession {
           // computer audio is shared. Never run voice processing over media.
           audio: {
             restrictOwnAudio: true,
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
+            ...screenAudioConstraints(),
           },
           systemAudio: "include",
           selfBrowserSurface: "exclude",
@@ -663,6 +663,9 @@ export class RoomSession {
           screenShareEncoding: preset.encoding,
           screenShareSimulcastLayers: layers,
           degradationPreference: "maintain-resolution",
+          audioPreset: AudioPresets.musicHighQualityStereo,
+          forceStereo: true,
+          dtx: false,
         },
       );
       localStorage.setItem("mhtalk.share-quality", quality);

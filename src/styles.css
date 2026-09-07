@@ -1863,6 +1863,9 @@ button {
   font-size: 10px;
   color: #aeb5ce;
 }
+.profile-edit-modal > .avatar-upload {
+  margin-bottom: 32px;
+}
 .attachment.audio {
   min-width: 230px;
 }
@@ -2645,7 +2648,7 @@ body:has(.native-recording-overlay) #root {
 .member-tier-badge {
   display: inline-flex;
   align-items: center;
-  margin-left: 5px;
+  margin: 0;
   padding: 2px 6px;
   border: 1px solid #7366df66;
   border-radius: 999px;
@@ -2661,6 +2664,15 @@ body:has(.native-recording-overlay) #root {
 .member-tier-badge.pro { border-color: #59e6a766; background: #59e6a718; color: #74efb8; }
 .member-tier-badge.ultimate { border-color: #c25cff66; background: #c25cff18; color: #dfa2ff; }
 .member-tier-badge.max_supporter { border-color: #ffdc6773; background: #ffdc6718; color: #ffdc67; }
+.profile-modal > .member-tier-badge,
+.profile-edit-modal > .member-tier-badge {
+  display: table;
+  margin: 10px auto 12px;
+  max-width: 100%;
+  padding: 5px 12px;
+  font-size: 11px;
+  text-align: center;
+}
 .subscription-note {
   margin: 12px 0 0;
   color: var(--muted);

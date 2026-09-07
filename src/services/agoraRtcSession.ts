@@ -9,6 +9,7 @@ import type {
   UID,
 } from "agora-rtc-sdk-ng";
 import type { MediaQuality } from "../core/types";
+import { screenAudioConstraints } from "../core/screenAudio";
 import type { RoomConnectionCredentials } from "./rtcAdapterRegistry";
 
 export type AgoraParticipant = {
@@ -53,7 +54,10 @@ export class AgoraRtcSession {
   private watched = new Set<string>();
   private speaking = new Set<string>();
 
-  constructor(private readonly callbacks: AgoraCallbacks) {}
+  constructor(
+    private readonly callbacks: AgoraCallbacks,
+    private readonly loadRtc = loadAgoraRtc,
+  ) {}
 
   get connected() {
     return Boolean(this.clientInstance);
@@ -101,7 +105,7 @@ export class AgoraRtcSession {
     if (!credentials.identity) throw new Error("Agora participant identity is missing");
     this.credentials = credentials;
     this.refreshCredentials = refreshCredentials;
-    const AgoraRTC = await loadAgoraRtc();
+    const AgoraRTC = await this.loadRtc();
     const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
     this.clientInstance = client;
     this.bindMainClient(client);
@@ -152,7 +156,7 @@ export class AgoraRtcSession {
       return;
     }
     if (this.microphoneTrack) return;
-    const AgoraRTC = await loadAgoraRtc();
+    const AgoraRTC = await this.loadRtc();
     this.microphoneTrack = await AgoraRTC.createMicrophoneAudioTrack(
       voiceCaptureConfig(noiseCancellationEnabled),
     );
@@ -180,7 +184,7 @@ export class AgoraRtcSession {
       return;
     }
     if (this.cameraTrack) return;
-    const AgoraRTC = await loadAgoraRtc();
+    const AgoraRTC = await this.loadRtc();
     this.cameraTrack = await AgoraRTC.createCameraVideoTrack({
       ...(cameraId ? { cameraId } : {}),
       encoderConfig: dimensions[quality],
@@ -192,7 +196,7 @@ export class AgoraRtcSession {
   async setScreenShareEnabled(enabled: boolean, quality: MediaQuality) {
     if (!enabled) {
       const client = this.screenClient;
-      const tracks = [this.screenVideoTrack, this.screenAudioTrack].filter(Boolean) as ILocalVideoTrack[];
+      const tracks = [this.screenVideoTrack, this.screenAudioTrack].filter(Boolean) as (ILocalVideoTrack | ILocalAudioTrack)[];
       if (client && tracks.length) await client.unpublish(tracks).catch(() => undefined);
       this.screenVideoTrack?.close();
       this.screenAudioTrack?.close();
@@ -200,9 +204,9 @@ export class AgoraRtcSession {
       this.screenAudioTrack = null;
       await client?.leave().catch(() => undefined);
       this.screenClient = null;
-      return;
+      return false;
     }
-    if (this.screenClient) return;
+    if (this.screenClient) return Boolean(this.screenAudioTrack);
     let credentials = this.credentials;
     if (!credentials?.screenToken || !credentials.screenIdentity) {
       credentials = await this.refreshCredentials?.() || null;
@@ -212,26 +216,50 @@ export class AgoraRtcSession {
       throw new Error("Agora screen-share credentials are missing");
     }
     this.credentials = credentials;
-    const AgoraRTC = await loadAgoraRtc();
+    const AgoraRTC = await this.loadRtc();
     const screenClient = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
     this.screenClient = screenClient;
     this.bindTokenRefresh(screenClient, true);
-    await screenClient.join(
-      appId,
-      credentials.roomName,
-      credentials.screenToken,
-      credentials.screenIdentity,
-      { autoSubscribe: false, autoReceiveAndPlayAudio: false },
-    );
-    const created = await AgoraRTC.createScreenVideoTrack(
-      { encoderConfig: dimensions[quality], optimizationMode: "detail" },
-      "enable",
-    );
-    const [video, audio] = Array.isArray(created) ? created : [created, null];
-    this.screenVideoTrack = video;
-    this.screenAudioTrack = audio;
-    video.on("track-ended", () => void this.setScreenShareEnabled(false, quality));
-    await screenClient.publish([video, ...(audio ? [audio] : [])]);
+    try {
+      await screenClient.join(
+        appId,
+        credentials.roomName,
+        credentials.screenToken,
+        credentials.screenIdentity,
+        { autoSubscribe: false, autoReceiveAndPlayAudio: false },
+      );
+      const created = await AgoraRTC.createScreenVideoTrack(
+        { encoderConfig: dimensions[quality], optimizationMode: "detail" },
+        { AEC: false, ANS: false, AGC: false },
+      );
+      const [video, capturedAudio] = Array.isArray(created) ? created : [created, null];
+      this.screenVideoTrack = video;
+      if (capturedAudio) {
+        let mediaStreamTrack: MediaStreamTrack | undefined;
+        try {
+          // The screen helper has no audio encoder setting. Publish a clone with
+          // the music preset so media is not reduced to the default 32 kbps mono.
+          mediaStreamTrack = capturedAudio.getMediaStreamTrack().clone();
+          await mediaStreamTrack.applyConstraints(screenAudioConstraints());
+          mediaStreamTrack.contentHint = "music";
+          this.screenAudioTrack = AgoraRTC.createCustomAudioTrack({
+            mediaStreamTrack,
+            encoderConfig: "high_quality_stereo",
+          });
+        } catch (error) {
+          mediaStreamTrack?.stop();
+          throw error;
+        } finally {
+          capturedAudio.close();
+        }
+      }
+      video.on("track-ended", () => void this.setScreenShareEnabled(false, quality));
+      await screenClient.publish([video, ...(this.screenAudioTrack ? [this.screenAudioTrack] : [])]);
+      return Boolean(this.screenAudioTrack);
+    } catch (error) {
+      await this.setScreenShareEnabled(false, quality);
+      throw error;
+    }
   }
 
   async selectDevice(kind: MediaDeviceKind, deviceId: string) {

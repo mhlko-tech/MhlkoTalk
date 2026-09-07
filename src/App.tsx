@@ -1023,7 +1023,7 @@ export function App() {
               onClick={(event) => openMemberMenu(event, profile)}
             >
               <Avatar value={profile.avatar} />
-              <span>{profile.name} <MembershipBadge tier={subscription.tier} /></span>
+              <span>{profile.name}</span>
               <small>{session.microphoneEnabled ? "Mic on" : "Mic off"}</small>
             </button>
           )}
@@ -1052,7 +1052,7 @@ export function App() {
                 remote
               />
               <span>
-                {participant.name || participant.identity.slice(0, 12)} <MembershipBadge tier={participant.subscriptionTier} />
+                {participant.name || participant.identity.slice(0, 12)}
               </span>
               <small>{participant.speaking ? "Speaking" : "Listening"}</small>
             </button>
@@ -1070,7 +1070,7 @@ export function App() {
               }}
             >
               <Avatar value={profile.avatar} />
-              <strong>{profile.name} <MembershipBadge tier={subscription.tier} /></strong>
+              <strong>{profile.name}</strong>
             </button>
             <button
               className="profile-username"
@@ -1106,8 +1106,8 @@ export function App() {
           </button>
           <button
             className="profile-more support-shortcut"
-            aria-label="About Beta servers and support"
-            title="Beta servers and support"
+            aria-label="Membership and support"
+            title="Membership and support"
             onClick={(event) => {
               event.stopPropagation();
               setProfileMenuOpen(false);
@@ -1115,7 +1115,7 @@ export function App() {
               setSupportOpen(true);
             }}
           >
-            <span aria-hidden="true">?</span>
+            <span aria-hidden="true">$</span>
           </button>
           {profileMenuOpen && (
             <div
@@ -1888,7 +1888,7 @@ export function App() {
               </ul>
               {subscription.tier === "free" && (
                 <p className="subscription-note">
-                  Open the yellow help button beside Friends to view LAVA and Patreon support options. Core calling and safety features remain free.
+                  Open the yellow $ button beside Friends to view LAVA and Patreon support options. Core calling and safety features remain free.
                 </p>
               )}
             </div>
@@ -1972,6 +1972,7 @@ export function App() {
               ) : <Avatar value={profile.avatar || profile.name.slice(0, 1) || "M"} />}
               <small>Choose photo</small>
             </button>
+            <MembershipBadge tier={subscription.tier} />
             {profileAvatarImageSource(profile.avatar) && (
               <button
                 className="remove-avatar"
@@ -2103,7 +2104,8 @@ export function App() {
                 <Avatar value={viewProfile.avatar} />
               </div>
             )}
-            <h2>{viewProfile.name} <MembershipBadge tier={viewProfile.subscriptionTier} /></h2>
+            <MembershipBadge tier={viewProfile.subscriptionTier} />
+            <h2>{viewProfile.name}</h2>
             {viewProfile.usernameVisible !== false && viewProfile.username && (
               <button
                 className="view-profile-username"
@@ -2203,7 +2205,7 @@ export function App() {
           >
             <Avatar value={memberMenu.profile.avatar} remote={Boolean(memberMenu.identity)} />
             <span>
-              <strong>{memberMenu.profile.name} <MembershipBadge tier={memberMenu.profile.subscriptionTier} /></strong>
+              <strong>{memberMenu.profile.name}</strong>
               <small>Open profile</small>
             </span>
           </button>

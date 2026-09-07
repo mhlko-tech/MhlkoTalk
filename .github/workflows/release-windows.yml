@@ -34,7 +34,8 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: MHTalk __VERSION__
-          releaseBody: Signed MHTalk Windows release with resilient secure-session restoration, automatic recovery from incomplete Windows credentials, and non-blocking secure storage access.
+          releaseBody: Signed MHTalk Windows release with supporter badges below profile photos, a yellow dollar support button, and unprocessed high-quality stereo screen-share audio independent from microphone controls.
+          releaseDraft: true
           args: --bundles nsis
           updaterJsonPreferNsis: true
           uploadUpdaterJson: true

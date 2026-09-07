@@ -9,6 +9,7 @@ import {
 } from "partytracks/client";
 import { of, type Subscription } from "rxjs";
 import type { MediaQuality, UserProfile } from "../core/types";
+import { screenAudioConstraints } from "../core/screenAudio";
 import { accountSession } from "./accountSession";
 import type { RoomConnectionCredentials } from "./rtcAdapterRegistry";
 
@@ -91,7 +92,7 @@ export class CloudflareRtcSession {
 
     this.mic = getMic({ broadcasting: microphoneEnabled, retainIdleTrack: true });
     this.camera = getCamera({ broadcasting: false, constraints: cameraConstraints.medium });
-    this.screen = getScreenshare({ audio: true });
+    this.screen = getScreenshare({ audio: { constraints: screenAudioConstraints() } });
     this.microphoneEnabled = microphoneEnabled;
     await this.applyPreferredDevice(this.mic, this.microphoneId);
     await this.applyPreferredDevice(this.camera, this.cameraId);
