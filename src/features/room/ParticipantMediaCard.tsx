@@ -1,5 +1,6 @@
 import { useEffect, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { Avatar } from "../../components/Avatar";
+import { MembershipBadge } from "../../components/MembershipBadge";
 import type { SubscriptionTier } from "../../core/subscription";
 import {
   availableQualities,
@@ -121,7 +122,7 @@ export function ParticipantMediaCard({
       >
         <Avatar value={avatar} remote={!local} />
         <span>
-          <strong>{name}</strong>
+          <strong>{name} <MembershipBadge tier={subscriptionTier} /></strong>
           <small>
             {microphoneEnabled ? (speaking ? "Speaking" : "Mic on") : "Mic off"}
           </small>

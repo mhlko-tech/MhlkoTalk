@@ -2514,7 +2514,7 @@ dependencies = [
 
 [[package]]
 name = "mhtalk"
-version = "1.6.12"
+version = "1.6.13"
 dependencies = [
  "keyring",
  "nnnoiseless",

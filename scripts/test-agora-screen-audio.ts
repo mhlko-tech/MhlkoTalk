@@ -76,7 +76,7 @@ function fixture(failure?: "join" | "picker" | "encoder" | "publish", withAudio 
 
 const normal = fixture();
 assert.equal(await normal.session.setScreenShareEnabled(true, "high"), true);
-assert.deepEqual(normal.captureConfig, { AEC: false, ANS: false, AGC: false });
+assert.deepEqual(normal.captureConfig, { AEC: false, ANS: false, AGC: false, restrictOwnAudio: true });
 assert.equal(normal.clone.contentHint, "music");
 assert.equal(normal.encodingConfig?.encoderConfig, "high_quality_stereo");
 assert.equal(normal.encodingConfig?.mediaStreamTrack, normal.clone);

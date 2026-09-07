@@ -2648,7 +2648,7 @@ body:has(.native-recording-overlay) #root {
 .member-tier-badge {
   display: inline-flex;
   align-items: center;
-  margin: 0;
+  margin-left: 5px;
   padding: 2px 6px;
   border: 1px solid #7366df66;
   border-radius: 999px;

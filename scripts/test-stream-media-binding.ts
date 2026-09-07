@@ -16,6 +16,7 @@ const screenShare = {
     assert.deepEqual(constraints.video, { width: 1280 });
     assert.equal(typeof constraints.audio, "object");
     const audio = constraints.audio as MediaTrackConstraints;
+    assert.equal((audio as MediaTrackConstraints & { restrictOwnAudio: boolean }).restrictOwnAudio, true);
     assert.equal(audio.echoCancellation, false);
     assert.equal(audio.noiseSuppression, false);
     assert.equal(audio.autoGainControl, false);

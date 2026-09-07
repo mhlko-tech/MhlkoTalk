@@ -649,10 +649,7 @@ export class RoomSession {
           resolution: preset.resolution,
           // The operating-system picker remains the source of truth for whether
           // computer audio is shared. Never run voice processing over media.
-          audio: {
-            restrictOwnAudio: true,
-            ...screenAudioConstraints(),
-          },
+          audio: screenAudioConstraints(),
           systemAudio: "include",
           selfBrowserSurface: "exclude",
           suppressLocalAudioPlayback: true,

@@ -229,7 +229,9 @@ export class AgoraRtcSession {
       );
       const created = await AgoraRTC.createScreenVideoTrack(
         { encoderConfig: dimensions[quality], optimizationMode: "detail" },
-        { AEC: false, ANS: false, AGC: false },
+        // Capturing call playback would send viewers' voices back through the
+        // shared screen. Exclude our own audio without filtering the media.
+        { AEC: false, ANS: false, AGC: false, restrictOwnAudio: true },
       );
       const [video, capturedAudio] = Array.isArray(created) ? created : [created, null];
       this.screenVideoTrack = video;
@@ -390,6 +392,7 @@ export class AgoraRtcSession {
   }
 
   private remoteUser(identity: string, source: "camera" | "screen") {
+    if (!identity || identity === this.identity) return undefined;
     return this.clientInstance?.remoteUsers.find((user) => {
       const parsed = splitIdentity(user.uid);
       return parsed.identity === identity && parsed.screen === (source === "screen");
@@ -398,8 +401,9 @@ export class AgoraRtcSession {
 
   private emitRemoteAudio(user: IAgoraRTCRemoteUser) {
     const { identity, screen } = splitIdentity(user.uid);
+    if (!identity || identity === this.identity) return;
     const track = user.audioTrack?.getMediaStreamTrack();
-    if (identity && track) {
+    if (track) {
       this.callbacks.onAudio(identity, screen ? "screen" : "voice", new MediaStream([track]));
     }
   }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Avatar } from "../../components/Avatar";
+import { MembershipBadge } from "../../components/MembershipBadge";
 import {
   accountSession,
   type MHTalkAccount,
@@ -54,7 +55,7 @@ export function FriendsDialog({
         <div className="social-content">
           <div className="social-account-card">
             <Avatar value={account.avatarUrl || account.displayName.slice(0, 1)} />
-            <span><strong>{account.displayName}</strong><small>@{account.username}</small></span>
+            <span><strong>{account.displayName} <MembershipBadge tier={account.subscription.tier} /></strong><small>@{account.username}</small></span>
             <button className="control social-action" onClick={() => void accountSession.refreshSocial()}>Refresh</button>
           </div>
           {social.requests.length > 0 && (
@@ -63,7 +64,7 @@ export function FriendsDialog({
               {social.requests.map((request) => (
                 <div className="social-person" key={request.requestId}>
                   <Avatar value={request.avatarUrl || request.displayName.slice(0, 1)} remote />
-                  <span><strong>{request.displayName}</strong><small>@{request.username}</small></span>
+                  <span><strong>{request.displayName} <MembershipBadge tier={request.subscription.tier} /></strong><small>@{request.username}</small></span>
                   <div className="social-row-actions">
                     <button className="social-accept social-action" disabled={Boolean(busy)} onClick={() => void run(request.requestId, () => accountSession.respondFriendRequest(request.requestId, true))}>Accept</button>
                     <button className="social-icon-button social-action" disabled={Boolean(busy)} title="Decline" aria-label={`Decline ${request.displayName}'s friend request`} onClick={() => void run(request.requestId, () => accountSession.respondFriendRequest(request.requestId, false))}>×</button>
@@ -81,7 +82,7 @@ export function FriendsDialog({
               {results.map((result) => (
                 <div className="social-person" key={result.id}>
                   <Avatar value={result.avatarUrl || result.displayName.slice(0, 1)} remote />
-                  <span><strong>{result.displayName}</strong><small>@{result.username}</small></span>
+                  <span><strong>{result.displayName} <MembershipBadge tier={result.subscription.tier} /></strong><small>@{result.username}</small></span>
                   <button className="control social-action" disabled={result.isFriend || Boolean(busy)} onClick={() => void run(result.id, async () => {
                     await accountSession.sendFriendRequest(result.id);
                     setResults((items) => items.filter((item) => item.id !== result.id));
@@ -97,7 +98,7 @@ export function FriendsDialog({
             {social.friends.map((friend) => (
               <div className="social-person" key={friend.id}>
                 <div className="social-avatar"><Avatar value={friend.avatarUrl || friend.displayName.slice(0, 1)} remote /><i className={friend.online ? "online" : "offline"} /></div>
-                <span><strong>{friend.displayName}</strong><small>{friend.online ? "Online" : "Offline"} · @{friend.username}</small></span>
+                <span><strong>{friend.displayName} <MembershipBadge tier={friend.subscription.tier} /></strong><small>{friend.online ? "Online" : "Offline"} · @{friend.username}</small></span>
                 <button className="primary social-action" disabled={Boolean(busy)} onClick={() => void run(friend.id, () => onInvite(friend.id))}>Invite</button>
               </div>
             ))}

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.6.13 - 2026-09-07
+
+- Restored membership badges beside member names in room lists, media cards, member menus and Friends. Only the account footer remains free of the inline badge; profiles keep the badge below the photo.
+- Request exclusion of the capturing application's own audio from Agora and Cloudflare screen capture, preventing call playback from being sent back to viewers on supported runtimes. Stream and LiveKit use the same shared capture constraint.
+- Added guards against playing the local Agora voice or screen identity through remote media controls, with regression coverage for local and remote playback.
+- Kept screen audio stereo quality and disabled voice processing unchanged.
+
 ## 1.6.12 - 2026-09-07
 
 - Moved paid membership badges below the photo in profile views and the profile editor; names and usernames no longer overlap with badges.

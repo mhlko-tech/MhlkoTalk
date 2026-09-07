@@ -1023,7 +1023,7 @@ export function App() {
               onClick={(event) => openMemberMenu(event, profile)}
             >
               <Avatar value={profile.avatar} />
-              <span>{profile.name}</span>
+              <span>{profile.name} <MembershipBadge tier={subscription.tier} /></span>
               <small>{session.microphoneEnabled ? "Mic on" : "Mic off"}</small>
             </button>
           )}
@@ -1052,7 +1052,7 @@ export function App() {
                 remote
               />
               <span>
-                {participant.name || participant.identity.slice(0, 12)}
+                {participant.name || participant.identity.slice(0, 12)} <MembershipBadge tier={participant.subscriptionTier} />
               </span>
               <small>{participant.speaking ? "Speaking" : "Listening"}</small>
             </button>
@@ -2205,7 +2205,7 @@ export function App() {
           >
             <Avatar value={memberMenu.profile.avatar} remote={Boolean(memberMenu.identity)} />
             <span>
-              <strong>{memberMenu.profile.name}</strong>
+              <strong>{memberMenu.profile.name} <MembershipBadge tier={memberMenu.profile.subscriptionTier} /></strong>
               <small>Open profile</small>
             </span>
           </button>
