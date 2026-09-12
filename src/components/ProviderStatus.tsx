@@ -38,13 +38,13 @@ export function ProviderStatus({ session }: { session: Pick<SessionSnapshot, "st
     return () => { controller.abort(); window.clearInterval(interval); };
   }, [session.rtcProvider, session.state]);
   const status = describeProviderStatus(session.rtcProvider, session.state, health?.payload || null, Boolean(health && now - health.fetchedAt < 90_000));
-  const provider = session.rtcProvider ? providerNames[session.rtcProvider] : "السيرفر";
-  return <section className={`provider-status provider-status--${status.tone}`} aria-label="حالة السيرفر" dir="rtl">
-    <div className="provider-status-heading"><span className="provider-status-dot" aria-hidden="true" /><strong dir="auto">{provider}</strong><span>السيرفر المستخدم</span></div>
+  const provider = session.rtcProvider ? providerNames[session.rtcProvider] : "Server";
+  return <section className={`provider-status provider-status--${status.tone}`} aria-label="Server status" dir="ltr">
+    <div className="provider-status-heading"><span className="provider-status-dot" aria-hidden="true" /><strong>{provider}</strong><span>Current server</span></div>
     <div className="provider-status-label" role="status">{status.label}</div>
-    {status.remaining !== null && <div className="provider-status-quota" title="النسبة المتبقية من الحصة المسموح للتطبيق استخدامها قبل حد الإيقاف الاحترازي، وليست جودة الشبكة.">
+    {status.remaining !== null && <div className="provider-status-quota" title="Remaining quota before the protective switching limit, based on app usage. This does not measure network quality.">
       <div className="provider-status-track" aria-hidden="true"><span style={{ width: `${status.remaining}%` }} /></div>
-      <small>المتبقي حتى حد التبديل: {status.remaining}%</small>
+      <small>Remaining before switch: {status.remaining}%</small>
     </div>}
   </section>;
 }

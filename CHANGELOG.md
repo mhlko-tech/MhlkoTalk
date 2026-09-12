@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.15 - 2026-09-12
+
+- Display the server status panel entirely in English, including connection states, quota labels, tooltips and accessibility text.
+- Use left-to-right layout for the panel.
+
 ## 1.6.14 - 2026-09-12
 
 - Retry a failed RTC connection on an available compatible provider, with bounded attempts, deadlines and cancellation-safe cleanup.

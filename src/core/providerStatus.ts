@@ -25,21 +25,21 @@ export function describeProviderStatus(
   payload: ProviderStatusPayload | null,
   fresh: boolean,
 ) {
-  if (!provider || connection === "idle") return { tone: "unknown", label: "لا يوجد اتصال", remaining: null } as const;
-  if (connection === "failed") return { tone: "critical", label: "الاتصال متعذّر", remaining: null } as const;
-  if (connection === "connecting" || connection === "recovering") return { tone: "warning", label: "جارٍ الاتصال أو تبديل المزوّد", remaining: null } as const;
+  if (!provider || connection === "idle") return { tone: "unknown", label: "Not connected", remaining: null } as const;
+  if (connection === "failed") return { tone: "critical", label: "Connection unavailable", remaining: null } as const;
+  if (connection === "connecting" || connection === "recovering") return { tone: "warning", label: "Connecting or switching server", remaining: null } as const;
   const capability = payload?.rtc.find((item) => item.provider === provider);
   const limits = payload?.thresholds[provider] || payload?.thresholds.default;
   if (!fresh || !capability || !limits || !Number.isFinite(capability.usedPercent)) {
-    return { tone: "unknown", label: "بيانات الحصة غير متاحة", remaining: null } as const;
+    return { tone: "unknown", label: "Quota data unavailable", remaining: null } as const;
   }
   if (!capability.ready) {
-    return { tone: capability.state === "unavailable" ? "unknown" : "critical", label: "المزوّد غير متاح لاتصالات جديدة", remaining: null } as const;
+    return { tone: capability.state === "unavailable" ? "unknown" : "critical", label: "Server unavailable for new connections", remaining: null } as const;
   }
-  if (provider === "mirotalk") return { tone: "good", label: "متصل · استضافة ذاتية", remaining: null } as const;
+  if (provider === "mirotalk") return { tone: "good", label: "Connected · Self-hosted", remaining: null } as const;
   const used = Math.max(0, capability.usedPercent!);
   const remaining = Math.max(0, Math.min(100, Math.floor((limits.disablePercent - used) / limits.disablePercent * 100)));
-  if (used >= limits.stopNewRoomsPercent) return { tone: "critical", label: "حصة قليلة · التبديل قريب", remaining } as const;
-  if (used >= limits.warningPercent) return { tone: "warning", label: "الحصة قاربت حد التبديل", remaining } as const;
-  return { tone: "good", label: "متصل · الحصة متوفرة", remaining } as const;
+  if (used >= limits.stopNewRoomsPercent) return { tone: "critical", label: "Low quota · Switching soon", remaining } as const;
+  if (used >= limits.warningPercent) return { tone: "warning", label: "Quota nearing switch limit", remaining } as const;
+  return { tone: "good", label: "Connected · Quota available", remaining } as const;
 }

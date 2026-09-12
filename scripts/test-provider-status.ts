@@ -12,7 +12,7 @@ payload.rtc[0].usedPercent = 70;
 assert.equal(describeProviderStatus("agora", "connected", payload, true).tone, "critical");
 assert.equal(describeProviderStatus("agora", "connected", payload, true).remaining, 6);
 assert.equal(describeProviderStatus("agora", "connected", payload, false).tone, "unknown");
-assert.equal(describeProviderStatus("agora", "failed", payload, true).label, "الاتصال متعذّر");
+assert.equal(describeProviderStatus("agora", "failed", payload, true).label, "Connection unavailable");
 assert.equal(describeProviderStatus(null, "idle", payload, true).remaining, null);
 payload.rtc[0].usedPercent = null;
 assert.equal(describeProviderStatus("agora", "connected", payload, true).tone, "unknown");

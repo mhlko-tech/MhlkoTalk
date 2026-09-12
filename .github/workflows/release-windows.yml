@@ -34,7 +34,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: MHTalk __VERSION__
-          releaseBody: Signed MHTalk Windows release with bounded automatic RTC failover, coordinated room recovery, cancellation-safe connection cleanup, and a live server/quota indicator above the account profile. Existing LiveKit connectivity has been verified and restored as the preferred guarded route. Camera and screen capture stop during provider recovery; restart sharing after reconnecting.
+          releaseBody: The server status panel now uses English throughout, including connection states, quota labels, tooltips and accessibility text, with a left-to-right layout. Includes the automatic RTC failover and coordinated room recovery from 1.6.14.
           releaseDraft: true
           args: --bundles nsis
           updaterJsonPreferNsis: true
