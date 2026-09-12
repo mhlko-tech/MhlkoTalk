@@ -26,7 +26,7 @@ export type RtcMediaCapabilities = {
 export interface RtcProviderAdapter {
   readonly provider: RtcProviderId;
   readonly mediaCapabilities: RtcMediaCapabilities;
-  connect(credentials: RoomConnectionCredentials): Promise<void>;
+  connect(credentials: RoomConnectionCredentials, signal?: AbortSignal): Promise<void>;
 }
 
 /**
@@ -62,7 +62,7 @@ export class RtcAdapterRegistry {
       .map((adapter) => adapter.provider);
   }
 
-  async connect(credentials: RoomConnectionCredentials) {
+  async connect(credentials: RoomConnectionCredentials, signal?: AbortSignal) {
     const provider = credentials.routing.rtc.provider;
     const adapter = this.adapters.get(provider);
     if (!adapter) {
@@ -76,6 +76,6 @@ export class RtcAdapterRegistry {
         "This room connection cannot provide the full MHTalk media experience on every device",
       );
     }
-    await adapter.connect(credentials);
+    await adapter.connect(credentials, signal);
   }
 }

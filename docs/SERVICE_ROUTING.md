@@ -35,8 +35,11 @@ are ready. Secrets are never included in this response or stored in a client.
 
 ## Safe failover policy
 
-- A room receives one sticky RTC provider for two hours. Voice and video are
-  never split across vendors, and existing members stay together.
+- One Durable Object transaction assigns the room provider and a participant
+  lease. New clients have 45 seconds to establish the connection, then signed
+  heartbeats renew a two-minute lease. A failed participant cannot move the
+  room until the other members release its current provider. Legacy occupancy
+  is preserved during migration even when its old KV pin is unavailable.
 - Clients send their supported adapter list. The broker cannot return a vendor
   that the installed Windows or Android build cannot use.
 - Thresholds are provider-specific. Cloudflare warns at 45%, loses priority at
@@ -56,9 +59,19 @@ are ready. Secrets are never included in this response or stored in a client.
   `/service/providers/whereby/enable` reapplies the guarded policies, repeats the
   probe and enables only Whereby. `/service/providers/whereby/disable` is the
   immediate rollback switch. All three require the administrator secret.
-- Token acquisition is limited to 12 seconds and RTC connection to 18 seconds
-  on both clients. A failed provider therefore produces a clear error instead
-  of an infinite spinner.
+- New clients exclude failed RTC adapters, with at most three connection
+  attempts and a 20-second outer deadline per attempt. Existing shorter native
+  deadlines still apply. A coordinated room handoff waits at most 90 seconds,
+  with cancellation on leave. Device permissions and authentication errors are
+  terminal rather than reasons to change providers.
+- A fresh `clientSessionId` identifies each logical join and opts into signed
+  heartbeat recovery. Zero-duration reports confirm presence without billing.
+  `RTC_PROVIDER_UNAVAILABLE` and `RTC_ROOM_ROUTE_CHANGED` trigger bounded
+  recovery; old clients do not receive a forced migration they cannot handle.
+- `/service/providers/livekit/enable` and `/disable` require the existing routing
+  administrator secret and persist the policy state. Enabling probes the API
+  and checks the stored 5,000-minute monthly allocation without resetting usage
+  or widening any quota. Perform a real media probe before enabling it.
 
 All eight targets have complete source adapters. Runtime readiness remains
 independent: a route is visibly unavailable until its real credentials, account

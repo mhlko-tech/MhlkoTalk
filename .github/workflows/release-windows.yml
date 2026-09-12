@@ -34,7 +34,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: MHTalk __VERSION__
-          releaseBody: Signed MHTalk Windows release that excludes call playback from screen audio to prevent viewers hearing themselves, restores membership badges beside member names, and keeps the account footer clear with the badge below the profile photo.
+          releaseBody: Signed MHTalk Windows release with bounded automatic RTC failover, coordinated room recovery, cancellation-safe connection cleanup, and a live server/quota indicator above the account profile. Existing LiveKit connectivity has been verified and restored as the preferred guarded route. Camera and screen capture stop during provider recovery; restart sharing after reconnecting.
           releaseDraft: true
           args: --bundles nsis
           updaterJsonPreferNsis: true

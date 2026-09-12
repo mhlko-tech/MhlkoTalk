@@ -140,11 +140,33 @@ button {
   background: #101321;
   display: flex;
   gap: 4px;
-  margin: auto 0 -22px;
+  margin: 0 0 -22px;
   min-height: 60px;
   padding: 5px 10px 5px 3px;
   position: relative;
 }
+.provider-status {
+  --provider-tone: #8892b0;
+  margin: auto 0 10px;
+  padding: 11px 12px;
+  flex-shrink: 0;
+  border: 1px solid #30364e;
+  border-radius: 10px;
+  background: #121626;
+  font-size: 11px;
+}
+.provider-status--good { --provider-tone: #6fe3a1; }
+.provider-status--warning { --provider-tone: #f2c363; }
+.provider-status--critical { --provider-tone: #ff8290; }
+.provider-status-heading { display: flex; align-items: center; gap: 7px; }
+.provider-status-heading strong { font-size: 13px; }
+.provider-status-heading > span:last-child { margin-inline-start: auto; font-size: 10px; color: #929bb8; }
+.provider-status-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--provider-tone); }
+.provider-status-label { margin-top: 6px; color: var(--provider-tone); line-height: 1.6; }
+.provider-status-quota { margin-top: 8px; }
+.provider-status-track { height: 4px; border-radius: 4px; background: #2c3349; overflow: hidden; }
+.provider-status-track > span { display: block; height: 100%; background: var(--provider-tone); }
+.provider-status-quota small { display: block; margin-top: 5px; color: #929bb8; font-size: 10px; }
 .profile-identity {
   flex: 1;
   height: 50px;

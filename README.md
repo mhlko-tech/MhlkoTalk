@@ -43,8 +43,9 @@ Official releases are published at
 
 MHTalk is visibly marked **Beta** while it operates on zero-budget service
 allocations. The routing broker keeps every room on one compatible RTC provider,
-drains providers at 85% usage and stops assigning them at 95%. Windows and
+uses provider-specific protective usage limits below 80%. Windows and
 Android also impose hard token/connection deadlines so a provider failure cannot
-leave the interface spinning forever. See
+leave the interface spinning forever. Updated clients retry failed providers
+and coordinate recovery through shared room leases. See
 [`docs/SERVICE_ROUTING.md`](docs/SERVICE_ROUTING.md) for rollout and credential
 requirements.

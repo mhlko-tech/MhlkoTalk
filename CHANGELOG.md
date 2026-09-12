@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.14 - 2026-09-12
+
+- Retry a failed RTC connection on an available compatible provider, with bounded attempts, deadlines and cancellation-safe cleanup.
+- Coordinate room routing through strongly consistent participant leases so simultaneous failures do not send members to separate voice servers.
+- Recover when an active provider disconnects or reaches its guarded usage limit; preserve old-client room occupancy during rollout.
+- Show the actual server and green/yellow/red quota status above the account profile. Missing or stale quota data is explicitly unknown.
+- Count room presence only after the SDK connects, and release failed joins without charging synthetic participant minutes.
+- Restore the existing LiveKit route as the preferred provider after a successful two-client synthetic audio/data check; preserve its quota limits.
+- Camera and screen capture stop during provider recovery. Restart sharing after reconnecting.
+
 ## 1.6.13 - 2026-09-07
 
 - Restored membership badges beside member names in room lists, media cards, member menus and Friends. Only the account footer remains free of the inline badge; profiles keep the badge below the photo.

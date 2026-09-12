@@ -4,6 +4,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import appPackage from "../package.json";
 import { Avatar } from "./components/Avatar";
+import { ProviderStatus } from "./components/ProviderStatus";
 import { MembershipBadge } from "./components/MembershipBadge";
 import { DisplayNameField } from "./components/DisplayNameField";
 import { AuthenticationGate } from "./features/auth/AuthenticationGate";
@@ -974,7 +975,7 @@ export function App() {
         >
           # Main channel
           <span className="main-active-count">
-            {session.roomName === "Main"
+            {session.roomName === "Main" && active
               ? session.participants.length + 1
               : mainActiveCount}{" "}
             active
@@ -1058,6 +1059,7 @@ export function App() {
             </button>
           ))}
         </div>
+        <ProviderStatus session={session} />
         <div className="profile-area">
           <div className="profile-identity">
             <button

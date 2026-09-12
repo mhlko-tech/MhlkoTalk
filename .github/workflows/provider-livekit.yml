@@ -1,0 +1,43 @@
+name: Manage verified LiveKit allocation
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Enable only after a successful real media probe and allocation review; disable for rollback
+        type: choice
+        required: true
+        options: [enable, disable]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: livekit-provider-administration
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Update the existing guarded allocation
+        env:
+          ROUTING_ADMIN_KEY: ${{ secrets.ROUTING_ADMIN_KEY }}
+          PROVIDER_ACTION: ${{ inputs.action }}
+        run: |
+          node --input-type=module <<'NODE'
+          const action = process.env.PROVIDER_ACTION;
+          if (!["enable", "disable"].includes(action) || !process.env.ROUTING_ADMIN_KEY) throw new Error("Missing administration configuration");
+          const response = await fetch(`https://mhtalk-token-service.mhlkotalk.workers.dev/service/providers/livekit/${action}`, {
+            method: "POST", signal: AbortSignal.timeout(30000),
+            headers: { authorization: `Bearer ${process.env.ROUTING_ADMIN_KEY}` },
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+          console.log(JSON.stringify(result, null, 2));
+          if (action === "enable" && !result.capability?.ready) throw new Error("Provider remains unavailable; inspect its guarded policy");
+          NODE

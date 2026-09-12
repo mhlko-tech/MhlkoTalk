@@ -10,6 +10,7 @@ import type {
 } from "agora-rtc-sdk-ng";
 import type { MediaQuality } from "../core/types";
 import type { RoomConnectionCredentials } from "./rtcAdapterRegistry";
+import { throwIfRtcJoinAborted } from "./rtcConnectionResilience";
 
 export type AgoraParticipant = {
   userId: string;
@@ -22,7 +23,7 @@ export type AgoraParticipant = {
 type AgoraCallbacks = {
   onParticipants(participants: AgoraParticipant[]): void;
   onCustomEvent(identity: string, event: Record<string, unknown>): void;
-  onConnectionState(state: ConnectionState): void;
+  onConnectionState(state: ConnectionState, reason?: string): void;
   onAudio(identity: string, source: "voice" | "screen", stream: MediaStream | null): void;
 };
 
@@ -52,6 +53,7 @@ export class AgoraRtcSession {
   private refreshCredentials: RefreshCredentials | null = null;
   private watched = new Set<string>();
   private speaking = new Set<string>();
+  private connectionGeneration = 0;
 
   constructor(
     private readonly callbacks: AgoraCallbacks,
@@ -98,37 +100,67 @@ export class AgoraRtcSession {
     microphoneEnabled: boolean,
     noiseCancellationEnabled: boolean,
     refreshCredentials: RefreshCredentials,
+    signal?: AbortSignal,
   ) {
+    throwIfRtcJoinAborted(signal);
+    const generation = ++this.connectionGeneration;
     const appId = credentials.routing.rtc.clientKey;
     if (!appId) throw new Error("Agora App ID is missing");
     if (!credentials.identity) throw new Error("Agora participant identity is missing");
     this.credentials = credentials;
     this.refreshCredentials = refreshCredentials;
     const AgoraRTC = await this.loadRtc();
+    throwIfRtcJoinAborted(signal);
+    if (generation !== this.connectionGeneration) throw new DOMException("Room join cancelled", "AbortError");
     const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
     this.clientInstance = client;
     this.bindMainClient(client);
-    await client.join(appId, credentials.roomName, credentials.token, credentials.identity, {
-      autoSubscribe: false,
-      autoReceiveAndPlayAudio: false,
-    });
-    client.enableAudioVolumeIndicator();
-    if (microphoneEnabled) {
-      this.microphoneTrack = await AgoraRTC.createMicrophoneAudioTrack(
-        voiceCaptureConfig(noiseCancellationEnabled),
-      );
-      await client.publish(this.microphoneTrack);
+    const assertCurrent = () => {
+      throwIfRtcJoinAborted(signal);
+      if (generation !== this.connectionGeneration || this.clientInstance !== client) {
+        throw new DOMException("Room join cancelled", "AbortError");
+      }
+    };
+    const abort = () => { if (this.clientInstance === client) void this.disconnect().catch(() => undefined); };
+    signal?.addEventListener("abort", abort, { once: true });
+    let microphone: IMicrophoneAudioTrack | null = null;
+    try {
+      assertCurrent();
+      await client.join(appId, credentials.roomName, credentials.token, credentials.identity, {
+        autoSubscribe: false,
+        autoReceiveAndPlayAudio: false,
+      });
+      assertCurrent();
+      client.enableAudioVolumeIndicator();
+      if (microphoneEnabled) {
+        microphone = await AgoraRTC.createMicrophoneAudioTrack(voiceCaptureConfig(noiseCancellationEnabled));
+        assertCurrent();
+        this.microphoneTrack = microphone;
+        await client.publish(microphone);
+        assertCurrent();
+      }
+      this.emitParticipants();
+    } catch (error) {
+      microphone?.close();
+      client.removeAllListeners?.();
+      if (this.clientInstance === client) await this.disconnect();
+      else await client.leave().catch(() => undefined);
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
     }
-    this.emitParticipants();
   }
 
   async disconnect() {
+    this.connectionGeneration += 1;
     const client = this.clientInstance;
     const screenClient = this.screenClient;
     this.clientInstance = null;
     this.screenClient = null;
     this.credentials = null;
     this.refreshCredentials = null;
+    client?.removeAllListeners?.();
+    screenClient?.removeAllListeners?.();
     this.watched.clear();
     this.speaking.clear();
     const tracks = [
@@ -375,20 +407,24 @@ export class AgoraRtcSession {
       });
       this.emitParticipants();
     });
-    client.on("connection-state-change", (state) => this.callbacks.onConnectionState(state));
+    client.on("connection-state-change", (state, _previousState, reason) => {
+      if (this.clientInstance === client) this.callbacks.onConnectionState(state, reason);
+    });
     this.bindTokenRefresh(client, false);
   }
 
   private bindTokenRefresh(client: IAgoraRTCClient, screen: boolean) {
     const renew = async () => {
+      if ((screen ? this.screenClient : this.clientInstance) !== client) return;
       const credentials = await this.refreshCredentials?.();
+      if ((screen ? this.screenClient : this.clientInstance) !== client) return;
       const token = screen ? credentials?.screenToken : credentials?.token;
       if (!credentials || !token) throw new Error("Agora token refresh failed");
       this.credentials = credentials;
       await client.renewToken(token);
     };
-    client.on("token-privilege-will-expire", () => void renew());
-    client.on("token-privilege-did-expire", () => void renew());
+    client.on("token-privilege-will-expire", () => void renew().catch(() => undefined));
+    client.on("token-privilege-did-expire", () => void renew().catch(() => undefined));
   }
 
   private remoteUser(identity: string, source: "camera" | "screen") {

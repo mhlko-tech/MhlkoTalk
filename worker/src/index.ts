@@ -16,12 +16,14 @@ import {
   isRtcProvider,
   parseRtcProviders,
   rtcCapabilities,
-  selectRtcProvider,
+  selectRoomRtcProvider,
+  RoomProviderLockedError,
   updateProviderHealth,
   updateProviderHealthBatch,
   type ProviderHealth,
   type RtcProviderId,
 } from "./providerRouting";
+import { decideRoomRoute, updateRoomRouteMember, type RoomRoute, type RoomRouteRequest } from "./roomRouting";
 import { generateTencentUserSig } from "./tencentUserSig";
 import { CloudflareRtcRoom, CloudflareRtcUsage, proxyCloudflareRtc } from "./cloudflareRtc";
 import { monthlyUsageCycle, usageAmount } from "./rtcUsage";
@@ -769,6 +771,8 @@ type RtcUsageAccess = {
   roomName: string;
   provider: RtcProviderId;
   subject: string;
+  routeId?: string;
+  recoverySupported?: boolean;
   expiresAt: number;
 };
 
@@ -812,11 +816,15 @@ async function signedRtcUsageAccess(
   provider: RtcProviderId,
   subject: string,
   secret: string,
+  routeId?: string,
+  recoverySupported = false,
 ) {
   const access: RtcUsageAccess = {
     roomName,
     provider,
     subject,
+    ...(routeId ? { routeId } : {}),
+    recoverySupported,
     expiresAt: Math.floor(Date.now() / 1000) + 12 * 60 * 60,
   };
   const payload = b64(encoder.encode(JSON.stringify(access)).buffer);
@@ -910,16 +918,19 @@ async function handleRtcUsage(request: Request, env: Env) {
   const now = Date.now();
   if (
     !Number.isFinite(seconds) ||
-    seconds < 10 ||
+    seconds < 0 ||
     seconds > 90 ||
     measuredTo.getTime() > now + 60_000 ||
     measuredTo.getTime() < now - 10 * 60_000
   ) return json({ error: "Invalid RTC usage window" }, 400);
   const usageWindow = Math.floor(measuredTo.getTime() / 60_000);
-  const amount = usageAmount(access.provider, seconds);
+  // Immediate join/leave heartbeats are presence only, never billable minutes.
+  const amount = seconds < 10 ? null : usageAmount(access.provider, seconds);
   const cycle = monthlyUsageCycle(measuredTo);
+  const capability = (await rtcCapabilities(env)).find((item) => item.provider === access.provider);
+  const unavailable = access.recoverySupported === true && !capability?.ready;
   const ledger = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
-  return ledger.fetch("https://internal/rtc-usage", {
+  const response = await ledger.fetch("https://internal/rtc-usage", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -927,9 +938,10 @@ async function handleRtcUsage(request: Request, env: Env) {
       provider: access.provider,
       room: await digest(access.roomName),
       subject: await digest(access.subject),
+      routeId: access.routeId,
       billingRoom: await digest(`${access.roomName}:${access.subject}`),
       usageWindow,
-      leaving: body?.leaving === true,
+      leaving: body?.leaving === true || unavailable,
       cycleStart: cycle.start,
       cycleEnd: cycle.end,
       measuredFrom: measuredFrom.toISOString(),
@@ -937,6 +949,10 @@ async function handleRtcUsage(request: Request, env: Env) {
       amount,
     }),
   });
+  if (response.ok && unavailable && body?.leaving !== true) {
+    return json({ error: "This server reached its availability limit. Switching to another available server.", code: "RTC_PROVIDER_UNAVAILABLE" }, 409);
+  }
+  return response;
 }
 
 type ProviderHealthSnapshot = {
@@ -1042,6 +1058,34 @@ async function setWherebyProviderEnabled(env: Env, enabled: boolean) {
   if (!response?.ok) throw new Error("Whereby provider state could not be changed");
   await syncProviderHealth(env);
   return (await rtcCapabilities(env)).find((item) => item.provider === "whereby");
+}
+
+async function setLiveKitProviderEnabled(env: Env, enabled: boolean) {
+  if (enabled) {
+    const grant = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, { ttl: 60 });
+    grant.addGrant({ roomList: true });
+    const probe = await fetch(new URL("/twirp/livekit.RoomService/ListRooms", env.LIVEKIT_URL.replace(/^ws/, "http")), {
+      method: "POST",
+      headers: { authorization: `Bearer ${await grant.toJwt()}`, "content-type": "application/json" },
+      body: "{}", signal: AbortSignal.timeout(8_000),
+    });
+    if (!probe.ok) throw new Error("LiveKit API check failed");
+    const snapshot = await serviceApi(env, "/rest/v1/rpc/rtc_provider_health_snapshot", { method: "POST", body: "{}" });
+    if (!snapshot?.ok) throw new Error("Current usage could not be verified");
+    const entries = await snapshot.json() as Array<ProviderHealthSnapshot & { quota_limit: number | string; quota_unit: string }>;
+    const livekit = entries.find((item) => item.provider === "livekit");
+    if (!livekit || livekit.quota_unit !== "participant_minute" || Number(livekit.quota_limit) !== 5_000 ||
+      !Number.isFinite(Number(livekit.used_percent)) || Number(livekit.used_percent) >= defaultProviderThresholds.stopNewRoomsAt) {
+      throw new Error("LiveKit has no verified allocation available for new rooms");
+    }
+  }
+  const response = await serviceApi(env, "/rest/v1/rtc_provider_policies?provider=eq.livekit&quota_unit=eq.participant_minute&quota_limit=eq.5000&cycle_kind=eq.monthly", {
+    method: "PATCH", headers: { prefer: "return=representation" },
+    body: JSON.stringify({ enabled, updated_at: new Date().toISOString() }),
+  });
+  if (!response?.ok || (await response.json() as unknown[]).length !== 1) throw new Error("LiveKit policy could not be updated");
+  await syncProviderHealth(env);
+  return (await rtcCapabilities(env)).find((item) => item.provider === "livekit");
 }
 
 async function probeMiroTalkHealth(env: Env) {
@@ -1756,7 +1800,7 @@ async function handleSocial(request: Request, env: Env, path: string, user: Auth
 
 type RtcLedgerState = {
   windows: Record<string, number>;
-  presence: Record<string, { room: string; expiresAt: number }>;
+  presence: Record<string, { room: string; expiresAt: number; provider?: RtcProviderId }>;
 };
 
 type PrivateRoomRecord = {
@@ -1770,6 +1814,26 @@ export class PresenceHub implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    if (path === "/room-route" && request.method === "POST") {
+      const body = await request.json() as RoomRouteRequest & { room: string };
+      const key = `room-route:${body.room}`;
+      const decision = await this.state.storage.transaction(async (transaction) => {
+        const stored = await transaction.get<RoomRoute>(key);
+        const ledger = await transaction.get<RtcLedgerState>("rtc-ledger");
+        const present = Object.entries(ledger?.presence || {}).filter(([, entry]) => entry.room === body.room && entry.expiresAt > Date.now());
+        const verifiedProviders = new Set(present.map(([, entry]) => entry.provider));
+        const legacyProvider = verifiedProviders.size === 1 && !verifiedProviders.has(undefined)
+          ? present[0][1].provider : body.legacyProvider;
+        const legacyMembers = Object.fromEntries(present
+          .map(([subject, entry]) => [subject, entry.expiresAt]));
+        const result = decideRoomRoute(stored, { ...body, legacyProvider, legacyMembers }, Date.now(), crypto.randomUUID());
+        if (result.route) await transaction.put(key, result.route);
+        else await transaction.delete(key);
+        return result;
+      });
+      if (decision.route) await this.schedulePrivateRoomCleanup(decision.route.expiresAt);
+      return json(decision);
+    }
     if (path === "/room-presence" && request.method === "POST") {
       const body = await request.json() as { room: string; subject: string };
       const ledger = await this.rtcLedger();
@@ -1870,6 +1934,7 @@ export class PresenceHub implements DurableObject {
         provider: RtcProviderId;
         room: string;
         subject: string;
+        routeId?: string;
         billingRoom: string;
         usageWindow: number;
         leaving: boolean;
@@ -1879,20 +1944,32 @@ export class PresenceHub implements DurableObject {
         measuredTo: string;
         amount: number | null;
       };
-      const ledger = await this.rtcLedger();
-      if (body.leaving) delete ledger.presence[body.subject];
-      else ledger.presence[body.subject] = { room: body.room, expiresAt: Date.now() + 2 * 60_000 };
-      if (body.amount === null) {
-        await this.state.storage.put("rtc-ledger", ledger);
+      const windowKey = `${body.provider}:${body.subject}:${body.usageWindow}`;
+      const reservationExpiry = Date.now() + 10 * 60_000;
+      const accepted = await this.state.storage.transaction(async (transaction) => {
+        const key = `room-route:${body.room}`;
+        const stored = await transaction.get<RoomRoute>(key);
+        const update = updateRoomRouteMember(stored, body.provider, body.subject, body.leaving, Date.now(), body.routeId);
+        // Old signed tokens issued before the route deployment remain valid
+        // until the first new join establishes an authoritative room lease.
+        if (!update.accepted && (stored || body.routeId)) return "stale";
+        if (update.route) await transaction.put(key, update.route);
+        const ledger = await transaction.get<RtcLedgerState>("rtc-ledger") || { windows: {}, presence: {} };
+        if (body.leaving) delete ledger.presence[body.subject];
+        else ledger.presence[body.subject] = { room: body.room, provider: body.provider, expiresAt: Date.now() + 2 * 60_000 };
+        for (const [key, expiry] of Object.entries(ledger.windows)) if (expiry <= Date.now()) delete ledger.windows[key];
+        const result = body.amount === null ? "unmetered" : ledger.windows[windowKey] ? "duplicate" : "meter";
+        if (result === "meter") ledger.windows[windowKey] = reservationExpiry;
+        await transaction.put("rtc-ledger", ledger);
+        return result;
+      });
+      if (accepted === "stale") return json({ error: "The room server changed. Reconnect to rejoin the call.", code: "RTC_ROOM_ROUTE_CHANGED" }, 409);
+      if (accepted === "unmetered") {
         return json({ accepted: true, metering: "provider" });
       }
-      const windowKey = `${body.provider}:${body.subject}:${body.usageWindow}`;
-      if (ledger.windows[windowKey]) {
-        await this.state.storage.put("rtc-ledger", ledger);
+      if (accepted === "duplicate") {
         return json({ accepted: true, recorded: false, duplicateWindow: true });
       }
-      ledger.windows[windowKey] = Date.now() + 10 * 60_000;
-      await this.state.storage.put("rtc-ledger", ledger);
       const response = await serviceApi(this.env, "/rest/v1/rpc/record_rtc_provider_usage", {
         method: "POST",
         body: JSON.stringify({
@@ -1908,8 +1985,13 @@ export class PresenceHub implements DurableObject {
         }),
       });
       if (!response?.ok) {
-        delete ledger.windows[windowKey];
-        await this.state.storage.put("rtc-ledger", ledger);
+        await this.state.storage.transaction(async (transaction) => {
+          const latest = await transaction.get<RtcLedgerState>("rtc-ledger");
+          if (latest?.windows[windowKey] === reservationExpiry) {
+            delete latest.windows[windowKey];
+            await transaction.put("rtc-ledger", latest);
+          }
+        });
         return json({ error: "RTC usage service is unavailable" }, 503);
       }
       const recorded = await response.json().catch(() => false);
@@ -1943,6 +2025,11 @@ export class PresenceHub implements DurableObject {
     for (const [key, room] of rooms) {
       if (room.expiresAt <= now) expired.push(key);
       else nextExpiry = Math.min(nextExpiry, room.expiresAt);
+    }
+    const routes = await this.state.storage.list<RoomRoute>({ prefix: "room-route:" });
+    for (const [key, route] of routes) {
+      if (route.expiresAt <= now) expired.push(key);
+      else nextExpiry = Math.min(nextExpiry, route.expiresAt);
     }
     if (expired.length) await this.state.storage.delete(expired);
     if (Number.isFinite(nextExpiry)) await this.state.storage.setAlarm(nextExpiry);
@@ -2032,6 +2119,16 @@ export default {
         return json({ provider: "whereby", enabled, capability });
       } catch {
         return json({ error: `Whereby could not be ${enabled ? "enabled" : "disabled"}` }, 503);
+      }
+    }
+    if ((path === "/service/providers/livekit/enable" || path === "/service/providers/livekit/disable") && request.method === "POST") {
+      if (!routingAdminAuthorized(request, env)) return json({ error: "Unauthorized" }, 401);
+      const enabled = path.endsWith("/enable");
+      try {
+        const capability = await setLiveKitProviderEnabled(env, enabled);
+        return json({ provider: "livekit", enabled, capability });
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "LiveKit policy update failed" }, 503);
       }
     }
     if (path === "/service/provider-health" && request.method === "POST") {
@@ -2212,6 +2309,7 @@ export default {
       supportedMessagingProviders?: unknown;
       supportedFileProviders?: unknown;
       excludedRtcProviders?: unknown;
+      clientSessionId?: unknown;
     } | null;
     let roomName = typeof body?.roomName === "string" ? body.roomName.trim() : "";
     roomName = roomName === "Main room" || roomName === "Main channel" ? "Main" : roomName;
@@ -2248,10 +2346,19 @@ export default {
     const excludedProviders = Array.isArray(body?.excludedRtcProviders)
       ? [...new Set(body.excludedRtcProviders.map((value) => String(value).toLowerCase()).filter(isRtcProvider))]
       : [];
-    let selected = await selectRtcProvider(env, roomName, supportedProviders, excludedProviders);
+    if (body?.clientSessionId !== undefined && (typeof body.clientSessionId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.clientSessionId))) {
+      return json({ error: "Invalid connection session" }, 400);
+    }
+    const accountSubject = auth?.id || await digest(`${request.headers.get("cf-connecting-ip") || "local"}:${request.headers.get("user-agent") || "unknown"}`);
+    const usageSubject = body?.clientSessionId ? `${accountSubject}:${body.clientSessionId}` : accountSubject;
+    const roomHash = await digest(roomName);
+    const subjectHash = await digest(usageSubject);
+    const chooseProvider = () => selectRoomRtcProvider(env, roomName, roomHash, subjectHash, supportedProviders, excludedProviders, Boolean(body?.clientSessionId));
+    let selected = await chooseProvider();
     if (!selected) {
       await refreshProviderHealthIfNeeded(env);
-      selected = await selectRtcProvider(env, roomName, supportedProviders, excludedProviders);
+      selected = await chooseProvider();
     }
     let providerToken = "";
     let providerUrl: string | undefined;
@@ -2298,7 +2405,7 @@ export default {
         break;
       } catch {
         excludedProviders.push(selected.provider);
-        selected = await selectRtcProvider(env, roomName, supportedProviders, excludedProviders);
+        selected = await chooseProvider();
       }
     }
     if (!selected || !providerToken) {
@@ -2312,19 +2419,14 @@ export default {
     const attachmentAccessToken = auth
       ? await signedRoomAccess(roomName, auth.id, env.INVITE_SIGNING_KEY)
       : undefined;
-    const usageSubject = auth?.id || await digest(`${request.headers.get("cf-connecting-ip") || "local"}:${request.headers.get("user-agent") || "unknown"}`);
     const usageAccessToken = await signedRtcUsageAccess(
       roomName,
       selected.provider,
       usageSubject,
       env.INVITE_SIGNING_KEY,
+      selected.routeId,
+      Boolean(body?.clientSessionId),
     );
-    const presence = env.PRESENCE.get(env.PRESENCE.idFromName("global"));
-    await presence.fetch("https://internal/room-presence", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ room: await digest(roomName), subject: await digest(usageSubject) }),
-    });
     return json({
       capabilitiesVersion: 2,
       token: providerToken,
@@ -2340,6 +2442,9 @@ export default {
       subscription: routing.subscription,
     });
     } catch (error) {
+      if (error instanceof RoomProviderLockedError) {
+        return json({ error: error.message, code: "RTC_ROOM_PROVIDER_LOCKED", retryAfterSeconds: 5 }, 409);
+      }
       const path = new URL(request.url).pathname;
       console.error("Unhandled MHTalk service error", {
         path,

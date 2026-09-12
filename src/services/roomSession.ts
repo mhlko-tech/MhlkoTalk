@@ -1,6 +1,7 @@
 import {
   AudioPresets,
   ConnectionQuality,
+  DisconnectReason,
   LocalAudioTrack,
   RemoteTrackPublication,
   Room,
@@ -12,6 +13,15 @@ import {
 } from "livekit-client";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { withTimeout } from "../core/async";
+import type { RtcProviderId } from "../core/rtcProviders";
+import {
+  awaitRtcOperation,
+  connectWithRtcFailover,
+  RtcConnectionError,
+  throwIfRtcJoinAborted,
+  waitForRtcRoomRecovery,
+  terminalRtcDisconnection,
+} from "./rtcConnectionResilience";
 import { screenAudioConstraints } from "../core/screenAudio";
 import type {
   ChatListener,
@@ -136,6 +146,13 @@ export class RoomSession {
   private remoteProfiles = new Map<string, UserProfile>();
   private recoveryTimer: number | undefined;
   private recoveryStartedAt = 0;
+  private joinController: AbortController | null = null;
+  private clientSessionId: string | undefined;
+  private pendingJoin: Promise<void> | null = null;
+  private leaving = false;
+  private automaticRecoveries = 0;
+  private automaticRecoveryWindowStartedAt = 0;
+  private terminalRtcFailure: RtcConnectionError | null = null;
   private room: Room | null = null;
   private readonly streamRtc = new StreamRtcSession({
     onParticipants: (participants) => this.syncStreamParticipants(participants),
@@ -145,7 +162,7 @@ export class RoomSession {
   private readonly agoraRtc = new AgoraRtcSession({
     onParticipants: (participants) => this.syncAgoraParticipants(participants),
     onCustomEvent: (identity, event) => this.handleProviderCustomEvent(identity, event),
-    onConnectionState: (state) => this.handleAgoraConnectionState(state),
+    onConnectionState: (state, reason) => this.handleAgoraConnectionState(state, reason),
     onAudio: (identity, source, stream) => {
       if (stream) this.attachStreamAudio(stream, identity, source);
       else this.detachStreamAudio(identity, source);
@@ -155,6 +172,7 @@ export class RoomSession {
     onParticipants: (participants) => this.syncTencentParticipants(participants),
     onCustomEvent: (identity, event) => this.handleProviderCustomEvent(identity, event),
     onConnectionState: (state) => this.handleTencentConnectionState(state),
+    onFatalError: (failure) => { void this.failRtcSession("tencent", failure); },
     onNetworkQuality: (quality) => {
       const local = quality.uplinkNetworkQuality;
       const remote = quality.downlinkNetworkQuality;
@@ -244,12 +262,12 @@ export class RoomSession {
     {
       provider: "agora",
       mediaCapabilities: this.liveKitParityMedia,
-      connect: (credentials) => this.joinAgora(credentials),
+      connect: (credentials, signal) => this.joinAgora(credentials, signal),
     },
     {
       provider: "tencent",
       mediaCapabilities: this.liveKitParityMedia,
-      connect: (credentials) => this.joinTencent(credentials),
+      connect: (credentials, signal) => this.joinTencent(credentials, signal),
     },
     {
       provider: "cloudflare-realtime",
@@ -279,8 +297,8 @@ export class RoomSession {
     {
       provider: "livekit",
       mediaCapabilities: this.liveKitParityMedia,
-      connect: (credentials) =>
-        this.joinLiveKit(credentials.roomName, credentials),
+      connect: (credentials, signal) =>
+        this.joinLiveKit(credentials.roomName, credentials, signal),
     },
   ]);
 
@@ -302,33 +320,56 @@ export class RoomSession {
 
   async join(roomName: string, inviteCode?: string) {
     if (
+      this.pendingJoin || this.leaving ||
       this.snapshot.state === "connecting" ||
       this.snapshot.state === "connected" ||
       this.snapshot.state === "recovering"
     )
       return;
+    this.joinController?.abort();
+    this.clientSessionId = crypto.randomUUID();
+    this.terminalRtcFailure = null;
+    const controller = new AbortController();
+    this.automaticRecoveries = 0;
+    this.automaticRecoveryWindowStartedAt = Date.now();
+    this.joinController = controller;
+    const operation = this.performJoin(roomName, inviteCode, controller.signal);
+    this.pendingJoin = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.pendingJoin === operation) this.pendingJoin = null;
+    }
+  }
+
+  private async performJoin(
+    roomName: string,
+    inviteCode: string | undefined,
+    signal: AbortSignal,
+    recovery?: { excludedProviders: RtcProviderId[] },
+  ) {
     // Creating/resuming the context while handling the user's click keeps
     // later participant events audible in WebViews with autoplay policies.
     void this.unlockEventAudio().catch(() => undefined);
     this.update({
-      state: "connecting",
+      state: recovery ? "recovering" : "connecting",
       roomName,
-      recoveryAttempt: 0,
+      recoveryAttempt: recovery ? this.automaticRecoveries : 0,
       lastRecoveryMs: null,
       connectionMessage: "Selecting the best available server…",
     });
     this.inviteCode = inviteCode;
     try {
-      if (this.isLiveKitConfigured()) await this.joinRealtime(roomName);
-      else await this.joinSimulator();
+      // A previous terminal disconnection may still own SDK/media resources.
+      await this.stopUsageReporting(true);
+      await this.disconnectRtcAdapters();
+      throwIfRtcJoinAborted(signal);
+      if (this.isLiveKitConfigured()) await this.joinRealtime(roomName, signal, recovery);
+      else await this.joinSimulator(signal);
     } catch (error) {
       await this.stopUsageReporting(false);
-      await this.room?.disconnect().catch(() => undefined);
-      await this.streamRtc.disconnect();
-      await this.agoraRtc.disconnect();
-      await this.tencentRtc.disconnect();
-      await this.cloudflareRtc.disconnect();
-      this.room = null;
+      await this.disconnectRtcAdapters();
+      if (signal.aborted) return;
       this.update({
         state: "failed",
         connectionMessage: error instanceof Error
@@ -355,15 +396,16 @@ export class RoomSession {
   }
 
   async leave() {
+    if (this.leaving) return;
+    this.leaving = true;
+    this.joinController?.abort();
+    this.joinController = null;
     window.clearTimeout(this.recoveryTimer);
+    await this.pendingJoin;
     await this.stopUsageReporting(true);
-    await this.room?.disconnect();
-    await this.streamRtc.disconnect();
-    await this.agoraRtc.disconnect();
-    await this.tencentRtc.disconnect();
-    await this.cloudflareRtc.disconnect();
-    this.room = null;
+    await this.disconnectRtcAdapters();
     this.inviteCode = undefined;
+    this.clientSessionId = undefined;
     this.attachmentAccessToken = undefined;
     this.remoteProfiles.clear();
     this.remoteMediaQuality.clear();
@@ -377,6 +419,75 @@ export class RoomSession {
     this.detachMedia();
     this.clearChat();
     this.update({ ...initialSnapshot });
+    this.leaving = false;
+  }
+
+  private async recoverRealtime(excludedProviders: RtcProviderId[], accessToken = this.usageAccessToken) {
+    // The immediate presence heartbeat can arrive before the join promise's
+    // final microtask. Wait for it, then ensure the report still owns this call.
+    await this.pendingJoin;
+    if (this.leaving || this.pendingJoin || this.terminalRtcFailure || !this.snapshot.roomName || accessToken !== this.usageAccessToken) return;
+    const roomName = this.snapshot.roomName;
+    const inviteCode = this.inviteCode;
+    this.joinController?.abort();
+    const controller = new AbortController();
+    this.joinController = controller;
+    if (Date.now() - this.automaticRecoveryWindowStartedAt > 180_000) {
+      this.automaticRecoveries = 0;
+      this.automaticRecoveryWindowStartedAt = Date.now();
+    }
+    this.automaticRecoveries += 1;
+    // Screen capture requires a new user gesture; reflect the stopped tracks.
+    this.update({ cameraEnabled: false, screenShareEnabled: false, screenShareAudioEnabled: false });
+    const operation = this.automaticRecoveries > 2
+      ? (async () => {
+        await this.stopUsageReporting(true);
+        await this.disconnectRtcAdapters();
+        if (!controller.signal.aborted) this.update({ state: "failed", connectionMessage: "Automatic connection recovery was exhausted. Please rejoin the room." });
+      })()
+      : this.performJoin(roomName, inviteCode, controller.signal, { excludedProviders });
+    this.pendingJoin = operation;
+    try {
+      await operation;
+    } finally {
+      if (this.pendingJoin === operation) this.pendingJoin = null;
+    }
+  }
+
+  private async disconnectRtcAdapters() {
+    const room = this.room;
+    this.room = null;
+    room?.removeAllListeners();
+    await withTimeout(Promise.allSettled([
+      room?.disconnect(),
+      this.streamRtc.disconnect(),
+      this.agoraRtc.disconnect(),
+      this.tencentRtc.disconnect(),
+      this.cloudflareRtc.disconnect(),
+    ]), 4_000, "Media cleanup timed out").catch(() => undefined);
+    this.detachMedia();
+  }
+
+  private async failRtcSession(provider: RtcProviderId, failure: RtcConnectionError) {
+    if (this.leaving || this.terminalRtcFailure || this.snapshot.rtcProvider !== provider) return;
+    this.terminalRtcFailure = failure;
+    const controller = this.joinController;
+    controller?.abort(failure);
+    await this.pendingJoin;
+    if (this.leaving || controller !== this.joinController) return;
+    const cleanup = (async () => {
+      await this.stopUsageReporting(true);
+      await this.disconnectRtcAdapters();
+      if (!this.leaving && controller === this.joinController) {
+        this.update({ state: "failed", participants: [], connectionMessage: failure.message });
+      }
+    })();
+    this.pendingJoin = cleanup;
+    try {
+      await cleanup;
+    } finally {
+      if (this.pendingJoin === cleanup) this.pendingJoin = null;
+    }
   }
 
   async setMicrophoneEnabled(microphoneEnabled: boolean) {
@@ -1344,20 +1455,50 @@ export class RoomSession {
     );
   }
 
-  private async joinSimulator() {
-    await new Promise<void>((resolve) => window.setTimeout(resolve, 500));
+  private async joinSimulator(signal: AbortSignal) {
+    await awaitRtcOperation(new Promise<void>((resolve) => window.setTimeout(resolve, 500)), signal);
+    throwIfRtcJoinAborted(signal);
     this.update({ state: "connected" });
   }
 
-  private async joinRealtime(roomName: string) {
+  private async joinRealtime(roomName: string, signal: AbortSignal, recovery?: { excludedProviders: RtcProviderId[] }) {
     if (import.meta.env.VITE_LIVEKIT_DEVELOPMENT_TOKEN_SERVER_ID) {
-      await this.joinLiveKit(roomName);
+      await awaitRtcOperation(this.joinLiveKit(roomName, undefined, signal), signal);
       return;
     }
-    const credentials = await this.fetchToken(roomName);
-    this.routing = credentials.routing;
-    this.attachmentAccessToken = credentials.attachmentAccessToken;
-    await this.rtcAdapters.connect(credentials);
+    const credentials = await connectWithRtcFailover({
+      supportedProviders: this.rtcAdapters.routableProviders(),
+      excludedProviders: recovery?.excludedProviders,
+      signal,
+      fetchCredentials: (excludedRtcProviders, requestSignal) => {
+        const request = () => this.fetchToken(
+          roomName, this.rtcAdapters.routableProviders(), { excludedRtcProviders, signal: requestSignal },
+        );
+        return recovery || excludedRtcProviders.length ? waitForRtcRoomRecovery(request, requestSignal, () => this.update({
+          state: "recovering", connectionMessage: "Waiting for the other room members to reconnect together…",
+        })) : request();
+      },
+      onAttempt: (provider, attempt) => this.update({
+        state: "connecting",
+        rtcProvider: provider,
+        participants: [],
+        connectionMessage: attempt === 1
+          ? "Connecting to the room…"
+          : "The previous server could not connect. Trying an available alternative…",
+      }),
+      connect: async (selected, attemptSignal) => {
+        this.routing = selected.routing;
+        this.attachmentAccessToken = selected.attachmentAccessToken;
+        await this.rtcAdapters.connect(selected, attemptSignal);
+      },
+      cleanup: async (selected) => {
+        await this.disconnectRtcAdapters();
+        this.attachmentAccessToken = undefined;
+        const releasedAt = Date.now();
+        await this.sendRtcUsage(selected.usageAccessToken, releasedAt, releasedAt, true).catch(() => undefined);
+      },
+    });
+    throwIfRtcJoinAborted(signal);
     this.startUsageReporting(credentials.usageAccessToken);
   }
 
@@ -1366,8 +1507,10 @@ export class RoomSession {
     this.usageAccessToken = token;
     this.usageWindowStartedAt = token ? Date.now() : undefined;
     if (!token) return;
+    // A zero-duration heartbeat confirms the actual SDK connection immediately.
+    void this.reportRtcUsage(false, true).catch(() => undefined);
     this.usageReportTimer = window.setInterval(() => {
-      void this.reportRtcUsage();
+      void this.reportRtcUsage().catch(() => undefined);
     }, 60_000);
   }
 
@@ -1379,15 +1522,21 @@ export class RoomSession {
     this.usageWindowStartedAt = undefined;
   }
 
-  private async reportRtcUsage(leaving = false) {
+  private async reportRtcUsage(leaving = false, immediate = false) {
     const usageAccessToken = this.usageAccessToken;
-    const measuredFromMs = this.usageWindowStartedAt;
     const measuredToMs = Date.now();
-    if (!usageAccessToken || !measuredFromMs || measuredToMs - measuredFromMs < 10_000) return;
+    const measuredFromMs = immediate ? measuredToMs : this.usageWindowStartedAt;
+    if (!usageAccessToken || measuredFromMs === undefined || (!leaving && !immediate && measuredToMs - measuredFromMs < 10_000)) return;
     this.usageWindowStartedAt = measuredToMs;
-    await fetch(new URL("/rtc/usage", liveKitTokenEndpoint), {
+    await this.sendRtcUsage(usageAccessToken, measuredFromMs, measuredToMs, leaving);
+  }
+
+  private async sendRtcUsage(usageAccessToken: string | undefined, measuredFromMs: number, measuredToMs: number, leaving: boolean) {
+    if (!usageAccessToken) return;
+    const response = await fetch(new URL("/rtc/usage", liveKitTokenEndpoint), {
       method: "POST",
       keepalive: true,
+      signal: AbortSignal.timeout(5_000),
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         usageAccessToken,
@@ -1397,16 +1546,24 @@ export class RoomSession {
         leaving,
       }),
     });
+    if (leaving || usageAccessToken !== this.usageAccessToken || response.status !== 409) return;
+    const payload = await response.json().catch(() => ({})) as { code?: string };
+    if (payload.code === "RTC_PROVIDER_UNAVAILABLE" || payload.code === "RTC_ROOM_ROUTE_CHANGED") {
+      const provider = this.snapshot.rtcProvider;
+      void this.recoverRealtime(payload.code === "RTC_PROVIDER_UNAVAILABLE" && provider ? [provider] : [], usageAccessToken);
+    }
   }
 
   private async joinStream(credentials: RoomConnectionCredentials) {
     this.routing = credentials.routing;
+    const clientSessionId = this.clientSessionId;
+    const signal = this.joinController?.signal;
     await this.streamRtc.connect(
       credentials,
       this.profile,
       this.snapshot.microphoneEnabled,
       async () => {
-        const refreshed = await this.fetchToken(credentials.roomName, ["stream"]);
+        const refreshed = await this.fetchToken(credentials.roomName, ["stream"], { clientSessionId, signal });
         if (refreshed.routing.rtc.provider !== "stream") {
           throw new Error("The active Stream room could not refresh its access token");
         }
@@ -1424,20 +1581,24 @@ export class RoomSession {
     this.syncStreamParticipants(this.streamRtc.participants);
   }
 
-  private async joinAgora(credentials: RoomConnectionCredentials) {
+  private async joinAgora(credentials: RoomConnectionCredentials, signal?: AbortSignal) {
     this.routing = credentials.routing;
+    const clientSessionId = this.clientSessionId;
+    const sessionSignal = this.joinController?.signal;
     await this.agoraRtc.connect(
       credentials,
       this.snapshot.microphoneEnabled,
       this.noiseCancellationEnabled,
       async () => {
-        const refreshed = await this.fetchToken(credentials.roomName, ["agora"]);
+        const refreshed = await this.fetchToken(credentials.roomName, ["agora"], { clientSessionId, signal: sessionSignal });
         if (refreshed.routing.rtc.provider !== "agora") {
           throw new Error("The active Agora room could not refresh its access token");
         }
         return refreshed;
       },
+      signal,
     );
+    throwIfRtcJoinAborted(signal);
     this.update({
       state: "connected",
       roomName: credentials.roomName,
@@ -1446,16 +1607,19 @@ export class RoomSession {
       connectionMessage: null,
     });
     await Promise.allSettled([this.publishProfile(), this.requestProfiles()]);
+    throwIfRtcJoinAborted(signal);
     this.syncAgoraParticipants(this.agoraRtc.participants);
   }
 
-  private async joinTencent(credentials: RoomConnectionCredentials) {
+  private async joinTencent(credentials: RoomConnectionCredentials, signal?: AbortSignal) {
     this.routing = credentials.routing;
     await this.tencentRtc.connect(
       credentials,
       this.snapshot.microphoneEnabled,
       this.noiseCancellationEnabled,
+      signal,
     );
+    throwIfRtcJoinAborted(signal);
     this.update({
       state: "connected",
       roomName: credentials.roomName,
@@ -1464,6 +1628,7 @@ export class RoomSession {
       connectionMessage: null,
     });
     await Promise.allSettled([this.publishProfile(), this.requestProfiles()]);
+    throwIfRtcJoinAborted(signal);
     this.syncTencentParticipants(this.tencentRtc.participants);
   }
 
@@ -1529,10 +1694,36 @@ export class RoomSession {
   private async joinLiveKit(
     roomName: string,
     suppliedCredentials?: RoomConnectionCredentials,
+    signal?: AbortSignal,
   ) {
+    throwIfRtcJoinAborted(signal);
     const room = new Room({ adaptiveStream: true, dynacast: true });
     this.room = room;
+    const abort = () => {
+      room.removeAllListeners();
+      void room.disconnect().catch(() => undefined);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      await this.connectLiveKitRoom(room, roomName, suppliedCredentials, signal);
+    } catch (error) {
+      room.removeAllListeners();
+      if (this.room === room) this.room = null;
+      await room.disconnect().catch(() => undefined);
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+  }
+
+  private async connectLiveKitRoom(
+    room: Room,
+    roomName: string,
+    suppliedCredentials?: RoomConnectionCredentials,
+    signal?: AbortSignal,
+  ) {
     const syncParticipants = () => {
+      if (signal?.aborted || this.room !== room) return;
       const participants = [...room.remoteParticipants.values()].map(
         (participant) => {
           const camera = participant.getTrackPublication(Track.Source.Camera);
@@ -1758,13 +1949,7 @@ export class RoomSession {
     });
     room.on(RoomEvent.Reconnecting, () => this.beginRecovery());
     room.on(RoomEvent.Reconnected, () => this.finishRecovery());
-    room.on(RoomEvent.Disconnected, () => {
-      if (
-        this.snapshot.state !== "idle" &&
-        this.snapshot.state !== "recovering"
-      )
-        this.update({ state: "failed" });
-    });
+    room.on(RoomEvent.Disconnected, (reason) => this.handleLiveKitDisconnection(room, reason));
     room.on(RoomEvent.DataReceived, (payload, participant, _kind, topic) => {
       if (topic !== "mhtalk.chat") return;
       if (!participant) return;
@@ -1876,12 +2061,14 @@ export class RoomSession {
         12_000,
         "The development token service did not respond",
       );
+      throwIfRtcJoinAborted(signal);
       this.update({ connectionMessage: "Connecting to the realtime server…" });
       await withTimeout(room.connect(details.serverUrl, details.participantToken, {
         autoSubscribe: false,
       }), 18_000, "The realtime server took too long to respond");
     } else {
-      const credentials = suppliedCredentials || await this.fetchToken(roomName);
+      const credentials = suppliedCredentials || await this.fetchToken(roomName, ["livekit"], { signal });
+      throwIfRtcJoinAborted(signal);
       if (credentials.routing.rtc.provider !== "livekit") {
         throw new Error("This app version cannot open the selected room connection");
       }
@@ -1892,6 +2079,7 @@ export class RoomSession {
       }), 18_000, "The selected realtime server took too long to respond");
       roomName = credentials.roomName;
     }
+    throwIfRtcJoinAborted(signal);
     for (const kind of [
       "audioinput",
       "audiooutput",
@@ -1906,6 +2094,7 @@ export class RoomSession {
           localStorage.removeItem(`mhtalk.device.${kind}`);
         }
       }
+      throwIfRtcJoinAborted(signal);
     }
     await room.localParticipant.setMicrophoneEnabled(
       this.snapshot.microphoneEnabled,
@@ -1913,6 +2102,7 @@ export class RoomSession {
         ? this.microphoneCaptureOptions()
         : undefined,
     );
+    throwIfRtcJoinAborted(signal);
     if (this.snapshot.cameraEnabled) {
       const cameraId = this.preferredDevices.videoinput;
       const maximum = this.routing.subscription.entitlements.maxCameraQuality;
@@ -1925,6 +2115,7 @@ export class RoomSession {
         },
         { videoEncoding: preset.encoding, simulcast: true },
       );
+      throwIfRtcJoinAborted(signal);
     }
     this.update({
       state: "connected",
@@ -2176,23 +2367,45 @@ export class RoomSession {
     if (this.agoraRtc.connected) this.syncAgoraParticipants(this.agoraRtc.participants);
   }
 
-  private handleAgoraConnectionState(state: string) {
+  private handleLiveKitDisconnection(room: Room, reason?: DisconnectReason) {
+    if (this.room !== room || this.leaving) return;
+    const failure = terminalRtcDisconnection("livekit", reason === undefined ? undefined : DisconnectReason[reason]);
+    if (failure) {
+      void this.failRtcSession("livekit", failure);
+      return;
+    }
+    if (!this.pendingJoin && (this.snapshot.state === "connected" || this.snapshot.state === "recovering")) {
+      void this.recoverRealtime(["livekit"]);
+    }
+  }
+
+  private handleAgoraConnectionState(state: string, reason?: string) {
+    if (state === "DISCONNECTED") {
+      const failure = terminalRtcDisconnection("agora", reason);
+      if (failure) {
+        void this.failRtcSession("agora", failure);
+        return;
+      }
+    }
+    if (this.leaving || this.pendingJoin || this.snapshot.rtcProvider !== "agora") return;
     if (state === "RECONNECTING") this.beginRecovery();
     if (state === "CONNECTED" && this.snapshot.state === "recovering") this.finishRecovery();
     if (state === "DISCONNECTED" && this.snapshot.state !== "idle") {
-      this.update({ state: "failed", connectionMessage: "The Agora call disconnected" });
+      void this.recoverRealtime(["agora"]);
     }
   }
 
   private handleTencentConnectionState(state: string) {
+    if (this.leaving || this.pendingJoin || this.snapshot.rtcProvider !== "tencent") return;
     if (state === "RECONNECTING") this.beginRecovery();
     if (state === "CONNECTED" && this.snapshot.state === "recovering") this.finishRecovery();
     if (state === "DISCONNECTED" && this.snapshot.state !== "idle") {
-      this.update({ state: "failed", connectionMessage: "The Tencent call disconnected" });
+      void this.recoverRealtime(["tencent"]);
     }
   }
 
   private handleCloudflareConnectionState(state: string) {
+    if (this.leaving || this.pendingJoin || this.snapshot.rtcProvider !== "cloudflare-realtime") return;
     if (state === "disconnected") this.beginRecovery();
     if (state === "connected" && this.snapshot.state === "recovering") this.finishRecovery();
     if ((state === "failed" || state === "closed") && this.snapshot.state !== "idle") {
@@ -2575,14 +2788,17 @@ export class RoomSession {
   private async fetchToken(
     roomName: string,
     supportedRtcProviders = this.rtcAdapters.routableProviders(),
+    options: { excludedRtcProviders?: RtcProviderId[]; signal?: AbortSignal; clientSessionId?: string } = {},
   ) {
     const accountToken = accountSession.getAccessToken();
     const requestBody = {
       roomName,
+      clientSessionId: options.clientSessionId ?? this.clientSessionId,
       inviteCode: this.inviteCode,
       clientPlatform: "windows",
       capabilitiesVersion: 2,
       supportedRtcProviders,
+      excludedRtcProviders: options.excludedRtcProviders ?? [],
       supportedMessagingProviders,
       supportedFileProviders,
     };
@@ -2594,20 +2810,24 @@ export class RoomSession {
     // refreshes DNS. Retry only failures that produced no HTTP response; API
     // errors such as an expired sign-in must still be reported immediately.
     for (let attempt = 0; attempt < 3 && !response; attempt += 1) {
+      throwIfRtcJoinAborted(options.signal);
       if (attempt > 0) {
         this.update({ connectionMessage: "Connection interrupted. Retrying automatically…" });
         await new Promise<void>((resolve) =>
           window.setTimeout(resolve, attempt === 1 ? 350 : 900),
         );
+        throwIfRtcJoinAborted(options.signal);
       }
       const controller = new AbortController();
+      const abort = () => controller.abort(options.signal?.reason);
+      options.signal?.addEventListener("abort", abort, { once: true });
       const timer = window.setTimeout(() => controller.abort(), 8_000);
       try {
         if (isTauri()) {
-          const native = await invoke<{ status: number; body: string }>("fetch_connection_token", {
+          const native = await awaitRtcOperation(invoke<{ status: number; body: string }>("fetch_connection_token", {
             requestBody,
             accessToken: accountToken || null,
-          });
+          }), controller.signal);
           response = new Response(native.body, {
             status: native.status,
             headers: { "content-type": "application/json" },
@@ -2624,11 +2844,14 @@ export class RoomSession {
           });
         }
       } catch (error) {
+        throwIfRtcJoinAborted(options.signal);
         lastNetworkError = error;
       } finally {
         window.clearTimeout(timer);
+        options.signal?.removeEventListener("abort", abort);
       }
     }
+    throwIfRtcJoinAborted(options.signal);
 
     if (!response) {
       const offline = typeof navigator !== "undefined" && navigator.onLine === false;
@@ -2650,9 +2873,11 @@ export class RoomSession {
       screenIdentity?: string;
       roomName?: string;
       error?: string;
+      code?: string;
     };
+    throwIfRtcJoinAborted(options.signal);
     if (!response.ok)
-      throw new Error(payload.error || "Realtime account service is unavailable");
+      throw new RtcConnectionError(payload.error || "Realtime account service is unavailable", payload.code, response.status);
     if (!payload.token || !payload.roomName)
       throw new Error("Invalid token response");
     return {

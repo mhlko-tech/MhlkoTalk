@@ -81,7 +81,7 @@ access and does not rely on the provider invoice as a usage limiter.
 | Agora | Windows + Android + Worker | Eligible after staging and verified dashboard limit. |
 | Tencent | Windows + Android + Worker | Eligible only while the annual offer is verified and PAYG is off. |
 | Cloudflare Realtime | Windows + Android + Worker | Enabled with dedicated usage telemetry and a 60% hard internal cutoff. |
-| LiveKit | Windows + Android + Worker | Compatible fallback; disabled while its current allowance is exhausted. |
+| LiveKit | Windows + Android + Worker | Preferred guarded route after the 2026-09-12 two-client media verification; 5,000-minute configured monthly allocation retained. |
 | Whereby | Embedded Windows + Android + Worker | Eligible after staging; conservative participant-minute guard. |
 | JaaS | Embedded Windows + Android + Worker | Enabled for authenticated accounts with an exact 19-credential monthly ceiling below 80% of the 25-MAU plan. |
 | MiroTalk | Embedded Windows + Android + Worker + Oracle A1 | Enabled self-hosted fallback; HTTPS, signed join issuance, and media reachability verified. |

@@ -5,6 +5,7 @@ import {
   type RtcProviderId,
 } from "./rtcProviderCatalog";
 import { routingThresholds } from "./providerSafety";
+import type { RoomRouteDecision } from "./roomRouting";
 
 export type { RtcProviderId } from "./rtcProviderCatalog";
 
@@ -201,6 +202,51 @@ export async function selectRtcProvider(
     }
   }
   return selected;
+}
+
+export class RoomProviderLockedError extends Error {
+  constructor() {
+    super("Other members are still on this room's current server. Please retry shortly so everyone stays in the same call.");
+    this.name = "RoomProviderLockedError";
+  }
+}
+
+/** Production joins use a serialized room lease rather than KV stickiness. */
+export async function selectRoomRtcProvider(
+  env: RoutingEnvironment,
+  roomName: string,
+  roomHash: string,
+  subjectHash: string,
+  supportedProviders: RtcProviderId[],
+  excludedProviders: RtcProviderId[] = [],
+  connectionAware = false,
+) {
+  const capabilities = await rtcCapabilities(env);
+  const supported = new Set(supportedProviders);
+  const eligible = capabilities.filter((item) => item.ready && supported.has(item.provider));
+  const accepting = eligible.filter((item) => item.usedPercent === null || item.usedPercent < routingThresholds(item.provider).stopNewRoomsAt);
+  const ordered = [...accepting.filter((item) => item.state === "healthy"), ...accepting.filter((item) => item.state !== "healthy")];
+  // Only used to import currently occupied rooms from the previous deployment.
+  let legacyProvider: string | null = null;
+  try { legacyProvider = await env.PRIVATE_ROOMS.get(`routing:v2:room:rtc:${roomName}`); } catch { /* KV is not authoritative. */ }
+  const response = await providerHealthStore(env).fetch("https://presence.internal/room-route", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      room: roomHash,
+      subject: subjectHash,
+      eligible: eligible.map((item) => item.provider),
+      acceptingNewRooms: ordered.map((item) => item.provider),
+      excluded: excludedProviders,
+      connectionAware,
+      ...(isRtcProvider(legacyProvider) ? { legacyProvider } : {}),
+    }),
+  });
+  if (!response.ok) throw new Error("Room routing is temporarily unavailable");
+  const decision = await response.json() as RoomRouteDecision;
+  if (decision.locked) throw new RoomProviderLockedError();
+  const selected = capabilities.find((item) => item.provider === decision.selected);
+  return selected ? { ...selected, routeId: decision.route!.id } : null;
 }
 
 export function parseRtcProviders(value: unknown): RtcProviderId[] {

@@ -6,6 +6,7 @@ import type {
 } from "trtc-sdk-v5";
 import type { MediaQuality } from "../core/types";
 import type { RoomConnectionCredentials } from "./rtcAdapterRegistry";
+import { terminalRtcDisconnection, throwIfRtcJoinAborted, type RtcConnectionError } from "./rtcConnectionResilience";
 
 export type TencentParticipant = {
   userId: string;
@@ -21,6 +22,7 @@ type TencentCallbacks = {
   onConnectionState(state: ConnectionState): void;
   onNetworkQuality(quality: NetworkQuality): void;
   onScreenShareStopped(): void;
+  onFatalError?(error: RtcConnectionError): void;
 };
 
 type ParticipantState = TencentParticipant;
@@ -49,6 +51,7 @@ export class TencentRtcSession {
   private screenEnabled = false;
   private microphoneId = "";
   private cameraId = "";
+  private connectionGeneration = 0;
 
   constructor(private readonly callbacks: TencentCallbacks) {}
 
@@ -68,36 +71,61 @@ export class TencentRtcSession {
     credentials: RoomConnectionCredentials,
     microphoneEnabled: boolean,
     noiseCancellationEnabled: boolean,
+    signal?: AbortSignal,
   ) {
+    throwIfRtcJoinAborted(signal);
+    const generation = ++this.connectionGeneration;
     const sdkAppId = Number(credentials.routing.rtc.clientKey);
     if (!Number.isSafeInteger(sdkAppId) || sdkAppId <= 0) {
       throw new Error("Tencent SDK App ID is missing");
     }
     if (!credentials.identity) throw new Error("Tencent participant identity is missing");
     const sdk = await loadTencentRtc();
+    throwIfRtcJoinAborted(signal);
+    if (generation !== this.connectionGeneration) throw new DOMException("Room join cancelled", "AbortError");
     const client = sdk.create();
     this.sdk = sdk;
     this.clientInstance = client;
     this.credentials = credentials;
     this.bind(client, sdk);
-    await client.enterRoom({
-      sdkAppId,
-      userId: credentials.identity,
-      userSig: credentials.token,
-      strRoomId: credentials.roomName,
-      scene: sdk.TYPE.SCENE_RTC,
-      autoReceiveAudio: true,
-      autoReceiveVideo: false,
-    });
-    client.enableAudioVolumeEvaluation(500, true);
-    if (microphoneEnabled) {
-      await client.startLocalAudio(localAudioConfig(noiseCancellationEnabled, this.microphoneId));
-      this.microphoneEnabled = true;
+    const assertCurrent = () => {
+      throwIfRtcJoinAborted(signal);
+      if (generation !== this.connectionGeneration || this.clientInstance !== client) {
+        throw new DOMException("Room join cancelled", "AbortError");
+      }
+    };
+    const abort = () => { if (this.clientInstance === client) void this.disconnect().catch(() => undefined); };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      assertCurrent();
+      await client.enterRoom({
+        sdkAppId,
+        userId: credentials.identity,
+        userSig: credentials.token,
+        strRoomId: credentials.roomName,
+        scene: sdk.TYPE.SCENE_RTC,
+        autoReceiveAudio: true,
+        autoReceiveVideo: false,
+      });
+      assertCurrent();
+      client.enableAudioVolumeEvaluation(500, true);
+      if (microphoneEnabled) {
+        await client.startLocalAudio(localAudioConfig(noiseCancellationEnabled, this.microphoneId));
+        assertCurrent();
+        this.microphoneEnabled = true;
+      }
+      this.emitParticipants();
+    } catch (error) {
+      if (this.clientInstance === client) await this.disconnect();
+      else await disposeTencentClient(client);
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", abort);
     }
-    this.emitParticipants();
   }
 
   async disconnect() {
+    this.connectionGeneration += 1;
     const client = this.clientInstance;
     this.clientInstance = null;
     this.sdk = null;
@@ -108,16 +136,7 @@ export class TencentRtcSession {
     this.cameraEnabled = false;
     this.screenEnabled = false;
     if (!client) return;
-    // Tencent's declaration incorrectly requires a handler for the documented
-    // `off("*")` overload, so keep the SDK cleanup call while containing the cast.
-    (client.off as (event: "*") => TencentClient)("*");
-    await Promise.allSettled([
-      client.stopScreenShare(),
-      client.stopLocalVideo(),
-      client.stopLocalAudio(),
-    ]);
-    await client.exitRoom().catch(() => undefined);
-    client.destroy();
+    await disposeTencentClient(client);
   }
 
   async setMicrophoneEnabled(enabled: boolean, noiseCancellationEnabled: boolean) {
@@ -296,6 +315,11 @@ export class TencentRtcSession {
       }
     });
     client.on(sdk.EVENT.CONNECTION_STATE_CHANGED, ({ state }) => this.callbacks.onConnectionState(state));
+    client.on(sdk.EVENT.KICKED_OUT, ({ reason }) => {
+      if (this.clientInstance !== client) return;
+      const failure = terminalRtcDisconnection("tencent", reason);
+      if (failure) this.callbacks.onFatalError?.(failure);
+    });
     client.on(sdk.EVENT.NETWORK_QUALITY, (quality) => this.callbacks.onNetworkQuality(quality));
     client.on(sdk.EVENT.SCREEN_SHARE_STOPPED, () => {
       this.screenEnabled = false;
@@ -330,6 +354,19 @@ export class TencentRtcSession {
   private emitParticipants() {
     this.callbacks.onParticipants(this.participants);
   }
+}
+
+async function disposeTencentClient(client: TencentClient) {
+  // A cancelled enterRoom/media operation can resolve after an earlier destroy.
+  // Cleanup therefore tolerates both synchronous and async SDK rejections.
+  try { (client.off as (event: "*") => TencentClient)("*"); } catch { /* already disposed */ }
+  await Promise.allSettled([
+    Promise.resolve().then(() => client.stopScreenShare()),
+    Promise.resolve().then(() => client.stopLocalVideo()),
+    Promise.resolve().then(() => client.stopLocalAudio()),
+  ]);
+  await Promise.resolve().then(() => client.exitRoom()).catch(() => undefined);
+  try { client.destroy(); } catch { /* already disposed */ }
 }
 
 function localAudioConfig(noiseCancellationEnabled: boolean, microphoneId: string) {
