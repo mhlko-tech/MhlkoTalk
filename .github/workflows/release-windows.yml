@@ -20,6 +20,8 @@ jobs:
         run: npm ci
       - name: Install Worker dependencies
         run: npm --prefix worker ci
+      - name: Install Patreon relay test dependencies
+        run: npm --prefix patreon-relay ci
       - name: Run release quality gates
         run: npm run check
       - name: Build, sign and publish
@@ -34,7 +36,14 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: MHTalk __VERSION__
-          releaseBody: The server status panel now uses English throughout, including connection states, quota labels, tooltips and accessibility text, with a left-to-right layout. Includes the automatic RTC failover and coordinated room recovery from 1.6.14.
+          releaseBody: |
+            Membership now starts with a choice of LAVA or Patreon, followed by the available tiers.
+
+            Signed-in MHTalk users can open Patreon sign-in and checkout in a private app window without Canary invitation codes. Existing paid and gifted memberships can be linked without a new payment. Connection errors are now distinguished from an ineligible membership.
+
+            After subscribing, close the Patreon window and choose Link Patreon membership. Patreon confirms the final tier and price. Use Patreon email sign-in if a social sign-in provider rejects the embedded window.
+
+            LAVA, calling, recording and automatic updates retain their existing behavior. Automated checks cover authorization, connection transport and callbacks; a live bank payment and bank-specific 3-D Secure flow were not exercised for this release.
           releaseDraft: true
           args: --bundles nsis
           updaterJsonPreferNsis: true

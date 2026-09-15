@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "MHTalk desktop windows and recording controls.",
-  "windows": ["*"],
+  "windows": ["main", "recorder-studio", "recording-overlay"],
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",

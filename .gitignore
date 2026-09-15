@@ -16,3 +16,6 @@ updater-recovery-password.txt
 
 /*.png
 /tauri-dev-android-test*.log
+patreon-relay/.env
+patreon-relay/data/
+artifacts/

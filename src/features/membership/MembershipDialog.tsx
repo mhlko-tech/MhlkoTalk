@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { hasMembershipBadge, subscriptionLabels } from "../../core/subscription";
+import "./membership.css";
 import {
+  cancelPatreonConnection,
+  openPatreonCheckout,
   disconnectMembership,
   linkExistingLavaMembership,
   startLavaMembership,
@@ -11,7 +15,6 @@ import {
   type MembershipSync,
 } from "../../services/membershipService";
 
-const patreonMembershipUrl = "https://www.patreon.com/cw/MhlkoVD/membership";
 const mvDownloaderUrl = "https://github.com/mhlko-tech/MVDownloader/releases/latest";
 const mhtalkShareText = "Try MHTalk Beta for voice, video, rooms and chat: https://github.com/mhlko-tech/MhlkoTalk/releases/latest";
 
@@ -73,7 +76,7 @@ function activeMessage(result: MembershipSync | null) {
 }
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback;
+  return error instanceof Error ? error.message : typeof error === "string" ? error : fallback;
 }
 
 export function MembershipDialog({
@@ -86,7 +89,9 @@ export function MembershipDialog({
   onAppMessage: (message: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [patreonBusy, setPatreonBusy] = useState(false);
   const [plan, setPlan] = useState<MembershipPlanId>("plus");
+  const [provider, setProvider] = useState<"lava" | "patreon">("lava");
   const [message, setMessage] = useState("");
   const [details, setDetails] = useState<MembershipSync | null>(null);
   const [activationCode, setActivationCode] = useState("");
@@ -97,47 +102,84 @@ export function MembershipDialog({
       .catch(() => undefined);
   }, []);
 
+  useEffect(() => {
+    if (!open) return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen<{phase: string; message: string}>("patreon-connection-progress", (event) => setMessage(event.payload.message))
+      .then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; }).catch(() => undefined);
+    return () => { disposed = true; stop?.(); void cancelPatreonConnection().catch(() => undefined); };
+  }, [open]);
+
   if (!open) return null;
   const selectedPlan = membershipPlans.find((item) => item.id === plan) ?? membershipPlans[0];
 
-  const run = async (operation: () => Promise<void>) => {
+  const run = async (operation: () => Promise<void>, usesPatreon = false) => {
     if (busy) return;
     setBusy(true);
+    setPatreonBusy(usesPatreon);
     try {
       await operation();
     } finally {
       setBusy(false);
+      setPatreonBusy(false);
     }
   };
 
   return (
     <div className="modal-backdrop">
-      <section className="private-modal support-modal" role="dialog" aria-modal="true" aria-label="MHTalk Beta and support">
+      <section className="private-modal support-modal membership-checkout" role="dialog" aria-modal="true" aria-label="MHTalk membership">
         <button className="modal-close" onClick={onClose}>×</button>
-        <div className="support-heading"><span>M</span><div><h2>One membership. Two apps.</h2><small>Choose a plan, then pay with LAVA or Patreon</small></div></div>
+        <div className="support-heading"><span>M</span><div><h2>Membership</h2><small>Choose how to pay, then choose your tier.</small></div></div>
         <p className="support-membership">Your verified membership works with MHTalk on Windows and Android and with MVDownloader. Calling, messaging and safety features remain free.</p>
-        <div className="membership-plans" role="radiogroup" aria-label="Monthly membership plan">
+        <fieldset className="membership-payment-methods" disabled={busy}>
+          <legend>Payment method</legend>
+          {(["lava", "patreon"] as const).map((method) => (
+            <label className={`membership-payment-method ${provider === method ? "selected" : ""}`} key={method}>
+              <input type="radio" name="membership-provider" value={method} checked={provider === method} onChange={() => setProvider(method)} />
+              <span><strong>Pay with {method === "lava" ? "LAVA" : "Patreon"}</strong><small>{method === "lava" ? "Choose a tier and continue to checkout" : "Subscribe or link an existing membership"}</small></span>
+            </label>
+          ))}
+        </fieldset>
+        <h3 className="membership-tier-heading">Choose your tier</h3>
+        <div className="membership-plans" role="group" aria-label="Monthly membership plan">
           {membershipPlans.map((item) => (
             <button
               type="button"
               className={`membership-plan-card ${plan === item.id ? "selected" : ""}`}
               aria-pressed={plan === item.id}
+              disabled={busy}
               onClick={() => setPlan(item.id)}
               key={item.id}
             >
               <span className="membership-plan-top"><strong>{item.name}</strong><b>${item.price} <small>/ month</small></b></span>
-              <span className="membership-plan-copy">{item.description}</span>
-              {item.benefits.map((benefit) => <span className="membership-plan-benefits" key={benefit}>✓ {benefit}</span>)}
             </button>
           ))}
         </div>
-        <p className="support-tier-note">Plus focuses on HD sharing and recording. Pro unlocks the rest of MHTalk. Ultimate and Max Supporter include every Pro feature with their own exclusive badge.</p>
+        <div className="membership-selected-benefits"><strong>{selectedPlan.name}</strong><p>{selectedPlan.description}</p><ul>{selectedPlan.benefits.map((benefit) => <li key={benefit}>{benefit}</li>)}</ul></div>
+        <button className="primary membership-pay" disabled={busy} onClick={() => void run(async () => {
+          try {
+            if (provider === "lava") {
+              await startLavaMembership(plan);
+              setMessage("Complete payment in your browser, then return here and choose Check now.");
+            } else {
+              await openPatreonCheckout();
+              setMessage(`Choose ${selectedPlan.name} on Patreon and review its final price. After subscribing, return here and choose Link Patreon membership.`);
+            }
+          } catch (error) {
+            setMessage(errorMessage(error, "Could not open membership checkout"));
+          }
+        }, provider === "patreon")}>{busy ? "Please wait…" : provider === "lava" ? `Continue with LAVA · $${selectedPlan.price}` : "Continue with Patreon"}</button>
+        {provider === "patreon" && <p className="support-tier-note">Patreon confirms the final price and tier at checkout. Already subscribed or received a gift? Link your membership below; no new payment is needed.</p>}
         {details && (
           <div className="support-membership-status">
             Plan: {subscriptionLabels[details.tier]} · Source: {(details.provider || "lava").toUpperCase()} · Status: {details.status === "gifted" ? "Gifted" : details.status === "active" || details.status === "owner" ? "Active" : details.status}
           </div>
         )}
-        {message && <div className="support-membership-status">{message}</div>}
+        {patreonBusy && <button className="control" onClick={() => void cancelPatreonConnection().catch(() => undefined)}>Close Patreon connection</button>}
+        {message && <div className="support-membership-status" role="status">{message}</div>}
+        <details className="membership-existing">
+        <summary>Already have an activation code?</summary>
         <div className="support-membership-link">
           <label htmlFor="membership-activation-code">Already have a shared membership?</label>
           <p>In MVDownloader open Settings → Membership details, copy the MHTalk activation code and paste it here.</p>
@@ -163,15 +205,8 @@ export function MembershipDialog({
             })}>Link membership</button>
           </div>
         </div>
+        </details>
         <div className="support-actions">
-          <button className="primary" disabled={busy} onClick={() => void run(async () => {
-            try {
-              await startLavaMembership(plan);
-              setMessage("Complete payment in your browser, then return here and choose Check now.");
-            } catch (error) {
-              onAppMessage(errorMessage(error, "Could not open LAVA membership"));
-            }
-          })}>{busy ? "Opening LAVA…" : `Continue with LAVA · $${selectedPlan.price}`}</button>
           <button className="control" disabled={busy} onClick={() => void run(async () => {
             try {
               const result = await syncLavaMembership(true);
@@ -181,20 +216,19 @@ export function MembershipDialog({
               setMessage(errorMessage(error, "Could not verify membership"));
             }
           })}>Check now</button>
-          <button className="control" onClick={() => void openUrl(patreonMembershipUrl)}>View Patreon plans</button>
           <button className="control" disabled={busy} onClick={() => void run(async () => {
             try {
               const result = await startPatreonMembership();
               if (result) {
                 setDetails(result);
-                setMessage(`MHTalk ${subscriptionLabels[result.tier]} is active from Patreon.`);
+                setMessage(activeMessage(result));
               } else {
                 setMessage("Finish linking in Patreon, then return here and choose Check now.");
               }
             } catch (error) {
               setMessage(errorMessage(error, "Could not link Patreon membership"));
             }
-          })}>Link Patreon membership</button>
+          }, true)}>Link Patreon membership</button>
           {details?.provider === "patreon" && !details.pending && hasMembershipBadge(details.tier) && (
             <button className="control" disabled={busy} onClick={() => void run(async () => {
               try {

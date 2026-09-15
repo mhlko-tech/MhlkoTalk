@@ -1,0 +1,9 @@
+# Add this site to the existing Caddy config on the dedicated Patreon VM.
+# The relay container binds only loopback; do not expose port 8788 publicly.
+mhtalk-patreon.130-61-60-4.sslip.io {
+    header Strict-Transport-Security "max-age=86400"
+    reverse_proxy 127.0.0.1:8788 {
+        header_up X-Patreon-Client-IP {remote_host}
+        flush_interval -1
+    }
+}

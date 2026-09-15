@@ -53,6 +53,8 @@ import {
 export { CloudflareRtcRoom, CloudflareRtcUsage, JaasQuotaGuard };
 
 export interface Env {
+  PATREON_RELAY_ACCESS_SECRET?: string;
+  PATREON_RELAY_URL?: string;
   LIVEKIT_API_KEY: string;
   LIVEKIT_API_SECRET: string;
   LIVEKIT_URL: string;
@@ -2229,6 +2231,17 @@ export default {
         await env.PRIVATE_ROOMS.put(`membership:owner:${fingerprint}`, auth.id);
       }
       return json(payload, response.status);
+    }
+    if (path === "/subscription/patreon/connection" && request.method === "POST") {
+      const auth = await authenticate(request, env);
+      if (auth instanceof Response) return auth;
+      const onboarding = await requireCompletedOnboarding(env, auth);
+      if (onboarding) return onboarding;
+      const relayUrl = env.PATREON_RELAY_URL;
+      if (!relayUrl || !env.PATREON_RELAY_ACCESS_SECRET || env.PATREON_RELAY_ACCESS_SECRET.length < 32) return json({error: "Patreon connection is temporarily unavailable"}, 503);
+      if (await rateLimited(request, env, "patreon-connection", auth.id, 6, 600)) return json({error: "Please wait before opening another Patreon connection"}, 429);
+      const {patreonRelayAccess} = await import("./patreonRelayAccess");
+      return json({relayUrl, accessToken: await patreonRelayAccess(env.PATREON_RELAY_ACCESS_SECRET, auth.id, relayUrl)});
     }
     if (path === "/subscription/patreon/start" && request.method === "POST") {
       const auth = await authenticate(request, env);

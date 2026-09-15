@@ -8,6 +8,7 @@ const legacyMembershipTokenKey = "mhtalk.membership.lava-token";
 const lastSyncKey = "mhtalk.membership.last-sync";
 const membershipDeviceKey = "mhtalk.membership.device-id";
 const runningInTauri = () => Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
+let patreonConnectionGeneration = 0;
 
 export type MembershipPlanId = "plus" | "pro" | "ultimate" | "max_supporter";
 
@@ -74,7 +75,7 @@ export async function startPatreonMembership() {
   const accountToken = accountSession.getAccessToken();
   if (!accountToken || !serviceBaseUrl) throw new Error("Sign in before linking Patreon");
   if (runningInTauri()) {
-    await invoke<{ status: string; plan: string; provider: string }>("link_patreon_desktop");
+    await invoke<{ status: string; plan: string; provider: string }>("link_patreon_desktop", { options: await patreonConnectionOptions() });
     localStorage.removeItem(lastSyncKey);
     return syncLavaMembership(true);
   }
@@ -148,4 +149,29 @@ export async function syncLavaMembership(force = false): Promise<MembershipSync 
   localStorage.setItem(lastSyncKey, String(Date.now()));
   if (!payload.pending) await accountSession.refreshAccount();
   return payload;
+}
+
+async function patreonConnectionOptions() {
+  const generation = patreonConnectionGeneration;
+  const accountToken = accountSession.getAccessToken();
+  if (!accountToken || !serviceBaseUrl) throw new Error("Sign in before opening Patreon");
+  const response = await fetch(new URL("/subscription/patreon/connection", serviceBaseUrl), {
+    method: "POST",
+    headers: { authorization: `Bearer ${accountToken}` },
+  });
+  const payload = await response.json() as {relayUrl?: string; accessToken?: string; error?: string};
+  if (generation !== patreonConnectionGeneration) throw new Error("Patreon connection cancelled");
+  if (!response.ok || !payload.relayUrl || !payload.accessToken) throw new Error(payload.error || "Patreon connection is temporarily unavailable");
+  return {relayUrl: payload.relayUrl, accessToken: payload.accessToken};
+}
+
+export async function openPatreonCheckout() {
+  if (!accountSession.getAccessToken()) throw new Error("Sign in before opening Patreon");
+  if (runningInTauri()) await invoke("open_patreon_plans", {options: await patreonConnectionOptions()});
+  else await openUrl("https://www.patreon.com/cw/MhlkoVD/membership");
+}
+
+export async function cancelPatreonConnection() {
+  patreonConnectionGeneration++;
+  if (runningInTauri()) await invoke("cancel_patreon_connection");
 }

@@ -4,6 +4,7 @@ compatibility_date = "2026-08-18"
 compatibility_flags = ["nodejs_compat"]
 
 [vars]
+PATREON_RELAY_URL = "https://mhtalk-patreon.130-61-60-4.sslip.io"
 LIVEKIT_URL = "https://mhtalkremake-utuei6i7.livekit.cloud"
 RTC_PROVIDER_ORDER = "livekit,agora,tencent,stream,cloudflare-realtime,whereby,jaas,mirotalk"
 MIROTALK_BASE_URL = "https://129-159-223-64.sslip.io"

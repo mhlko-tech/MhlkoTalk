@@ -5,7 +5,6 @@ const SERVICE_BASE_URL: &str = "https://mhtalk-token-service.mhlkotalk.workers.d
 const CONNECTION_TOKEN_ENDPOINT: &str =
     "https://mhtalk-token-service.mhlkotalk.workers.dev/livekit/token";
 const MEMBERSHIP_BACKEND_URL: &str = "https://mvdownloader-lava-staging.mhlkotalk.workers.dev";
-const PATREON_CALLBACK_ADDRESS: &str = "127.0.0.1:8766";
 const AUTH_CHUNK_MANIFEST_PREFIX: &str = "mhtalk-chunks:v1:";
 // Windows Credential Manager allows a maximum 2560-byte credential blob.
 // keyring stores passwords as UTF-16, so stay comfortably below that limit.
@@ -431,12 +430,28 @@ struct PatreonLinkResult {
 }
 
 #[tauri::command]
-async fn link_patreon_desktop() -> Result<PatreonLinkResult, String> {
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
+async fn link_patreon_desktop(
+    app: tauri::AppHandle,
+    options: patreon_connection::Options,
+) -> Result<PatreonLinkResult, String> {
+    patreon_connection::with_private_connection(app, options, false)
+        .await?
+        .ok_or_else(|| "Patreon linking was cancelled".into())
+}
 
-    let listener = TcpListener::bind(PATREON_CALLBACK_ADDRESS)
-        .map_err(|_| "MHTalk could not reserve its secure Patreon callback port".to_string())?;
+#[tauri::command]
+async fn open_patreon_plans(
+    app: tauri::AppHandle,
+    options: patreon_connection::Options,
+) -> Result<(), String> {
+    patreon_connection::with_private_connection(app, options, true)
+        .await
+        .map(|_| ())
+}
+
+async fn create_patreon_authorization(
+    client: &reqwest::Client,
+) -> Result<(url::Url, String, String), String> {
     let device_key = "mhtalk.membership.device-id".to_string();
     let device_id = match auth_secret_get_sync(device_key.clone())? {
         Some(value) if !value.is_empty() => value,
@@ -453,11 +468,6 @@ async fn link_patreon_desktop() -> Result<PatreonLinkResult, String> {
             value
         }
     };
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(5))
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|_| "Could not initialize Patreon linking".to_string())?;
     let created = client
         .post(format!(
             "{MEMBERSHIP_BACKEND_URL}/v1/patreon/desktop-link-sessions"
@@ -484,53 +494,35 @@ async fn link_patreon_desktop() -> Result<PatreonLinkResult, String> {
         .ok_or_else(|| "Patreon returned an invalid session".to_string())?
         .to_string();
 
-    #[cfg(target_os = "windows")]
-    std::process::Command::new("explorer.exe")
-        .arg(&authorization_url)
-        .spawn()
-        .map_err(|_| "Could not open Patreon in your browser".to_string())?;
-    #[cfg(target_os = "macos")]
-    std::process::Command::new("open")
-        .arg(&authorization_url)
-        .spawn()
-        .map_err(|_| "Could not open Patreon in your browser".to_string())?;
-    #[cfg(all(unix, not(target_os = "macos")))]
-    std::process::Command::new("xdg-open")
-        .arg(&authorization_url)
-        .spawn()
-        .map_err(|_| "Could not open Patreon in your browser".to_string())?;
+    let url =
+        url::Url::parse(&authorization_url).map_err(|_| "Invalid Patreon authorization URL")?;
+    let state = url
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.into_owned())
+        .ok_or("Missing Patreon state")?;
+    let redirect = url
+        .query_pairs()
+        .find(|(k, _)| k == "redirect_uri")
+        .map(|(_, v)| v.into_owned())
+        .ok_or("Missing Patreon redirect")?;
+    if url.scheme() != "https"
+        || url.host_str() != Some("www.patreon.com")
+        || url.path() != "/oauth2/authorize"
+        || redirect != "http://127.0.0.1:8766/patreon/callback"
+        || state.is_empty()
+    {
+        return Err("Unexpected Patreon authorization configuration".into());
+    }
+    Ok((url, desktop_token, state))
+}
 
-    let (code, state) = tauri::async_runtime::spawn_blocking(move || -> Result<(String, String), String> {
-        listener.set_nonblocking(true).map_err(|error| error.to_string())?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
-        let (mut stream, _) = loop {
-            match listener.accept() {
-                Ok(connection) => break connection,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Err("Patreon linking timed out".to_string()),
-                Err(_) => return Err("Patreon did not return to MHTalk".to_string()),
-            }
-        };
-        stream.set_read_timeout(Some(std::time::Duration::from_secs(180))).ok();
-        let mut bytes = [0_u8; 8192];
-        let length = stream.read(&mut bytes).map_err(|_| "Patreon returned an invalid callback".to_string())?;
-        let request = String::from_utf8_lossy(&bytes[..length]);
-        let target = request.lines().next().and_then(|line| line.split_whitespace().nth(1)).ok_or_else(|| "Patreon returned an invalid callback".to_string())?;
-        let callback = url::Url::parse(&format!("http://{PATREON_CALLBACK_ADDRESS}{target}")).map_err(|_| "Patreon returned an invalid callback".to_string())?;
-        if callback.path() != "/patreon/callback" { return Err("Patreon returned to an unexpected callback".to_string()); }
-        let code = callback.query_pairs().find(|(key, _)| key == "code").map(|(_, value)| value.into_owned()).unwrap_or_default();
-        let state = callback.query_pairs().find(|(key, _)| key == "state").map(|(_, value)| value.into_owned()).unwrap_or_default();
-        let cancelled = callback.query_pairs().any(|(key, _)| key == "error");
-        let message = if cancelled { "Patreon linking was cancelled." } else { "Patreon returned to MHTalk. You can close this tab." };
-        let body = format!("<!doctype html><meta charset=utf-8><title>MHTalk</title><body style='background:#0d101c;color:#fff;font:18px Segoe UI;padding:48px'>{message}</body>");
-        let reply = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.as_bytes().len(), body);
-        stream.write_all(reply.as_bytes()).ok();
-        if cancelled || code.is_empty() || state.is_empty() { return Err("Patreon linking was cancelled".to_string()); }
-        Ok((code, state))
-    }).await.map_err(|error| error.to_string())??;
-
+async fn complete_patreon_authorization(
+    client: &reqwest::Client,
+    desktop_token: String,
+    code: String,
+    state: String,
+) -> Result<PatreonLinkResult, String> {
     let completed = client
         .post(format!(
             "{MEMBERSHIP_BACKEND_URL}/v1/patreon/desktop-link/complete"
@@ -541,7 +533,14 @@ async fn link_patreon_desktop() -> Result<PatreonLinkResult, String> {
         .await
         .map_err(|_| "Could not complete Patreon linking".to_string())?;
     if !completed.status().is_success() {
-        return Err("No active Patreon membership was found".to_string());
+        let status = completed.status().as_u16();
+        let error = completed
+            .json::<serde_json::Value>()
+            .await
+            .unwrap_or_default();
+        return Err(
+            patreon_completion_error(status, error.get("error").and_then(|v| v.as_str())).into(),
+        );
     }
     let payload: serde_json::Value = completed
         .json()
@@ -566,9 +565,32 @@ async fn link_patreon_desktop() -> Result<PatreonLinkResult, String> {
     })
 }
 
+fn patreon_completion_error(status: u16, code: Option<&str>) -> &'static str {
+    match (status, code) {
+        (403, Some("no_eligible_membership")) => "No eligible Patreon tier was found for this account. Check that you signed in to the account with your paid or gifted membership.",
+        (_, Some("invalid_or_expired_link" | "link_already_used")) => "Your Patreon link expired or was already used. Please start again.",
+        (401 | 410, _) => "Your Patreon link expired. Please start again.",
+        (429, _) => "Patreon is busy. Please wait before trying again.",
+        _ => "The membership service could not confirm your Patreon link. Please try again.",
+    }
+}
+
 #[cfg(test)]
 mod auth_storage_tests {
     use super::*;
+
+    #[test]
+    fn patreon_errors_distinguish_entitlement_from_transport_failures() {
+        assert!(
+            patreon_completion_error(403, Some("no_eligible_membership"))
+                .contains("paid or gifted")
+        );
+        assert!(
+            !patreon_completion_error(503, Some("patreon_request_failed")).contains("No eligible")
+        );
+        assert!(patreon_completion_error(400, Some("invalid_or_expired_link")).contains("expired"));
+        assert!(patreon_completion_error(409, Some("link_already_used")).contains("already used"));
+    }
 
     #[test]
     fn chunks_large_unicode_sessions_below_the_windows_limit() {
@@ -662,6 +684,7 @@ mod auth_storage_tests {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    initialize_tls();
     migrate_previous_windows_identity();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -675,6 +698,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(patreon_connection::PatreonConnectionState::default())
         .setup(|app| {
             native_recorder::warm_up(app.handle().clone());
             if let (Some(window), Some(icon)) =
@@ -696,6 +720,8 @@ pub fn run() {
             auth_secret_set,
             auth_secret_delete,
             link_patreon_desktop,
+            open_patreon_plans,
+            patreon_connection::cancel_patreon_connection,
             native_recorder::recorder_capabilities,
             native_recorder::start_native_recording,
             native_recorder::switch_native_recording_source,
@@ -716,3 +742,8 @@ pub fn run() {
 }
 mod native_recorder;
 mod recording_audio;
+
+mod patreon_connection;
+fn initialize_tls() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}

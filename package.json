@@ -1,7 +1,7 @@
 {
   "name": "mhtalk-remake",
   "private": true,
-  "version": "1.6.15",
+  "version": "1.6.16",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1425",
@@ -14,7 +14,8 @@
     "test:gateway": "node scripts/test-auth-gateway.mjs",
     "test:rtc-recovery": "tsx scripts/test-rtc-connection-resilience.ts && tsx scripts/test-room-routing.ts && tsx scripts/test-room-coordination.ts && tsx scripts/test-provider-status.ts",
     "check:providers": "node scripts/check-provider-health.mjs",
-    "check": "npm test && npm run test:rtc-recovery && npm run build && npm --prefix worker run check && cargo fmt --check --manifest-path src-tauri/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml"
+    "check": "npm test && npm run test:patreon && npm run test:rtc-recovery && npm run build && npm --prefix worker run check && cargo fmt --check --manifest-path src-tauri/Cargo.toml && cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:patreon": "tsx scripts/test-patreon-access.ts && npm --prefix patreon-relay test"
   },
   "dependencies": {
     "@stream-io/video-client": "^1.59.0",
