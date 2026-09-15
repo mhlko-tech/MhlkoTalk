@@ -25,6 +25,7 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             worker/package-lock.json
+            patreon-relay/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -32,6 +33,8 @@ jobs:
         run: npm ci
       - name: Install Worker dependencies
         run: npm --prefix worker ci
+      - name: Install Patreon relay test dependencies
+        run: npm --prefix patreon-relay ci
       - name: Run tests, builds, type checks and Rust checks
         run: npm run check
       - name: Audit JavaScript dependencies
