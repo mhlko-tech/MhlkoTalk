@@ -1,6 +1,6 @@
 [package]
 name = "mhtalk"
-version = "1.6.16"
+version = "1.6.17"
 description = "MHTalk desktop client"
 edition = "2021"
 

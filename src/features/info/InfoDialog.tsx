@@ -23,7 +23,7 @@ const infoPages: Record<InfoPage, { title: string; paragraphs: readonly string[]
     title: "Privacy Policy",
     paragraphs: [
       "Your account identifier, username, email address, profile, friend relationships, blocks and notification tokens are hosted by Supabase. Passwords are processed and hashed by Supabase Auth and are never stored by MHTalk. Google supplies basic account information only when you choose Google sign-in.",
-      "MHTalk does not sell personal data. Live room media and messages are transmitted through the active realtime provider, currently Daily or LiveKit. Files, recordings and recovered recording pieces remain on the device paths selected by you unless you deliberately send them.",
+      "MHTalk does not sell personal data. Live room media and messages are transmitted through the active realtime service. Files, recordings and recovered recording pieces remain on the device paths selected by you unless you deliberately send them.",
       "People in a room may capture or redistribute what they receive. Share only what you are comfortable revealing and use private invitations carefully.",
       "You can sign out, remove your profile photo, leave a room, delete local recordings and stop camera, microphone or screen sharing at any time. Contact MHTalk to request account deletion.",
     ],

@@ -21,6 +21,14 @@ export const cloudflareProviderThresholds: RoutingThresholds = {
   disableAt: 60,
 };
 
+// Owner-approved LiveKit allocation: stop all routing at 90%, reserving 10%.
+export const livekitProviderThresholds: RoutingThresholds = {
+  warnAt: 60,
+  drainAt: 65,
+  stopNewRoomsAt: 90,
+  disableAt: 90,
+};
+
 export const jaasProviderThresholds: RoutingThresholds = {
   warnAt: 60,
   drainAt: 68,
@@ -32,6 +40,7 @@ export const jaasMonthlyActiveUserLimit = 25;
 export const jaasMonthlyCredentialLimit = 19;
 
 export function routingThresholds(provider: RtcProviderId): RoutingThresholds {
+  if (provider === "livekit") return livekitProviderThresholds;
   if (provider === "cloudflare-realtime") return cloudflareProviderThresholds;
   if (provider === "jaas") return jaasProviderThresholds;
   return defaultProviderThresholds;
@@ -70,7 +79,11 @@ export const databaseProviderSafetyPolicies: Partial<Record<RtcProviderId, Datab
     stale_after_seconds: 1200,
     notes: "Serverless SFU with dedicated egress telemetry. Warn at 450 GB, stop new rooms at 550 GB, and disable at 600 GB of the 1,000 GB free allocation.",
   },
-  livekit: genericPolicy("5,000 monthly participant minutes. Keep disabled while exhausted; after a verified reset the route disables by 3,750."),
+  livekit: {
+    ...genericPolicy("5,000 monthly participant minutes. Owner-approved 90% cutoff: stop new rooms and disable at 4,500 minutes."),
+    drain_percent: 90,
+    stop_percent: 90,
+  },
   whereby: genericPolicy("2,000 monthly participant minutes with no overage allocation. Route disables by 1,500 minutes."),
   jaas: {
     warning_percent: 60,
@@ -97,8 +110,8 @@ export function validateProviderSafetyPolicies() {
     if (ordered.some((value, index) => index > 0 && value < ordered[index - 1])) {
       throw new Error(`${provider} provider safety thresholds are out of order`);
     }
-    if (policy.stop_percent >= 80) {
-      throw new Error(`${provider} does not stop below 80%`);
+    if (provider === "livekit" ? policy.stop_percent > 90 : policy.stop_percent >= 80) {
+      throw new Error(`${provider} exceeds its approved provider safety cutoff`);
     }
   }
   return true;

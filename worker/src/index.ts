@@ -1,4 +1,5 @@
 import { AccessToken } from "livekit-server-sdk";
+import { livekitAccounts, livekitAccountHealth, poolUsage, chooseLivekitAccount, primaryLiveKitAccount, type LiveKitPoolUsage } from "./livekitPool";
 import { StreamClient } from "@stream-io/node-sdk";
 import { RtcRole, RtcTokenBuilder } from "agora-token";
 import { moderateMainMessage } from "../../src/core/moderation";
@@ -38,6 +39,7 @@ import {
   cloudflareProviderThresholds,
   databaseProviderSafetyPolicies,
   defaultProviderThresholds,
+  livekitProviderThresholds,
   jaasMonthlyActiveUserLimit,
   jaasMonthlyCredentialLimit,
   jaasProviderThresholds,
@@ -57,6 +59,7 @@ export interface Env {
   PATREON_RELAY_URL?: string;
   LIVEKIT_API_KEY: string;
   LIVEKIT_API_SECRET: string;
+  LIVEKIT_ACCOUNTS_JSON?: string;
   LIVEKIT_URL: string;
   INVITE_SIGNING_KEY: string;
   PRIVATE_ROOMS: KVNamespace;
@@ -178,7 +181,7 @@ function subscriptionFor(profile: Profile | null) {
   const tier = paidIsCurrent ? paidTier : "free";
   return { tier, expiresAt, entitlements: subscriptionEntitlements[tier] };
 }
-function serviceRouting(env: Env, profile: Profile | null, provider: RtcProviderId, providerUrl?: string) {
+function serviceRouting(env: Env, profile: Profile | null, provider: RtcProviderId, providerUrl?: string, serverId?: number) {
   const daily = provider === "daily";
   const whereby = provider === "whereby";
   const embedded = daily || whereby || isManagedRtcProvider(provider);
@@ -190,7 +193,8 @@ function serviceRouting(env: Env, profile: Profile | null, provider: RtcProvider
   return {
     rtc: {
       provider,
-      serverUrl: embedded || cloudflare ? providerUrl || "" : stream || agora || tencent ? "" : env.LIVEKIT_URL.replace(/^http/, "ws"),
+      serverId: serverId ?? ({ livekit: 1, agora: 6, tencent: 7, stream: 8, "cloudflare-realtime": 9, whereby: 10, jaas: 11, mirotalk: 12, daily: 13 }[provider]),
+      serverUrl: embedded || cloudflare ? providerUrl || "" : stream || agora || tencent ? "" : (providerUrl || env.LIVEKIT_URL).replace(/^http/, "ws"),
       ...(stream ? { clientKey: env.STREAM_API_KEY || "" } : {}),
       ...(agora ? { clientKey: env.AGORA_APP_ID || "" } : {}),
       ...(tencent ? { clientKey: env.TENCENT_SDK_APP_ID || "" } : {}),
@@ -218,6 +222,13 @@ async function serviceCapabilities(env: Env) {
       files: activeRouting?.files ?? null,
     },
     thresholds: {
+      livekit: {
+        warningPercent: livekitProviderThresholds.warnAt,
+        lowerPriorityPercent: livekitProviderThresholds.drainAt,
+        stopNewRoomsPercent: livekitProviderThresholds.stopNewRoomsAt,
+        disablePercent: livekitProviderThresholds.disableAt,
+        telemetryMaxAgeMinutes: 25,
+      },
       default: {
         warningPercent: defaultProviderThresholds.warnAt,
         lowerPriorityPercent: defaultProviderThresholds.drainAt,
@@ -247,11 +258,14 @@ async function serviceCapabilities(env: Env) {
       refreshMinutes: 15,
       failClosedAfterMinutes: 25,
       targetMaximumPercent: 79,
+      providerMaximumPercent: { livekit: livekitProviderThresholds.disableAt },
       readyProviders: rtc.filter((item) => item.ready).length,
       configuredProviders: rtc.filter((item) => item.configured).length,
       alerts,
     },
     rtc,
+    ...(env.LIVEKIT_ACCOUNTS_JSON ? { livekitPool: await env.PRESENCE.get(env.PRESENCE.idFromName("global"))
+      .fetch("https://presence.internal/livekit-pool-health").then((response) => response.json()) } : {}),
     messaging: ["daily-chat", "whereby-chat", "livekit-data", "stream-events", "agora-data", "tencent-data", "cloudflare-realtime", "supabase-realtime", "firebase"],
     files: ["daily-prebuilt", "whereby-prebuilt", "livekit-stream", "cloudflare-r2", "supabase-storage", "backblaze-b2"],
   };
@@ -996,7 +1010,8 @@ async function syncProviderHealth(
     }
     sharedUpdates[provider] = {
       usedPercent: override?.usedPercent ?? (Number(item.used_percent) || 0),
-      disabled: override?.disabled ?? (!item.enabled || ["disabled", "stale", "exhausted"].includes(item.state)),
+      disabled: override?.disabled ?? (!item.enabled || (provider === "livekit" && env.LIVEKIT_ACCOUNTS_JSON
+        ? item.state === "stale" : ["disabled", "stale", "exhausted"].includes(item.state))),
     };
   }));
   await updateProviderHealthBatch(env, { ...sharedUpdates, ...overrides });
@@ -1077,7 +1092,7 @@ async function setLiveKitProviderEnabled(env: Env, enabled: boolean) {
     const entries = await snapshot.json() as Array<ProviderHealthSnapshot & { quota_limit: number | string; quota_unit: string }>;
     const livekit = entries.find((item) => item.provider === "livekit");
     if (!livekit || livekit.quota_unit !== "participant_minute" || Number(livekit.quota_limit) !== 5_000 ||
-      !Number.isFinite(Number(livekit.used_percent)) || Number(livekit.used_percent) >= defaultProviderThresholds.stopNewRoomsAt) {
+      !Number.isFinite(Number(livekit.used_percent)) || Number(livekit.used_percent) >= livekitProviderThresholds.stopNewRoomsAt) {
       throw new Error("LiveKit has no verified allocation available for new rooms");
     }
   }
@@ -1338,8 +1353,10 @@ async function resolvePrivateRoom(env: Env, code: string) {
   const legacy = await env.PRIVATE_ROOMS.get(code);
   return legacy ? JSON.parse(legacy) as { roomName: string; invite: string } : null;
 }
-async function issueToken(roomName: string, env: Env, user: AuthUser | null, profile: Profile | null) {
-  const token = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
+async function issueToken(roomName: string, env: Env, user: AuthUser | null, profile: Profile | null, accountId = primaryLiveKitAccount) {
+  const account = livekitAccounts(env).find((entry) => entry.id === accountId);
+  if (!account) throw new Error("LiveKit room account is not configured");
+  const token = new AccessToken(account.apiKey, account.apiSecret, {
     identity: user?.id || crypto.randomUUID(), name: profile?.display_name || profile?.username,
     metadata: profile ? JSON.stringify({
       avatar: profile.avatar_url,
@@ -1816,6 +1833,11 @@ export class PresenceHub implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    if (path === "/livekit-pool-health" && request.method === "GET") {
+      const shared = await this.state.storage.get<Record<string, ProviderHealth>>("provider-health:v1");
+      const usage = poolUsage(await this.state.storage.get<LiveKitPoolUsage>("livekit-pool-usage"));
+      return json(livekitAccountHealth(livekitAccounts(this.env), usage, shared?.livekit));
+    }
     if (path === "/room-route" && request.method === "POST") {
       const body = await request.json() as RoomRouteRequest & { room: string };
       const key = `room-route:${body.room}`;
@@ -1829,6 +1851,24 @@ export class PresenceHub implements DurableObject {
         const legacyMembers = Object.fromEntries(present
           .map(([subject, entry]) => [subject, entry.expiresAt]));
         const result = decideRoomRoute(stored, { ...body, legacyProvider, legacyMembers }, Date.now(), crypto.randomUUID());
+        if (result.selected === "livekit" && result.route && this.env.LIVEKIT_ACCOUNTS_JSON) {
+          const shared = await transaction.get<Record<string, ProviderHealth>>("provider-health:v1");
+          const usage = poolUsage(await transaction.get<LiveKitPoolUsage>("livekit-pool-usage"));
+          const health = livekitAccountHealth(livekitAccounts(this.env), usage, shared?.livekit);
+          const existing = stored?.provider === "livekit" && stored.expiresAt > Date.now();
+          const importing = legacyProvider === "livekit" && Object.keys(legacyMembers).length > 0;
+          const pinned = existing ? stored.livekitAccountId || primaryLiveKitAccount : importing ? primaryLiveKitAccount : undefined;
+          const others = Object.keys(result.route.members).some((subject) => subject !== body.subject);
+          const accountId = chooseLivekitAccount(health, pinned, others);
+          if (!accountId) {
+            delete result.route.members[body.subject];
+            result.selected = null;
+            result.locked = others;
+          } else {
+            if (pinned && pinned !== accountId) result.route.id = crypto.randomUUID();
+            result.route.livekitAccountId = accountId;
+          }
+        }
         if (result.route) await transaction.put(key, result.route);
         else await transaction.delete(key);
         return result;
@@ -1948,9 +1988,18 @@ export class PresenceHub implements DurableObject {
       };
       const windowKey = `${body.provider}:${body.subject}:${body.usageWindow}`;
       const reservationExpiry = Date.now() + 10 * 60_000;
+      let accountExhausted = false;
+      let extraLivekitAccount = false;
       const accepted = await this.state.storage.transaction(async (transaction) => {
         const key = `room-route:${body.room}`;
         const stored = await transaction.get<RoomRoute>(key);
+        const accountId = stored?.livekitAccountId || primaryLiveKitAccount;
+        const poolEnabled = body.provider === "livekit" && Boolean(this.env.LIVEKIT_ACCOUNTS_JSON);
+        extraLivekitAccount = poolEnabled && accountId !== primaryLiveKitAccount;
+        const shared = poolEnabled ? await transaction.get<Record<string, ProviderHealth>>("provider-health:v1") : undefined;
+        const usage = poolEnabled ? poolUsage(await transaction.get<LiveKitPoolUsage>("livekit-pool-usage")) : undefined;
+        accountExhausted = Boolean(usage && !livekitAccountHealth(livekitAccounts(this.env), usage, shared?.livekit).find((entry) => entry.id === accountId)?.ready);
+        if (accountExhausted) body.leaving = true;
         const update = updateRoomRouteMember(stored, body.provider, body.subject, body.leaving, Date.now(), body.routeId);
         // Old signed tokens issued before the route deployment remain valid
         // until the first new join establishes an authoritative room lease.
@@ -1962,10 +2011,18 @@ export class PresenceHub implements DurableObject {
         for (const [key, expiry] of Object.entries(ledger.windows)) if (expiry <= Date.now()) delete ledger.windows[key];
         const result = body.amount === null ? "unmetered" : ledger.windows[windowKey] ? "duplicate" : "meter";
         if (result === "meter") ledger.windows[windowKey] = reservationExpiry;
+        if (result === "meter" && usage) {
+          const baseline = livekitAccountHealth(livekitAccounts(this.env), usage, shared?.livekit)
+            .find((entry) => entry.id === accountId)?.usedPercent! * 50 || 0;
+          usage.minutes[accountId] = Math.max(usage.minutes[accountId] || 0, baseline) + Math.max(0, body.amount || 0);
+          await transaction.put("livekit-pool-usage", usage);
+        }
         await transaction.put("rtc-ledger", ledger);
         return result;
       });
       if (accepted === "stale") return json({ error: "The room server changed. Reconnect to rejoin the call.", code: "RTC_ROOM_ROUTE_CHANGED" }, 409);
+      if (accountExhausted) return json({ error: "This room server reached its allocation. Reconnect to the next available server.", code: "RTC_ROOM_ROUTE_CHANGED" }, 409);
+      if (extraLivekitAccount) return json({ accepted: true, recorded: accepted === "meter" });
       if (accepted === "unmetered") {
         return json({ accepted: true, metering: "provider" });
       }
@@ -2412,7 +2469,9 @@ export default {
           providerIdentity = managed.identity;
           providerUrl = managed.serverUrl;
         } else {
-          providerToken = await issueToken(roomName, env, auth, profile);
+          providerToken = await issueToken(roomName, env, auth, profile, selected.livekitAccountId);
+          const accountId = selected.livekitAccountId || primaryLiveKitAccount;
+          providerUrl = livekitAccounts(env).find((account) => account.id === accountId)?.url;
           providerIdentity = auth?.id;
         }
         break;
@@ -2428,7 +2487,8 @@ export default {
         retryAfterSeconds: 20,
       }, 503);
     }
-    const routing = serviceRouting(env, profile, selected.provider, providerUrl);
+    const routing = serviceRouting(env, profile, selected.provider, providerUrl,
+      selected.livekitAccountId ? Number(selected.livekitAccountId.replace("mhtalk-", "")) : undefined);
     const attachmentAccessToken = auth
       ? await signedRoomAccess(roomName, auth.id, env.INVITE_SIGNING_KEY)
       : undefined;

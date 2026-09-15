@@ -131,10 +131,15 @@ assert.equal((await selectRtcProvider(environment, "Main", ["livekit"]))?.provid
 
 await updateProviderHealth(environment, "livekit", { usedPercent: 70 });
 assert.equal((await selectRtcProvider(environment, "Main", ["livekit"]))?.provider, "livekit");
-assert.equal(await selectRtcProvider(environment, "LiveKit-new", ["livekit"]), null);
+assert.equal((await selectRtcProvider(environment, "LiveKit-new", ["livekit"]))?.provider, "livekit");
 
 await updateProviderHealth(environment, "livekit", { usedPercent: 75 });
+assert.equal((await selectRtcProvider(environment, "Above-old-cutoff", ["livekit"]))?.provider, "livekit");
+await updateProviderHealth(environment, "livekit", { usedPercent: 89.99 });
+assert.equal((await selectRtcProvider(environment, "Below-new-cutoff", ["livekit"]))?.provider, "livekit");
+await updateProviderHealth(environment, "livekit", { usedPercent: 90 });
 assert.equal(await selectRtcProvider(environment, "Another", ["livekit"]), null);
+assert.equal(await selectRtcProvider(environment, "Main", ["livekit"]), null);
 
 await updateProviderHealth(environment, "livekit", { usedPercent: 0, disabled: true });
 assert.equal(await selectRtcProvider(environment, "Disabled", ["livekit"]), null);

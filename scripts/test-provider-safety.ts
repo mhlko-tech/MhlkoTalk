@@ -17,7 +17,7 @@ for (const provider of targetRtcProviders) {
   if (provider === "mirotalk") continue;
   const policy = databaseProviderSafetyPolicies[provider];
   assert.ok(policy, `${provider} must have a durable safety policy`);
-  assert.ok(policy.stop_percent < 80, `${provider} must stop below 80%`);
+  assert.ok(provider === "livekit" ? policy.stop_percent === 90 : policy.stop_percent < 80, `${provider} must respect its approved cutoff`);
   assert.equal(
     policy.stop_percent,
     routingThresholds(provider).disableAt,
@@ -27,4 +27,5 @@ for (const provider of targetRtcProviders) {
 
 assert.equal(databaseProviderSafetyPolicies["cloudflare-realtime"]?.stop_percent, 60);
 assert.equal(databaseProviderSafetyPolicies.whereby?.stop_percent, 75);
-console.log("Provider safety tests passed: every vendor route stops below 80%");
+assert.equal(routingThresholds("livekit").stopNewRoomsAt, 90);
+console.log("Provider safety tests passed: LiveKit stops at 90%; other vendor cutoffs preserved");

@@ -28,6 +28,41 @@ function deferred<T>() {
 }
 const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+{
+  let requests = 0;
+  await assert.rejects(connectWithRtcFailover({
+    supportedProviders: providers, signal: new AbortController().signal,
+    async fetchCredentials() {
+      if (++requests === 1) return credentials("agora");
+      throw new RtcConnectionError("All compatible realtime providers are temporarily unavailable", "RTC_CAPACITY_UNAVAILABLE", 503);
+    },
+    async connect() { throw gatewayFailure; },
+    async cleanup() {},
+  }), (error: unknown) => {
+    assert.ok(error instanceof RtcConnectionError);
+    assert.equal(error.code, "RTC_FALLBACK_UNAVAILABLE");
+    assert.equal(error.status, 503);
+    assert.match(error.message, /agora connection failed/);
+    assert.match(error.message, /CAN_NOT_GET_GATEWAY_SERVER: flag 4096/);
+    return true;
+  });
+  assert.equal(requests, 2);
+}
+
+{
+  let requests = 0;
+  const authFailure = new RtcConnectionError("Sign in is required", "AUTH_ERROR", 401);
+  await assert.rejects(connectWithRtcFailover({
+    supportedProviders: providers, signal: new AbortController().signal,
+    async fetchCredentials() {
+      if (++requests === 1) return credentials("agora");
+      throw authFailure;
+    },
+    async connect() { throw gatewayFailure; },
+    async cleanup() {},
+  }), (error: unknown) => error === authFailure);
+}
+
 for (const failure of [gatewayFailure, new Error("ICE_FAILED"), new Error("Connection timed out"), { status: 503 }, new TypeError("Failed to fetch")]) {
   assert.equal(isRetryableRtcConnectionFailure(failure), true);
 }
@@ -390,7 +425,7 @@ function agoraFixture(options: { load?: Promise<void>; join?: Promise<void>; mic
     await turn();
     await removed.session.pendingJoin;
     assert.equal(removed.session.snapshot.state, "failed");
-    assert.match(removed.session.snapshot.connectionMessage, /UID_BANNED/);
+    assert.equal(removed.session.snapshot.connectionMessage, "You were removed from this room.");
     assert.equal(removed.requests.length, 1, "Administrative removal must not move the user to another vendor");
     removed.session.handleAgoraConnectionState("DISCONNECTED", "NETWORK_ERROR");
     await turn();

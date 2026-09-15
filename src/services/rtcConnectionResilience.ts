@@ -20,7 +20,9 @@ export function terminalRtcDisconnection(provider: "agora" | "tencent" | "liveki
     ? "The call access token expired. Please rejoin the room."
     : duplicate
       ? "This account joined the call on another device."
-      : `The ${provider} call ended (${reason}).`;
+      : /BANNED|REMOVED|KICKED/.test(reason)
+        ? "You were removed from this room."
+        : "The call ended. Please rejoin the room.";
   return new RtcConnectionError(message, "RTC_TERMINAL_DISCONNECTION", expired ? 401 : 403);
 }
 
@@ -68,11 +70,27 @@ export async function connectWithRtcFailover(options: FailoverOptions): Promise<
   const excluded = [...new Set(options.excludedProviders ?? [])];
   const supported = [...new Set(options.supportedProviders)];
   const attempts = Math.min(3, supported.filter((provider) => !excluded.includes(provider)).length);
+  let lastTransportFailure: { provider: RtcProviderId; error: unknown } | undefined;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     throwIfRtcJoinAborted(options.signal);
     // Account, room-access, and broker errors are final; only failed RTC joins
     // cause provider exclusion. The broker owns the room's shared provider pin.
-    const credentials = await awaitRtcOperation(options.fetchCredentials([...excluded], options.signal), options.signal);
+    let credentials: RoomConnectionCredentials;
+    try {
+      credentials = await awaitRtcOperation(options.fetchCredentials([...excluded], options.signal), options.signal);
+    } catch (error) {
+      throwIfRtcJoinAborted(options.signal);
+      // Exhausted fallback capacity must not hide the SDK failure that caused
+      // the fallback. Authentication and room-access errors remain unchanged.
+      if (lastTransportFailure && error instanceof RtcConnectionError && error.code === "RTC_CAPACITY_UNAVAILABLE") {
+        throw new RtcConnectionError(
+          `The ${lastTransportFailure.provider} connection failed: ${errorMessage(lastTransportFailure.error, "Unknown connection error")}. No compatible alternative is currently available.`,
+          "RTC_FALLBACK_UNAVAILABLE",
+          error.status,
+        );
+      }
+      throw error;
+    }
     throwIfRtcJoinAborted(options.signal);
     const provider = credentials.routing.rtc.provider;
     if (!supported.includes(provider) || excluded.includes(provider)) {
@@ -96,6 +114,7 @@ export async function connectWithRtcFailover(options: FailoverOptions): Promise<
       await options.cleanup(credentials);
       throwIfRtcJoinAborted(options.signal);
       if (!isRetryableRtcConnectionFailure(error) || attempt + 1 >= attempts) throw error;
+      lastTransportFailure = { provider, error };
       excluded.push(provider);
     } finally {
       clearTimeout(timer);

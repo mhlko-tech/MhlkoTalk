@@ -14,6 +14,7 @@ export interface SessionSnapshot {
   state: SessionState;
   roomName: string | null;
   rtcProvider: RtcProviderId | null;
+  serverId?: number | null;
   embeddedCallUrl: string | null;
   microphoneEnabled: boolean;
   localSpeaking: boolean;

@@ -4,6 +4,7 @@ export const roomRouteLeaseMs = 120_000;
 
 export type RoomRoute = {
   provider: RtcProviderId;
+  livekitAccountId?: string;
   id: string;
   expiresAt: number;
   members: Record<string, number>;

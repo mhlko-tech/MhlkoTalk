@@ -21,7 +21,8 @@ for (const provider of requiredProviders) {
 
 for (const capability of payload.rtc) {
   const usedPercent = Number(capability.usedPercent);
-  if (Number.isFinite(usedPercent) && usedPercent >= 80) {
+  const disablePercent = payload.thresholds?.[capability.provider]?.disablePercent ?? 80;
+  if (Number.isFinite(usedPercent) && usedPercent >= disablePercent) {
     failures.push(`${capability.provider}: unsafe usage ${usedPercent}%`);
   }
 }

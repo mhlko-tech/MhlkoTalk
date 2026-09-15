@@ -1,0 +1,26 @@
+import assert from "node:assert/strict";
+import { chooseLivekitAccount, livekitAccountHealth, livekitAccounts, poolUsage } from "../worker/src/livekitPool";
+const now = Date.parse("2026-09-16T00:00:00Z");
+const env = { LIVEKIT_URL: "https://primary.livekit.cloud", LIVEKIT_API_KEY: "key", LIVEKIT_API_SECRET: "secret",
+  LIVEKIT_ACCOUNTS_JSON: JSON.stringify([{ id: "mhtalk-02", url: "wss://second.livekit.cloud", apiKey: "key2", apiSecret: "secret2" }]) };
+const accounts = livekitAccounts(env);
+const primary = { usedPercent: 73.7, disabled: false, updatedAt: new Date(now).toISOString() };
+const usage = poolUsage(undefined, now);
+let health = livekitAccountHealth(accounts, usage, primary, now);
+assert.equal(chooseLivekitAccount(health, undefined, false), "mhtalk-02");
+assert.equal(chooseLivekitAccount(health, "mhtalk-01", true), "mhtalk-01", "occupied rooms must not split across projects");
+usage.minutes["mhtalk-02"] = 4499;
+health = livekitAccountHealth(accounts, usage, primary, now);
+assert.equal(chooseLivekitAccount(health, "mhtalk-02", true), "mhtalk-02");
+usage.minutes["mhtalk-02"] = 4500;
+health = livekitAccountHealth(accounts, usage, primary, now);
+assert.equal(chooseLivekitAccount(health, "mhtalk-02", true), null, "wait for room members before account failover");
+assert.equal(chooseLivekitAccount(health, "mhtalk-02", false), "mhtalk-01");
+assert.equal(chooseLivekitAccount(livekitAccountHealth(accounts, usage, { ...primary, usedPercent: 90 }, now), undefined, false), null);
+assert.equal(chooseLivekitAccount(livekitAccountHealth(accounts, usage, { ...primary, disabled: true }, now), undefined, false), null);
+assert.equal(chooseLivekitAccount(livekitAccountHealth(accounts, usage, primary, now + 26 * 60_000), undefined, false), null);
+assert.deepEqual(poolUsage(usage, Date.parse("2026-10-01T00:00:00Z")).minutes, {});
+assert.equal(poolUsage(usage, now).minutes["mhtalk-02"], 4500);
+assert.throws(() => livekitAccounts({ ...env, LIVEKIT_ACCOUNTS_JSON: '[{"id":"mhtalk-01","url":"https://second.livekit.cloud","apiKey":"key","apiSecret":"secret"}]' }));
+assert.throws(() => livekitAccounts({ ...env, LIVEKIT_ACCOUNTS_JSON: '[{"id":"extra","url":"https://evil.example","apiKey":"key","apiSecret":"secret"}]' }));
+console.log("LiveKit pool tests passed: allocation, room affinity, cutoff, telemetry, monthly reset, config validation");

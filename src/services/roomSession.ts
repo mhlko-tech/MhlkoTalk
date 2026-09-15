@@ -14,6 +14,7 @@ import {
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { withTimeout } from "../core/async";
 import type { RtcProviderId } from "../core/rtcProviders";
+import { publicConnectionMessage } from "../core/providerStatus";
 import {
   awaitRtcOperation,
   connectWithRtcFailover,
@@ -79,6 +80,7 @@ const initialSnapshot: SessionSnapshot = {
   state: "idle",
   roomName: null,
   rtcProvider: null,
+  serverId: null,
   embeddedCallUrl: null,
   microphoneEnabled: true,
   localSpeaking: false,
@@ -1481,6 +1483,7 @@ export class RoomSession {
       onAttempt: (provider, attempt) => this.update({
         state: "connecting",
         rtcProvider: provider,
+        serverId: null,
         participants: [],
         connectionMessage: attempt === 1
           ? "Connecting to the room…"
@@ -1488,6 +1491,7 @@ export class RoomSession {
       }),
       connect: async (selected, attemptSignal) => {
         this.routing = selected.routing;
+        this.update({ serverId: selected.routing.rtc.serverId ?? null });
         this.attachmentAccessToken = selected.attachmentAccessToken;
         await this.rtcAdapters.connect(selected, attemptSignal);
       },
@@ -2073,7 +2077,7 @@ export class RoomSession {
         throw new Error("This app version cannot open the selected room connection");
       }
       this.routing = credentials.routing;
-      this.update({ connectionMessage: "Connecting to the room…" });
+      this.update({ connectionMessage: "Connecting to the room…", serverId: credentials.routing.rtc.serverId ?? null });
       await withTimeout(room.connect(credentials.routing.rtc.serverUrl, credentials.token, {
         autoSubscribe: false,
       }), 18_000, "The selected realtime server took too long to respond");
@@ -2409,7 +2413,7 @@ export class RoomSession {
     if (state === "disconnected") this.beginRecovery();
     if (state === "connected" && this.snapshot.state === "recovering") this.finishRecovery();
     if ((state === "failed" || state === "closed") && this.snapshot.state !== "idle") {
-      this.update({ state: "failed", connectionMessage: "The Cloudflare call disconnected" });
+      this.update({ state: "failed", connectionMessage: "The server disconnected" });
     }
   }
 
@@ -2578,7 +2582,7 @@ export class RoomSession {
     } else if (state === StreamCallingState.JOINED && this.snapshot.state === "recovering") {
       this.finishRecovery();
     } else if (state === StreamCallingState.RECONNECTING_FAILED) {
-      this.update({ state: "failed", connectionMessage: "The Stream call could not reconnect" });
+      this.update({ state: "failed", connectionMessage: "The call could not reconnect" });
     }
   }
 
@@ -2942,6 +2946,7 @@ export class RoomSession {
   }
 
   private update(change: Partial<SessionSnapshot>) {
+    if (change.connectionMessage) change = { ...change, connectionMessage: publicConnectionMessage(change.connectionMessage) };
     const participants = change.participants?.map((participant) => ({
       ...participant,
       subscriptionTier: this.verifiedSubscriptionTiers.get(participant.identity) || "free" as const,

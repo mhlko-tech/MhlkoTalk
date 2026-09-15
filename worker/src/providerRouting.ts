@@ -6,6 +6,7 @@ import {
 } from "./rtcProviderCatalog";
 import { routingThresholds } from "./providerSafety";
 import type { RoomRouteDecision } from "./roomRouting";
+import { livekitAccounts, type LiveKitAccountHealth } from "./livekitPool";
 
 export type { RtcProviderId } from "./rtcProviderCatalog";
 
@@ -16,6 +17,7 @@ export interface RoutingEnvironment {
   LIVEKIT_URL: string;
   LIVEKIT_API_KEY: string;
   LIVEKIT_API_SECRET: string;
+  LIVEKIT_ACCOUNTS_JSON?: string;
   STREAM_API_KEY?: string;
   STREAM_API_SECRET?: string;
   AGORA_APP_ID?: string;
@@ -100,7 +102,7 @@ function providerConfigured(provider: RtcProviderId, env: RoutingEnvironment) {
     case "jaas": return Boolean(env.JAAS_APP_ID && env.JAAS_KEY_ID && env.JAAS_PRIVATE_KEY);
     case "mirotalk": return Boolean(env.MIROTALK_BASE_URL && env.MIROTALK_API_KEY_SECRET && env.MIROTALK_HOST_USERNAME && env.MIROTALK_HOST_PASSWORD);
     case "daily": return Boolean(env.DAILY_API_KEY);
-    case "livekit": return Boolean(env.LIVEKIT_URL && env.LIVEKIT_API_KEY && env.LIVEKIT_API_SECRET);
+    case "livekit": return livekitAccounts(env).some((account) => Boolean(account.url && account.apiKey && account.apiSecret));
   }
 }
 
@@ -124,6 +126,9 @@ export async function rtcCapabilities(env: RoutingEnvironment): Promise<Provider
   // daily KV allowance is exhausted. The existing global Durable Object gives
   // us one strongly consistent snapshot without spending KV operations.
   const shared = await providerHealthSnapshot(env);
+  const poolResponse = env.LIVEKIT_ACCOUNTS_JSON
+    ? await providerHealthStore(env).fetch("https://presence.internal/livekit-pool-health") : null;
+  const pool = poolResponse?.ok ? await poolResponse.json() as LiveKitAccountHealth[] : null;
   const healthFor = (provider: RtcProviderId): ProviderHealth => {
     const stored = shared[provider];
     return {
@@ -136,6 +141,10 @@ export async function rtcCapabilities(env: RoutingEnvironment): Promise<Provider
     const configured = providerConfigured(provider, env);
     const hasAdapter = adapterReady(provider);
     const health = healthFor(provider);
+    if (provider === "livekit" && env.LIVEKIT_ACCOUNTS_JSON) {
+      const available = pool?.filter((account) => account.ready) || [];
+      health.usedPercent = available.length ? Math.min(...available.map((account) => account.usedPercent)) : 100;
+    }
     const policy = routingThresholds(provider);
     const stale = !health.disabled && healthIsStale(provider, health);
     const ready = configured && hasAdapter && !stale && !health.disabled && health.usedPercent < policy.disableAt;
@@ -246,7 +255,7 @@ export async function selectRoomRtcProvider(
   const decision = await response.json() as RoomRouteDecision;
   if (decision.locked) throw new RoomProviderLockedError();
   const selected = capabilities.find((item) => item.provider === decision.selected);
-  return selected ? { ...selected, routeId: decision.route!.id } : null;
+  return selected ? { ...selected, routeId: decision.route!.id, livekitAccountId: decision.route!.livekitAccountId } : null;
 }
 
 export function parseRtcProviders(value: unknown): RtcProviderId[] {

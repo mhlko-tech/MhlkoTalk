@@ -88,7 +88,7 @@ export function routingIsSupported(
 }
 
 export type RoomServiceRouting = {
-  rtc: { provider: RtcProviderId; serverUrl: string; clientKey?: string };
+  rtc: { provider: RtcProviderId; serverUrl: string; clientKey?: string; serverId?: number };
   messaging: { provider: MessagingProviderId };
   files: { provider: FileProviderId };
   subscription: SubscriptionPlan;
@@ -113,7 +113,7 @@ export function parseRoomServiceRouting(
     provider?: unknown;
     serverUrl?: unknown;
     routing?: {
-      rtc?: { provider?: unknown; serverUrl?: unknown; clientKey?: unknown };
+      rtc?: { provider?: unknown; serverUrl?: unknown; clientKey?: unknown; serverId?: unknown };
       messaging?: { provider?: unknown };
       files?: { provider?: unknown };
     };
@@ -122,6 +122,7 @@ export function parseRoomServiceRouting(
   const provider = payload.routing?.rtc?.provider ?? payload.provider;
   const serverUrl = payload.routing?.rtc?.serverUrl ?? payload.serverUrl;
   const clientKey = payload.routing?.rtc?.clientKey;
+  const serverId = payload.routing?.rtc?.serverId;
   const rtcProvider = isRtcProvider(provider) ? provider : "livekit";
   const parsed: RoomServiceRouting = {
     rtc: {
@@ -130,6 +131,7 @@ export function parseRoomServiceRouting(
         ? serverUrl
         : fallbackServerUrl,
       ...(typeof clientKey === "string" && clientKey ? { clientKey } : {}),
+      ...(typeof serverId === "number" && Number.isSafeInteger(serverId) && serverId > 0 && serverId <= 10000 ? { serverId } : {}),
     },
     messaging: {
       provider: isMessagingProvider(payload.routing?.messaging?.provider)

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import type { SessionSnapshot } from "../core/types";
-import { describeProviderStatus, providerNames, type ProviderStatusPayload } from "../core/providerStatus";
+import { describeProviderStatus, serverDisplayName, type ProviderStatusPayload } from "../core/providerStatus";
 import { liveKitTokenEndpoint } from "../config/serviceConfig";
 
-export function ProviderStatus({ session }: { session: Pick<SessionSnapshot, "state" | "rtcProvider"> }) {
+export function ProviderStatus({ session }: { session: Pick<SessionSnapshot, "state" | "rtcProvider" | "serverId"> }) {
   const [health, setHealth] = useState<{ payload: ProviderStatusPayload; fetchedAt: number } | null>(null);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -36,9 +36,9 @@ export function ProviderStatus({ session }: { session: Pick<SessionSnapshot, "st
     void refresh();
     const interval = window.setInterval(() => void refresh(), 30_000);
     return () => { controller.abort(); window.clearInterval(interval); };
-  }, [session.rtcProvider, session.state]);
-  const status = describeProviderStatus(session.rtcProvider, session.state, health?.payload || null, Boolean(health && now - health.fetchedAt < 90_000));
-  const provider = session.rtcProvider ? providerNames[session.rtcProvider] : "Server";
+  }, [session.rtcProvider, session.state, session.serverId]);
+  const status = describeProviderStatus(session.rtcProvider, session.state, health?.payload || null, Boolean(health && now - health.fetchedAt < 90_000), session.serverId);
+  const provider = serverDisplayName(session.serverId);
   return <section className={`provider-status provider-status--${status.tone}`} aria-label="Server status" dir="ltr">
     <div className="provider-status-heading"><span className="provider-status-dot" aria-hidden="true" /><strong>{provider}</strong><span>Current server</span></div>
     <div className="provider-status-label" role="status">{status.label}</div>
